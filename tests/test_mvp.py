@@ -146,8 +146,8 @@ class MvpTest(unittest.TestCase):
             with self.assertRaises(SafetyError):
                 engine.plan("my-pack")
 
+    @unittest.skipUnless(os.name == "nt", "Windows junction test")
     def test_real_windows_junction_in_skill_is_rejected(self) -> None:
-        self.assertEqual(os.name, "nt", "This audit test requires Windows")
         ignore = self.repo / ".gitignore"
         ignore.write_text("first-skill/linked-junction/\n", encoding="utf-8")
         git(self.repo, "add", ".")
