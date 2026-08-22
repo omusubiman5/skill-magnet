@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.skill-magnet/
+build/
+dist/
+*.egg-info/
+
