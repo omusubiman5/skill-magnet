@@ -4,7 +4,7 @@ Skill Magnetは、ユーザー自身のGitHub保管庫でスキルを保存・�
 
 ## 現在の状態
 
-GitHub中心の手動activation経路を実装中です。共通コア、期限付きlaunch contract、Codex task envelope、証拠検証、Explorer/Finderアダプターは実装済みです。登録中の実スキル保管庫9件にもskill固有 `acceptance.json` を追加し、固定commitとユーザー承認を記録しました。Windows上の実Codexによる実pack E2Eは `verified_applied` で通過しています。macOS CIの完了までは製品完成と扱いません。
+GitHub中心の手動activation経路を実装済みです。共通コア、期限付きlaunch contract、Codex task envelope、証拠検証、Explorer/Finderアダプターを備えています。登録中の実スキル保管庫9件にもskill固有 `acceptance.json` を追加し、固定commitとユーザー承認を記録しました。Windows上の実Codexによる実pack E2Eは `verified_applied`、GitHub ActionsのWindows/macOS契約テストは両方成功しています。macOS版はcommunity betaであり、実Finder上の手動操作確認は今後の検証項目です。
 
 旧MVPの `sync` は `~/.agents/skills` と `~/.claude/skills` への常設コピーを前提とし、現在の製品ポリシーに適合しません。CLIでも既定無効です。本番 `sync` は実施していません。
 
@@ -111,7 +111,7 @@ $env:PYTHONPATH = "C:\Projects\skill-magnet\src"
 python -m unittest discover -s C:\Projects\skill-magnet\tests -v
 ```
 
-再設計後MVPの完了条件は、別保管庫の特定commit選択、task envelopeへの明示注入、送達証拠、challenge nonceを含む読込証拠、skill固有の適用証拠、期限とcleanup、失敗・中断後の残留ゼロを含むend-to-end自動テストがすべて成功し、実ユーザーCodexとWindows/macOS実機で確認されることです。現時点では未完成です。
+再設計後MVPの完了条件は、別保管庫の特定commit選択、task envelopeへの明示注入、送達証拠、challenge nonceを含む読込証拠、skill固有の適用証拠、期限とcleanup、失敗・中断後の残留ゼロを含むend-to-end自動テストがすべて成功し、実ユーザーCodexとWindows実環境、macOS GitHub Actionsのcommunity-beta契約で確認されることです。Finder実機操作はcommunity betaの追加検証であり、確認前に保証しません。
 
 GitHub ActionsはWindowsとmacOSの両jobを必須の同一テストsuiteとして定義しています。片方だけの成功を完成扱いにしません。
 
@@ -122,4 +122,4 @@ $env:PYTHONPATH = "C:\Projects\skill-magnet\src"
 python C:\Projects\skill-magnet\integration\real_codex_acceptance.py
 ```
 
-2026-08-22にWindows上の実Codex CLI 0.148.0でこのruntime acceptanceを実行し、challenge nonce、commit、承認、instruction digestの読込識別とskill固有assertionが一致して `verified_applied` になりました。同日、登録中の実pack 9件（commit `c7747bba0bc391316aa558b3b4e8dd412045d2dc`）でも、全skill ID付きの適用規則と9件のskill固有assertionが一致して `verified_applied` になりました。macOS CIの通過までは製品全体を完成扱いにしません。
+2026-08-22にWindows上の実Codex CLI 0.148.0でこのruntime acceptanceを実行し、challenge nonce、commit、承認、instruction digestの読込識別とskill固有assertionが一致して `verified_applied` になりました。同日、登録中の実pack 9件（commit `c7747bba0bc391316aa558b3b4e8dd412045d2dc`）でも、全skill ID付きの適用規則と9件のskill固有assertionが一致して `verified_applied` になりました。GitHub Actions run `32565695277` ではWindows/macOSの両jobが成功しています。
