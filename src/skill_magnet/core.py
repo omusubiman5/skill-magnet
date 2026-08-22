@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -213,6 +214,10 @@ class Config:
 
     @classmethod
     def load(cls, path: Path) -> "Config":
+        if sys.version_info < (3, 12):
+            raise SkillMagnetError(
+                "Skill Magnet requires Python 3.12 or later for Windows junction detection"
+            )
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -369,6 +374,7 @@ class Engine:
             if pending.get("delete_snapshot_on_commit"):
                 self._remove_internal_tree(Path(pending["snapshot_root"]))
             self.pending_file.unlink(missing_ok=True)
+            self._cleanup_empty_state_dirs(pending)
             return
 
         for record in reversed(records):
@@ -381,12 +387,35 @@ class Engine:
             elif not record.get("before_existed", False):
                 self._remove_internal_tree(destination)
             self._remove_internal_tree(stage)
+        for parent_text in {
+            str(Path(record["destination"]).parent)
+            for record in records
+            if not record.get("parent_preexisting", True)
+        }:
+            try:
+                Path(parent_text).rmdir()
+            except OSError:
+                pass
         encoded = pending.get("state_before")
         previous = base64.b64decode(encoded) if encoded is not None else None
         self._restore_state_bytes(previous)
         if pending.get("remove_snapshot_on_revert"):
             self._remove_internal_tree(Path(pending["snapshot_root"]))
         self.pending_file.unlink(missing_ok=True)
+        self._cleanup_empty_state_dirs(pending)
+
+    def _cleanup_empty_state_dirs(self, pending: dict[str, Any]) -> None:
+        """Remove transaction-created empty state directories without touching user data."""
+        snapshots = self.state_dir / "snapshots"
+        try:
+            snapshots.rmdir()
+        except OSError:
+            pass
+        if not pending.get("state_dir_preexisting", True):
+            try:
+                self.state_dir.rmdir()
+            except OSError:
+                pass
 
     def _target_names(self, targets: Iterable[str] | None) -> tuple[str, ...]:
         selected = tuple(targets or ("codex", "claude"))
@@ -458,7 +487,7 @@ class Engine:
         if record.get("install", True):
             os.replace(stage, destination)
 
-    def _prepare_sync_records(
+    def _sync_record_specs(
         self,
         pack: Pack,
         changed: list[dict[str, Any]],
@@ -466,40 +495,44 @@ class Engine:
         snapshot_root: Path,
     ) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
-        try:
-            for item in changed:
-                destination = Path(item["destination"])
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                stage = destination.parent / f".skill-magnet-stage-{token}-{destination.name}"
-                backup = destination.parent / f".skill-magnet-old-{token}-{destination.name}"
-                if stage.exists() or backup.exists():
-                    raise SafetyError(f"Temporary path already exists near {destination}")
-                shutil.copytree(pack.source / item["skill"], stage)
-                if hash_directory(stage) != item["source_hash"]:
-                    raise SafetyError(f"Staged content hash mismatch: {stage}")
-                existed = destination.exists()
-                snapshot = snapshot_root / item["target"] / item["skill"]
-                if existed:
-                    snapshot.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copytree(destination, snapshot)
-                records.append(
-                    {
-                        "target": item["target"],
-                        "skill": item["skill"],
-                        "destination": str(destination),
-                        "stage": str(stage),
-                        "backup": str(backup),
-                        "before_existed": existed,
-                        "snapshot": str(snapshot) if existed else None,
-                        "install": True,
-                    }
-                )
-        except Exception:
-            for record in records:
-                self._remove_internal_tree(Path(record["stage"]))
-            self._remove_internal_tree(snapshot_root)
-            raise
+        for item in changed:
+            destination = Path(item["destination"])
+            stage = destination.parent / f".skill-magnet-stage-{token}-{destination.name}"
+            backup = destination.parent / f".skill-magnet-old-{token}-{destination.name}"
+            if stage.exists() or backup.exists():
+                raise SafetyError(f"Temporary path already exists near {destination}")
+            existed = destination.exists()
+            snapshot = snapshot_root / item["target"] / item["skill"]
+            records.append(
+                {
+                    "target": item["target"],
+                    "skill": item["skill"],
+                    "source": str(pack.source / item["skill"]),
+                    "expected_hash": item["source_hash"],
+                    "destination": str(destination),
+                    "stage": str(stage),
+                    "backup": str(backup),
+                    "before_existed": existed,
+                    "parent_preexisting": destination.parent.exists(),
+                    "snapshot": str(snapshot) if existed else None,
+                    "install": True,
+                }
+            )
         return records
+
+    def _prepare_sync_records(self, records: list[dict[str, Any]]) -> None:
+        """Prepare every stage and snapshot after the recovery journal exists."""
+        for record in records:
+            destination = Path(record["destination"])
+            stage = Path(record["stage"])
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(Path(record["source"]), stage)
+            if hash_directory(stage) != record["expected_hash"]:
+                raise SafetyError(f"Staged content hash mismatch: {stage}")
+            if record["before_existed"]:
+                snapshot = Path(record["snapshot"])
+                snapshot.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(destination, snapshot)
 
     def sync(self, pack_id: str, targets: Iterable[str] | None = None) -> dict[str, Any]:
         self._recover_pending()
@@ -519,8 +552,9 @@ class Engine:
         previous_install = copy.deepcopy(state["installs"].get(pack_id))
         token = uuid.uuid4().hex
         state_before = self._state_bytes()
+        state_dir_preexisting = self.state_dir.exists()
         snapshot_root = self.state_dir / "snapshots" / token
-        records = self._prepare_sync_records(pack, changed, token, snapshot_root)
+        records = self._sync_record_specs(pack, changed, token, snapshot_root)
         pending = {
             "version": 1,
             "id": token,
@@ -531,62 +565,66 @@ class Engine:
             "snapshot_root": str(snapshot_root),
             "remove_snapshot_on_revert": True,
             "delete_snapshot_on_commit": False,
+            "state_dir_preexisting": state_dir_preexisting,
         }
-        self._write_json_atomic(self.pending_file, pending)
         try:
+            self._write_json_atomic(self.pending_file, pending)
+        except Exception:
+            if self.pending_file.exists():
+                self._recover_pending(force_revert=True)
+            else:
+                self._cleanup_empty_state_dirs(pending)
+            raise
+        try:
+            self._prepare_sync_records(records)
             for record in records:
                 self._activate_stage(record)
-        except Exception:
-            self._recover_pending(force_revert=True)
-            raise
-
-        new_install = copy.deepcopy(previous_install) if previous_install else {"targets": {}}
-        new_install["source_commit"] = plan["source_commit"]
-        new_install["repo_url"] = pack.repo_url
-        for target in plan["targets"]:
-            target_state = new_install["targets"].setdefault(
-                target,
-                {"root": str(self.config.targets[target]), "skills": {}},
-            )
-            target_state["root"] = str(self.config.targets[target])
-            for skill in pack.skills:
-                target_state["skills"][skill] = {
-                    "hash": next(
-                        item["source_hash"]
-                        for item in plan["items"]
-                        if item["target"] == target and item["skill"] == skill
-                    )
+            new_install = copy.deepcopy(previous_install) if previous_install else {"targets": {}}
+            new_install["source_commit"] = plan["source_commit"]
+            new_install["repo_url"] = pack.repo_url
+            for target in plan["targets"]:
+                target_state = new_install["targets"].setdefault(
+                    target,
+                    {"root": str(self.config.targets[target]), "skills": {}},
+                )
+                target_state["root"] = str(self.config.targets[target])
+                for skill in pack.skills:
+                    target_state["skills"][skill] = {
+                        "hash": next(
+                            item["source_hash"]
+                            for item in plan["items"]
+                            if item["target"] == target and item["skill"] == skill
+                        )
+                    }
+            state["installs"][pack_id] = new_install
+            state["transactions"].append(
+                {
+                    "id": token,
+                    "pack": pack_id,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "rolled_back": False,
+                    "previous_install": previous_install,
+                    "before": [
+                        {
+                            "target": record["target"],
+                            "skill": record["skill"],
+                            "destination": record["destination"],
+                            "existed": record["before_existed"],
+                            "snapshot": record["snapshot"],
+                        }
+                        for record in records
+                    ],
+                    "after": [
+                        {
+                            "target": item["target"],
+                            "skill": item["skill"],
+                            "destination": item["destination"],
+                            "hash": item["source_hash"],
+                        }
+                        for item in changed
+                    ],
                 }
-        state["installs"][pack_id] = new_install
-        state["transactions"].append(
-            {
-                "id": token,
-                "pack": pack_id,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "rolled_back": False,
-                "previous_install": previous_install,
-                "before": [
-                    {
-                        "target": record["target"],
-                        "skill": record["skill"],
-                        "destination": record["destination"],
-                        "existed": record["before_existed"],
-                        "snapshot": record["snapshot"],
-                    }
-                    for record in records
-                ],
-                "after": [
-                    {
-                        "target": item["target"],
-                        "skill": item["skill"],
-                        "destination": item["destination"],
-                        "hash": item["source_hash"],
-                    }
-                    for item in changed
-                ],
-            }
-        )
-        try:
+            )
             self._write_state(state)
         except Exception:
             self._recover_pending(force_revert=True)
@@ -619,33 +657,27 @@ class Engine:
                 )
         token = transaction["id"] + "-rollback"
         records: list[dict[str, Any]] = []
-        try:
-            for before in transaction["before"]:
-                destination = Path(before["destination"])
-                stage = destination.parent / f".skill-magnet-stage-{token}-{destination.name}"
-                backup = destination.parent / f".skill-magnet-old-{token}-{destination.name}"
-                if stage.exists() or backup.exists():
-                    raise SafetyError(f"Temporary path already exists near {destination}")
-                if before["existed"]:
-                    snapshot = Path(before["snapshot"])
-                    if not snapshot.is_dir() or _is_link(snapshot):
-                        raise SafetyError(f"Rollback snapshot is missing or unsafe: {snapshot}")
-                    shutil.copytree(snapshot, stage)
-                records.append(
-                    {
-                        "target": before["target"],
-                        "skill": before["skill"],
-                        "destination": before["destination"],
-                        "stage": str(stage),
-                        "backup": str(backup),
-                        "before_existed": True,
-                        "install": bool(before["existed"]),
-                    }
-                )
-        except Exception:
-            for record in records:
-                self._remove_internal_tree(Path(record["stage"]))
-            raise
+        for before in transaction["before"]:
+            destination = Path(before["destination"])
+            stage = destination.parent / f".skill-magnet-stage-{token}-{destination.name}"
+            backup = destination.parent / f".skill-magnet-old-{token}-{destination.name}"
+            if stage.exists() or backup.exists():
+                raise SafetyError(f"Temporary path already exists near {destination}")
+            snapshot = Path(before["snapshot"]) if before["existed"] else None
+            if snapshot is not None and (not snapshot.is_dir() or _is_link(snapshot)):
+                raise SafetyError(f"Rollback snapshot is missing or unsafe: {snapshot}")
+            records.append(
+                {
+                    "target": before["target"],
+                    "skill": before["skill"],
+                    "destination": before["destination"],
+                    "stage": str(stage),
+                    "backup": str(backup),
+                    "before_existed": True,
+                    "snapshot": str(snapshot) if snapshot is not None else None,
+                    "install": bool(before["existed"]),
+                }
+            )
         state_before = self._state_bytes()
         snapshot_root = self.state_dir / "snapshots" / transaction["id"]
         pending = {
@@ -658,22 +690,27 @@ class Engine:
             "snapshot_root": str(snapshot_root),
             "remove_snapshot_on_revert": False,
             "delete_snapshot_on_commit": True,
+            "state_dir_preexisting": True,
         }
-        self._write_json_atomic(self.pending_file, pending)
+        try:
+            self._write_json_atomic(self.pending_file, pending)
+        except Exception:
+            if self.pending_file.exists():
+                self._recover_pending(force_revert=True)
+            raise
         try:
             for record in records:
+                if record["install"]:
+                    shutil.copytree(Path(record["snapshot"]), Path(record["stage"]))
+            for record in records:
                 self._activate_stage(record)
-        except Exception:
-            self._recover_pending(force_revert=True)
-            raise
-        previous = transaction.get("previous_install")
-        if previous is None:
-            state["installs"].pop(pack_id, None)
-        else:
-            state["installs"][pack_id] = previous
-        transaction["rolled_back"] = True
-        transaction["rolled_back_at"] = datetime.now(timezone.utc).isoformat()
-        try:
+            previous = transaction.get("previous_install")
+            if previous is None:
+                state["installs"].pop(pack_id, None)
+            else:
+                state["installs"][pack_id] = previous
+            transaction["rolled_back"] = True
+            transaction["rolled_back_at"] = datetime.now(timezone.utc).isoformat()
             self._write_state(state)
         except Exception:
             self._recover_pending(force_revert=True)

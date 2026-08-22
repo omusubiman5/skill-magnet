@@ -19,7 +19,7 @@ Skill Magnetは、GitHubで管理している複数のAIスキルを「スキル
 ## 始める前の前提
 
 - Windows PowerShellでの実行例です。
-- Python 3.11以降とGitが必要です。
+- Python 3.12以降とGitが必要です。Windows junctionを確実に検出するため、Python 3.11以前はサポートしません。
 - Pythonの追加packageは必要ありません。
 - 配布元のGitHub repositoryは、あらかじめローカルへcloneしておきます。
 - 使用できるのは `skill-magnet.json` の `allowed_github_owners` に登録した自分のGitHub repositoryだけです。
@@ -220,10 +220,10 @@ MVPの完了条件は、次を含む全自動テストが成功することで�
 8. rollback途中、rollback state保存失敗から全体を復旧する。
 9. 更新前versionと初回配布前の状態へrollbackできる。
 
-現在のMVPでは17テストすべてが成功し、skipはありません。
+現在のMVPでは24テストすべてが成功し、skipはありません。
 
 ```text
-Ran 17 tests
+Ran 24 tests
 OK
 ```
 
