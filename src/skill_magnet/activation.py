@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
 import subprocess
 import uuid
 from dataclasses import asdict, dataclass
@@ -122,6 +124,10 @@ class ActivationEngine:
                 ):
                     raise SafetyError(
                         f"MVP acceptance path must be result.<field>: {path}"
+                    )
+                if isinstance(assertion["equals"], (dict, list)):
+                    raise SafetyError(
+                        f"MVP acceptance equals must be a JSON primitive: {path}"
                     )
             checks[skill] = value
         return checks
@@ -295,6 +301,20 @@ class ActivationEngine:
         return current
 
     @staticmethod
+    def _const_schema(value: Any) -> dict[str, Any]:
+        if value is None:
+            value_type = "null"
+        elif isinstance(value, bool):
+            value_type = "boolean"
+        elif isinstance(value, int):
+            value_type = "integer"
+        elif isinstance(value, float):
+            value_type = "number"
+        else:
+            value_type = "string"
+        return {"type": value_type, "const": value}
+
+    @staticmethod
     def _output_schema(
         contract: LaunchContract, checks: dict[str, dict[str, Any]]
     ) -> dict[str, Any]:
@@ -304,24 +324,26 @@ class ActivationEngine:
                 field = assertion["path"].split(".", 1)[1]
                 expected = assertion["equals"]
                 previous = result_properties.get(field)
-                rule = {"const": expected}
+                rule = ActivationEngine._const_schema(expected)
                 if previous is not None and previous != rule:
                     raise SafetyError(f"Conflicting acceptance assertions: result.{field}")
                 result_properties[field] = rule
         provenance_properties = {
-            "pack_id": {"const": contract.pack_id},
-            "repository_url": {"const": contract.repository_url},
-            "commit_sha": {"const": contract.commit_sha},
-            "approved_by": {"const": contract.approved_by},
-            "approved_at": {"const": contract.approved_at},
+            "pack_id": ActivationEngine._const_schema(contract.pack_id),
+            "repository_url": ActivationEngine._const_schema(contract.repository_url),
+            "commit_sha": ActivationEngine._const_schema(contract.commit_sha),
+            "approved_by": ActivationEngine._const_schema(contract.approved_by),
+            "approved_at": ActivationEngine._const_schema(contract.approved_at),
             "skill_ids": {
                 "type": "array",
                 "items": {"type": "string", "enum": list(contract.skill_ids)},
                 "minItems": len(contract.skill_ids),
                 "maxItems": len(contract.skill_ids),
             },
-            "instruction_digest": {"const": contract.instruction_digest},
-            "challenge_nonce": {"const": contract.nonce},
+            "instruction_digest": ActivationEngine._const_schema(
+                contract.instruction_digest
+            ),
+            "challenge_nonce": ActivationEngine._const_schema(contract.nonce),
             "applied_rules": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -415,16 +437,28 @@ class ActivationEngine:
         schema_path = self.evidence_dir / f"{contract.contract_id}-schema.json"
         schema = self._output_schema(contract, checks)
         self.engine._write_json_atomic(schema_path, schema)
-        executable = (
-            list(codex_executable)
-            if isinstance(codex_executable, tuple)
-            else [codex_executable]
-        )
-        command = [
-            *executable,
+        wrapper: str | None = None
+        if isinstance(codex_executable, tuple):
+            executable = list(codex_executable)
+        else:
+            resolved = codex_executable
+            if os.name == "nt" and codex_executable.lower() == "codex":
+                resolved = shutil.which("codex.cmd") or shutil.which("codex.exe") or codex_executable
+            if os.name == "nt" and Path(resolved).suffix.lower() in {".cmd", ".bat"}:
+                wrapper = resolved
+                executable = []
+            else:
+                executable = [resolved]
+        runtime_args = [
+            "--ask-for-approval",
+            "never",
             "exec",
             "--ephemeral",
+            "--ignore-user-config",
+            "--ignore-rules",
             "--json",
+            "--sandbox",
+            "read-only",
             "--cd",
             contract.project,
             "--output-schema",
@@ -433,6 +467,16 @@ class ActivationEngine:
             str(output_path),
             "-",
         ]
+        if wrapper is not None:
+            command = [
+                os.environ.get("COMSPEC", "cmd.exe"),
+                "/d",
+                "/s",
+                "/c",
+                subprocess.list2cmdline([wrapper, *runtime_args]),
+            ]
+        else:
+            command = [*executable, *runtime_args]
         try:
             try:
                 result = subprocess.run(
@@ -449,9 +493,12 @@ class ActivationEngine:
                 ) from exc
             event_path.write_text(result.stdout, encoding="utf-8")
             if result.returncode != 0:
+                detail = result.stderr.strip()
+                if result.stdout.strip():
+                    detail = (detail + "\nCodex events:\n" + result.stdout.strip()).strip()
                 raise SafetyError(
                     f"Codex execution failed; skill use is not guaranteed: "
-                    f"{result.stderr.strip() or result.returncode}"
+                    f"{detail or result.returncode}"
                 )
             try:
                 output = json.loads(output_path.read_text(encoding="utf-8"))

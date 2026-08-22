@@ -114,3 +114,12 @@ python -m unittest discover -s C:\Projects\skill-magnet\tests -v
 再設計後MVPの完了条件は、別保管庫の特定commit選択、task envelopeへの明示注入、送達証拠、challenge nonceを含む読込証拠、skill固有の適用証拠、期限とcleanup、失敗・中断後の残留ゼロを含むend-to-end自動テストがすべて成功し、実ユーザーCodexとWindows/macOS実機で確認されることです。現時点では未完成です。
 
 GitHub ActionsはWindowsとmacOSの両jobを必須の同一テストsuiteとして定義しています。片方だけの成功を完成扱いにしません。
+
+対象Codexそのものを通す明示的なruntime acceptanceは、書込み禁止sandboxの一時project・一時Git保管庫で実行します。これはモデル呼び出しを行うため、通常のunit test discoveryには暗黙に含めません。
+
+```powershell
+$env:PYTHONPATH = "C:\Projects\skill-magnet\src"
+python C:\Projects\skill-magnet\integration\real_codex_acceptance.py
+```
+
+2026-08-22にWindows上の実Codex CLI 0.148.0でこのruntime acceptanceを実行し、challenge nonce、commit、承認、instruction digestの読込識別とskill固有assertionが一致して `verified_applied` になりました。macOS実機と登録中の実packは未検証なので、製品全体はまだ完成扱いにしません。
