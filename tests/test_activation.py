@@ -277,6 +277,32 @@ class ActivationEndToEndTest(unittest.TestCase):
             "not_guaranteed",
         )
 
+    def test_applied_rules_must_identify_every_selected_skill(self) -> None:
+        script = self.root / "unidentified_rule_codex.py"
+        script.write_text(
+            "import json, pathlib, sys\n"
+            "a=sys.argv[1:]; p=sys.stdin.read(); line=next(x for x in p.splitlines() "
+            "if x.startswith('PROVENANCE=')); e=json.loads(line.split('=',1)[1]); "
+            "o=pathlib.Path(a[a.index('--output-last-message')+1]); "
+            "o.write_text(json.dumps({'evidence':{**e,'applied_rules':['generic rule']},"
+            "'result':{'decision':'bounded'}}),encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        engine = ActivationEngine(self.config, self.state)
+        contract = engine.confirm(self._plan(engine), confirmed=True)
+        with self.assertRaisesRegex(SafetyError, "does not identify selected skill"):
+            engine.execute(
+                contract.contract_id,
+                codex_executable=(sys.executable, str(script)),
+            )
+        self.assertTrue(
+            (
+                self.state
+                / "evidence"
+                / f"{contract.contract_id}-not-guaranteed.json"
+            ).is_file()
+        )
+
     def test_wrong_challenge_nonce_is_not_read_evidence(self) -> None:
         script = self.root / "wrong_nonce_codex.py"
         script.write_text(

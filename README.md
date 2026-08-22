@@ -4,7 +4,7 @@ Skill Magnetは、ユーザー自身のGitHub保管庫でスキルを保存・�
 
 ## 現在の状態
 
-GitHub中心の手動activation経路を実装中です。共通コア、期限付きlaunch contract、Codex task envelope、証拠検証、Explorer/Finderアダプターは実装済みですが、登録中の実スキル保管庫には必須の承認情報とskill固有 `acceptance.json` がまだありません。このため実packのactivationは意図どおりfail-closedになります。実ユーザーCodexでの適用検証とmacOS実機検証も未完了なので、製品完成とは扱いません。
+GitHub中心の手動activation経路を実装中です。共通コア、期限付きlaunch contract、Codex task envelope、証拠検証、Explorer/Finderアダプターは実装済みです。登録中の実スキル保管庫9件にもskill固有 `acceptance.json` を追加し、固定commitとユーザー承認を記録しました。Windows上の実Codexによる実pack E2Eは `verified_applied` で通過しています。macOS CIの完了までは製品完成と扱いません。
 
 旧MVPの `sync` は `~/.agents/skills` と `~/.claude/skills` への常設コピーを前提とし、現在の製品ポリシーに適合しません。CLIでも既定無効です。本番 `sync` は実施していません。
 
@@ -122,4 +122,4 @@ $env:PYTHONPATH = "C:\Projects\skill-magnet\src"
 python C:\Projects\skill-magnet\integration\real_codex_acceptance.py
 ```
 
-2026-08-22にWindows上の実Codex CLI 0.148.0でこのruntime acceptanceを実行し、challenge nonce、commit、承認、instruction digestの読込識別とskill固有assertionが一致して `verified_applied` になりました。macOS実機と登録中の実packは未検証なので、製品全体はまだ完成扱いにしません。
+2026-08-22にWindows上の実Codex CLI 0.148.0でこのruntime acceptanceを実行し、challenge nonce、commit、承認、instruction digestの読込識別とskill固有assertionが一致して `verified_applied` になりました。同日、登録中の実pack 9件（commit `c7747bba0bc391316aa558b3b4e8dd412045d2dc`）でも、全skill ID付きの適用規則と9件のskill固有assertionが一致して `verified_applied` になりました。macOS CIの通過までは製品全体を完成扱いにしません。

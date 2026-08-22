@@ -287,6 +287,9 @@ class ActivationEngine:
             f"PROVENANCE={json.dumps(provenance, ensure_ascii=False, sort_keys=True)}\n"
             f"PURPOSE={contract.purpose}\n"
             "Read every supplied skill instruction and apply it to the user purpose. "
+            "In evidence.applied_rules, include at least one concrete applied rule for "
+            "each selected skill and begin that rule with the exact skill ID followed "
+            "by a colon. "
             "Return only the JSON evidence envelope requested by the output schema.\n\n"
             f"{self._instructions(pack)}"
         )
@@ -396,6 +399,13 @@ class ActivationEngine:
         applied_rules = evidence.get("applied_rules")
         if not isinstance(applied_rules, list) or not applied_rules:
             raise SafetyError("Applied-rules evidence is required")
+        if any(not isinstance(item, str) for item in applied_rules):
+            raise SafetyError("Applied-rules evidence must contain only strings")
+        for skill in contract.skill_ids:
+            if not any(skill in item for item in applied_rules):
+                raise SafetyError(
+                    f"Applied-rules evidence does not identify selected skill: {skill}"
+                )
         for skill, check in checks.items():
             for assertion in check["assertions"]:
                 actual = self._value_at(output, assertion["path"])
