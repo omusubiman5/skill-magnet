@@ -4,7 +4,9 @@ Skill Magnetは、ユーザー自身のGitHub保管庫でスキルを保存・�
 
 ## 現在の状態
 
-MVPは配布方式を再設計中です。旧MVPの `sync` は `~/.agents/skills` と `~/.claude/skills` への常設コピーを前提としており、現在の製品ポリシーに適合しません。実ユーザー環境では `sync` と `rollback` を実行しないでください。これまで本番 `sync` は実施していません。
+GitHub中心の手動activation経路を実装中です。共通コア、期限付きlaunch contract、Codex task envelope、証拠検証、Explorer/Finderアダプターは実装済みですが、登録中の実スキル保管庫には必須の承認情報とskill固有 `acceptance.json` がまだありません。このため実packのactivationは意図どおりfail-closedになります。実ユーザーCodexでの適用検証とmacOS実機検証も未完了なので、製品完成とは扱いません。
+
+旧MVPの `sync` は `~/.agents/skills` と `~/.claude/skills` への常設コピーを前提とし、現在の製品ポリシーに適合しません。CLIでも既定無効です。本番 `sync` は実施していません。
 
 ## 製品ポリシー
 
@@ -49,6 +51,12 @@ MVPは配布方式を再設計中です。旧MVPの `sync` は `~/.agents/skills
 
 WindowsではExplorer、macOSではFinderで対象projectを右クリックし、Skill Magnetのメニューを開きます。OS固有の見た目や登録方式は異なっても、操作の意味は共通です。
 
+最初にPython 3.12以降の環境へSkill Magnetをinstallします。
+
+```powershell
+python -m pip install -e C:\Projects\skill-magnet
+```
+
 1. コンテキストメニューからSkill Magnetを開く。
 2. 利用するスキルパックを一つ明示選択する。
 3. 対象Codex、GitHub URL、commit SHA、利用目的、検証方法を確認する。
@@ -56,6 +64,26 @@ WindowsではExplorer、macOSではFinderで対象projectを右クリックし�
 5. 共通CLIへ期限付きのlaunch contractを渡す。
 
 メニュー表示だけではスキルを取得・配置・有効化しません。確認画面を完了するまで、共通コアは実行を拒否します。Explorer/Finderは薄いOSアダプターとし、保管庫検証、選択、証拠、fail-closed判定は共通コアに置きます。
+
+OSメニューを明示的に登録・解除するCLIは次の通りです。登録だけではpackを有効化しません。
+
+```powershell
+python -m skill_magnet --config C:\Projects\skill-magnet\skill-magnet.json install-context-menu --platform windows --confirm
+python -m skill_magnet --config C:\Projects\skill-magnet\skill-magnet.json uninstall-context-menu --platform windows --confirm
+```
+
+```bash
+python -m skill_magnet --config /path/to/skill-magnet.json install-context-menu --platform macos --confirm
+python -m skill_magnet --config /path/to/skill-magnet.json uninstall-context-menu --platform macos --confirm
+```
+
+実packを変更せず事前検証するには `activation-plan` を使います。
+
+```powershell
+python -m skill_magnet --config C:\Projects\skill-magnet\skill-magnet.json activation-plan --platform windows --project C:\Projects\target --pack codex-pmo-skills --purpose "このタスクの目的"
+```
+
+保管庫契約は [`docs/skill-repository-contract.md`](docs/skill-repository-contract.md) を参照してください。
 
 ## ランタイム方式の現状
 
@@ -74,6 +102,7 @@ Codexは選択pack/versionと検証済みinstructionを正式なタスク入力�
 
 現段階のテストは二種類あります。
 
+- activation E2E: 独立Git保管庫、両OSの起動契約、task envelope、challenge nonce、読込識別、skill固有acceptance、fail-closedを実subprocess境界で検証します。
 - 製品ポリシーテスト: 規範的定義が必須制約を保持し、READMEと設計文書の表示が一致することを検証します。
 - 旧MVPテスト: 旧常設syncエンジンの安全性を回帰確認します。成功しても、再設計後MVPの完成を意味しません。
 
@@ -82,4 +111,6 @@ $env:PYTHONPATH = "C:\Projects\skill-magnet\src"
 python -m unittest discover -s C:\Projects\skill-magnet\tests -v
 ```
 
-再設計後MVPの完了条件は、別保管庫の特定commit選択、task envelopeへの明示注入、送達証拠、読込証拠、skill固有の適用証拠、期限とcleanup、失敗・中断後の残留ゼロを含むend-to-end自動テストがすべて成功することです。現時点では未完成です。
+再設計後MVPの完了条件は、別保管庫の特定commit選択、task envelopeへの明示注入、送達証拠、challenge nonceを含む読込証拠、skill固有の適用証拠、期限とcleanup、失敗・中断後の残留ゼロを含むend-to-end自動テストがすべて成功し、実ユーザーCodexとWindows/macOS実機で確認されることです。現時点では未完成です。
+
+GitHub ActionsはWindowsとmacOSの両jobを必須の同一テストsuiteとして定義しています。片方だけの成功を完成扱いにしません。

@@ -103,8 +103,11 @@ class ProductPolicyTest(unittest.TestCase):
                 "pack_id",
                 "repository_url",
                 "commit_sha",
+                "approved_by",
+                "approved_at",
                 "skill_ids",
                 "instruction_digest",
+                "challenge_nonce",
             },
         )
 
@@ -141,6 +144,12 @@ class ProductPolicyTest(unittest.TestCase):
         completion = self.policy["completion"]
         self.assertTrue(completion["requires_all_supported_platform_adapters"])
         self.assertFalse(completion["single_platform_is_complete"])
+        workflow = (ROOT / ".github" / "workflows" / "test.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("windows-latest", workflow)
+        self.assertIn("macos-latest", workflow)
+        self.assertIn("fail-fast: false", workflow)
 
     def test_documented_policy_is_generated_from_canonical_principles(self) -> None:
         for path in DOC_PATHS:

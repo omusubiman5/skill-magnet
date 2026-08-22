@@ -147,6 +147,9 @@ class Pack:
     expected_commit: str
     source: Path
     skills: tuple[str, ...]
+    approved_by: str = ""
+    approved_at: str = ""
+    purpose: str = ""
 
 
 @dataclass(frozen=True)
@@ -179,9 +182,13 @@ class Config:
         if not isinstance(owners, list) or not owners:
             raise SkillMagnetError("allowed_github_owners must be a non-empty list")
         self.allowed_owners = {str(owner).lower() for owner in owners}
-        targets = data.get("targets")
-        if not isinstance(targets, dict) or set(targets) != {"codex", "claude"}:
-            raise SkillMagnetError("targets must define exactly codex and claude")
+        targets = data.get("targets", {})
+        if not isinstance(targets, dict) or (
+            targets and set(targets) != {"codex", "claude"}
+        ):
+            raise SkillMagnetError(
+                "targets may be omitted; legacy mode must define exactly codex and claude"
+            )
         self.targets = {
             name: _expand_path(str(value), self.base) for name, value in targets.items()
         }
@@ -208,6 +215,9 @@ class Config:
                 expected_commit=str(raw.get("expected_commit", "")).lower(),
                 source=_expand_path(str(raw.get("source", "")), self.base),
                 skills=skills,
+                approved_by=str(raw.get("approved_by", "")).strip(),
+                approved_at=str(raw.get("approved_at", "")).strip(),
+                purpose=str(raw.get("purpose", "")).strip(),
             )
             if not COMMIT_SHA.fullmatch(self.packs[pack_id].expected_commit):
                 raise SkillMagnetError(f"Pack {pack_id} requires a full expected_commit SHA")

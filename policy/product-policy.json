@@ -95,8 +95,11 @@
       "pack_id",
       "repository_url",
       "commit_sha",
+      "approved_by",
+      "approved_at",
       "skill_ids",
-      "instruction_digest"
+      "instruction_digest",
+      "challenge_nonce"
     ],
     "temporary_native_skill_placement_default": false,
     "session_only_native_skill_addition_officially_confirmed": false

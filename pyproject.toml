@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "skill-magnet"
-version = "0.1.0"
-description = "Safely distribute Git-managed skill packs to Codex and Claude Code."
+version = "0.2.0"
+description = "Manually launch verified GitHub skill-pack tasks with fail-closed evidence."
 requires-python = ">=3.12"
 dependencies = []
 

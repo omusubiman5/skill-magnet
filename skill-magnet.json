@@ -4,16 +4,13 @@
     "omusubiman5"
   ],
   "state_dir": "~/.skill-magnet",
-  "targets": {
-    "codex": "~/.agents/skills",
-    "claude": "~/.claude/skills"
-  },
   "packs": [
     {
       "id": "codex-pmo-skills",
       "repo_url": "https://github.com/omusubiman5/codex-pmo-skills.git",
       "expected_commit": "ad89222e65a570cbe498eb60550b035ebe90bf61",
       "source": "C:/Projects/codex-pmo-skills-public",
+      "purpose": "Apply reviewed Codex execution, authorization, sandbox, MCP, CI, and context-routing controls.",
       "skills": [
         "codex-auth-boundary-selection",
         "codex-bounded-subagents",
