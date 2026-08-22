@@ -49,7 +49,7 @@ GitHub中心の手動activation経路を実装済みです。共通コア、期�
 
 ## MVPの起動UI
 
-WindowsではExplorer、macOSではFinderで対象projectを右クリックし、Skill Magnetのメニューを開きます。OS固有の見た目や登録方式は異なっても、操作の意味は共通です。
+WindowsではExplorer、macOSではFinderで対象projectを右クリックし、Skill Magnetのメニューを開きます。OS固有の見た目や登録方式は異なっても、操作の意味は共通です。Windows MVPはpack単位の静的カスケードとして `Skill Magnet → Pack: <id> (<N> skills) → Codex / Claude` を表示します。これは個別skill選択ではなく、表示されたpack内の全skillを一項目として選ぶ操作です。
 
 最初にPython 3.12以降の環境へSkill Magnetをinstallします。
 
@@ -58,10 +58,11 @@ python -m pip install -e C:\Projects\skill-magnet
 ```
 
 1. コンテキストメニューからSkill Magnetを開く。
-2. 利用するスキルパックを一つ明示選択する。
-3. 対象Codex、GitHub URL、commit SHA、利用目的、検証方法を確認する。
-4. ユーザーが起動を確定する。
-5. 共通CLIへ期限付きのlaunch contractを渡す。
+2. `Pack: <id> (<N> skills)` を一つ明示選択する。
+3. 対象AIとしてCodexまたはClaudeを明示選択する。メニューで選んだ対象AIは確認画面で変更できない。
+4. pack ID、全skill ID、対象AI、GitHub URL、commit SHA、承認、利用目的、検証方法を確認する。
+5. ユーザーが起動を確定する。
+6. 共通CLIへ期限付きのlaunch contractを渡す。
 
 メニュー表示だけではスキルを取得・配置・有効化しません。確認画面を完了するまで、共通コアは実行を拒否します。Explorer/Finderは薄いOSアダプターとし、保管庫検証、選択、証拠、fail-closed判定は共通コアに置きます。
 
@@ -71,6 +72,10 @@ OSメニューを明示的に登録・解除するCLIは次の通りです。登
 python -m skill_magnet --config C:\Projects\skill-magnet\skill-magnet.json install-context-menu --platform windows --confirm
 python -m skill_magnet --config C:\Projects\skill-magnet\skill-magnet.json uninstall-context-menu --platform windows --confirm
 ```
+
+packの追加・削除・版・含有skillを変更した後は、同じ `install-context-menu` を再実行して静的メニューを更新する必要があります。古いメニューからの起動はcommitとskill集合のdigest不一致でfail-closedになります。Cancelまたはウィンドウcloseではcontract、evidence、stateを作成しません。Claudeはverified runtime adapterが未実装のため、メニューには明示しますが起動は副作用なしでfail-closedです。
+
+このHKCU静的カスケードはWindows 11の「その他のオプションを確認（Show more options）」側に表示されます。Windows 11の現代メニューへ直接統合するには、Microsoft仕様のネイティブ `IExplorerCommand` DLLとapp identity（MSIXまたはsparse package）が必要であり、MVPには含みません。
 
 ```bash
 python -m skill_magnet --config /path/to/skill-magnet.json install-context-menu --platform macos --confirm

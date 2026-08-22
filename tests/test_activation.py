@@ -22,7 +22,9 @@ from skill_magnet.platforms import (
     install_context_menu,
     render_registration,
     uninstall_context_menu,
+    windows_menu_leaves,
 )
+from skill_magnet.ui import confirm_context_selection, context_selection_details
 
 
 def git(repo: Path, *args: str) -> str:
@@ -338,8 +340,108 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertFalse(macos["automatic_activation"])
         self.assertIn("windows_explorer", windows["integration"])
         self.assertIn("macos_finder", macos["integration"])
-        self.assertIn("HKEY_CURRENT_USER", render_registration("windows", self.config_path))
+        registration = render_registration("windows", self.config_path)
+        self.assertIn("HKEY_CURRENT_USER", registration)
+        self.assertIn("Pack: bounded-pack (1 skills)", registration)
+        self.assertIn('"MUIVerb"="Codex"', registration)
+        self.assertIn('"MUIVerb"="Claude"', registration)
         self.assertIn("Finder Quick Action", render_registration("macos", self.config_path))
+
+    def test_windows_pack_only_leaves_fix_pack_runtime_version_and_membership(self) -> None:
+        leaves = windows_menu_leaves(self.config_path, "%V")
+        self.assertEqual(len(leaves), 4)
+        self.assertEqual(
+            {(leaf.pack_id, leaf.runtime) for leaf in leaves},
+            {
+                ("bounded-pack", "codex"),
+                ("bounded-pack", "claude"),
+                ("unused-pack", "codex"),
+                ("unused-pack", "claude"),
+            },
+        )
+        for leaf in leaves:
+            self.assertIn("--pack", leaf.command)
+            self.assertIn("--runtime", leaf.command)
+            self.assertIn("--menu-commit", leaf.command)
+            self.assertIn("--menu-skill-digest", leaf.command)
+            self.assertEqual(leaf.pack_label.count("skills)"), 1)
+
+    def test_context_cancel_and_unsupported_claude_create_no_state(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        details = context_selection_details(
+            engine,
+            project=self.project,
+            pack_id="bounded-pack",
+            runtime="codex",
+        )
+        self.assertEqual(details["selection_kind"], "pack")
+        self.assertEqual(details["skill_count"], 1)
+        self.assertEqual(details["skill_ids"], ("bounded-answer",))
+        self.assertIsNone(
+            confirm_context_selection(
+                engine,
+                platform="windows",
+                details=details,
+                purpose="cancelled",
+                confirmed=False,
+            )
+        )
+        self.assertFalse(self.state.exists())
+        claude = context_selection_details(
+            engine,
+            project=self.project,
+            pack_id="bounded-pack",
+            runtime="claude",
+        )
+        with self.assertRaises(Exception):
+            confirm_context_selection(
+                engine,
+                platform="windows",
+                details=claude,
+                purpose="must fail closed",
+                confirmed=True,
+            )
+        self.assertFalse(self.state.exists())
+
+    def test_context_contract_preserves_pack_all_skills_and_codex_runtime(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        leaf = next(
+            item
+            for item in windows_menu_leaves(self.config_path, "%V")
+            if item.pack_id == "bounded-pack" and item.runtime == "codex"
+        )
+        details = context_selection_details(
+            engine,
+            project=self.project,
+            pack_id=leaf.pack_id,
+            runtime=leaf.runtime,
+            menu_commit=self.commit,
+            menu_skill_digest=leaf.skill_ids_digest,
+        )
+        contract = confirm_context_selection(
+            engine,
+            platform="windows",
+            details=details,
+            purpose="verify immutable selection",
+            confirmed=True,
+        )
+        self.assertIsNotNone(contract)
+        self.assertEqual(contract.pack_id, "bounded-pack")
+        self.assertEqual(contract.runtime, "codex")
+        self.assertEqual(contract.skill_ids, ("bounded-answer",))
+
+    def test_context_rejects_stale_installed_menu_without_state(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        with self.assertRaises(Exception):
+            context_selection_details(
+                engine,
+                project=self.project,
+                pack_id="bounded-pack",
+                runtime="codex",
+                menu_commit="0" * 40,
+                menu_skill_digest="0" * 64,
+            )
+        self.assertFalse(self.state.exists())
 
     def test_windows_installer_registers_both_folder_contexts_without_activation(self) -> None:
         calls: list[list[str]] = []
@@ -353,9 +455,44 @@ class ActivationEndToEndTest(unittest.TestCase):
                 "windows", self.config_path, run=fake_run
             )
         self.assertTrue(result["installed"])
-        self.assertEqual(len(calls), 4)
-        self.assertTrue(all(call[:2] == ["reg", "add"] for call in calls))
+        roots = {
+            r"HKCU\Software\Classes\Directory\shell\SkillMagnet",
+            r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnet",
+        }
+        stale_deletes = [call for call in calls if call[:2] == ["reg", "delete"]]
+        self.assertEqual({call[2] for call in stale_deletes}, roots)
+        adds = [call for call in calls if call[:2] == ["reg", "add"]]
+        self.assertTrue(adds)
+        self.assertTrue(all(any(call[2].startswith(root) for root in roots) for call in adds))
+        commands = [call[call.index("/d") + 1] for call in adds if "\\command" in call[2]]
+        self.assertEqual(len(commands), 8)
+        self.assertTrue(all("--pack" in command for command in commands))
+        self.assertTrue(all("--runtime" in command for command in commands))
+        self.assertTrue(result["reinstall_required_after_pack_change"])
         self.assertFalse(self.state.exists())
+
+    def test_windows_commands_quote_special_config_path_and_placeholders(self) -> None:
+        special = self.root / "config & (日本語) ' quoted.json"
+        special.write_bytes(self.config_path.read_bytes())
+        leaves = windows_menu_leaves(special, "%1")
+        for leaf in leaves:
+            command = __import__("subprocess").list2cmdline(list(leaf.command))
+            self.assertIn(f'"{special}"', command)
+            self.assertIn("%1", command)
+            self.assertIn("--menu-skill-digest", command)
+
+    def test_windows_menu_command_bootstraps_outside_project_directory(self) -> None:
+        leaf = windows_menu_leaves(self.config_path, "%V")[0]
+        context_index = leaf.command.index("context")
+        with tempfile.TemporaryDirectory() as unrelated:
+            result = subprocess.run(
+                (*leaf.command[:context_index], "--help"),
+                cwd=unrelated,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Skill Magnet", result.stdout)
 
     def test_windows_installer_failure_rolls_back_context_entries(self) -> None:
         calls: list[list[str]] = []
@@ -376,7 +513,43 @@ class ActivationEndToEndTest(unittest.TestCase):
                     "windows", self.config_path, run=failing_run
                 )
         deleted = [call for call in calls if call[:2] == ["reg", "delete"]]
-        self.assertEqual(len(deleted), 2)
+        self.assertGreaterEqual(len(deleted), 2)
+        self.assertEqual(
+            {call[2] for call in deleted[-2:]},
+            {
+                r"HKCU\Software\Classes\Directory\shell\SkillMagnet",
+                r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnet",
+            },
+        )
+        self.assertFalse(self.state.exists())
+
+    def test_windows_uninstall_removes_only_owned_subtrees(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+            calls.append(args)
+            return SimpleNamespace(returncode=0, stderr="")
+
+        with mock.patch("skill_magnet.platforms.os.name", "nt"):
+            result = uninstall_context_menu("windows", run=fake_run)
+        self.assertTrue(result["removed"])
+        self.assertEqual(
+            calls,
+            [
+                [
+                    "reg",
+                    "delete",
+                    r"HKCU\Software\Classes\Directory\shell\SkillMagnet",
+                    "/f",
+                ],
+                [
+                    "reg",
+                    "delete",
+                    r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnet",
+                    "/f",
+                ],
+            ],
+        )
         self.assertFalse(self.state.exists())
 
     def test_macos_installer_creates_and_removes_finder_quick_action(self) -> None:

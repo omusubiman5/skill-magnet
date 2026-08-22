@@ -131,6 +131,7 @@ class ProductPolicyTest(unittest.TestCase):
                 "open_context_menu",
                 "choose_skill_magnet",
                 "explicitly_select_pack",
+                "explicitly_select_runtime",
                 "confirm_target_version_and_purpose",
                 "launch",
             ],

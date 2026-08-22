@@ -65,6 +65,10 @@ def _parser() -> argparse.ArgumentParser:
     context = commands.add_parser("context")
     context.add_argument("--platform", required=True, choices=("windows", "macos"))
     context.add_argument("--project", required=True, type=Path)
+    context.add_argument("--pack")
+    context.add_argument("--runtime", choices=("codex", "claude"))
+    context.add_argument("--menu-commit")
+    context.add_argument("--menu-skill-digest")
     spec = commands.add_parser("context-menu-spec")
     spec.add_argument("--platform", required=True, choices=("windows", "macos"))
     render = commands.add_parser("render-context-menu")
@@ -133,7 +137,13 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "context":
             activation = ActivationEngine(config, args.state_dir)
             contract = show_context_selection(
-                activation, platform=args.platform, project=args.project
+                activation,
+                platform=args.platform,
+                project=args.project,
+                pack_id=args.pack,
+                runtime=args.runtime,
+                menu_commit=args.menu_commit,
+                menu_skill_digest=args.menu_skill_digest,
             )
             if contract is None:
                 result = {"status": "cancelled"}

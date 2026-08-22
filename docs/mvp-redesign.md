@@ -31,8 +31,8 @@
 ## 最小アーキテクチャ
 
 1. Registry/Resolver: ユーザー所有GitHub保管庫、pack ID、目的、完全なcommit SHA、承認、skill固有acceptance checkを検証する。
-2. Selection UI: OSコンテキストメニューからアプリを開き、packを一つ明示選択させる。
-3. Confirmation UI: 対象project/Codex、repository、commit、目的、検証方法を表示し、起動の明示確認を取る。
+2. Selection UI: WindowsではOSコンテキストメニューの `Skill Magnet → Pack: <id> (<N> skills) → Codex / Claude` からpack全体と対象AIを明示選択させる。個別skill選択とは表現しない。
+3. Confirmation UI: 選択種別pack、全skill ID、対象project、変更不能なTarget AI、repository、commit、承認、目的、検証方法を表示し、起動の明示確認を取る。
 4. Launch contract: UIから共通CLIへ、選択内容、期限、nonce、確認時刻を機械可読形式で渡す。
 5. Task envelope: pack ID、repository URL、commit SHA、skill ID、instruction digest、利用目的をCodexのタスク入力へ含める。
 6. Runtime adapter: ローカル探索や暗黙選択に依存せず、選択packだけを正式なタスク入力へ送る。
@@ -48,7 +48,7 @@ GitHubのclone/cacheは正本ではなく、commitから再生成できる検証
 | 層 | Windows | macOS | 共通条件 |
 | --- | --- | --- | --- |
 | 入口 | Explorerコンテキストメニュー | Finderコンテキストメニュー/Quick Action | ユーザーの右クリック操作が必要 |
-| 選択 | Skill Magnet画面 | Skill Magnet画面 | pack一つを明示選択 |
+| 選択 | Explorerのpack/runtime cascade | Skill Magnet画面 | pack一つと対象AIを明示選択 |
 | 確認 | 共通表示契約 | 共通表示契約 | 対象・版・目的・検証方法を確認 |
 | 起動 | OSアダプターからCLI | OSアダプターからCLI | 有効なlaunch contractなしでは拒否 |
 

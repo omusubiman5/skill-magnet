@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import plistlib
 import shutil
@@ -10,7 +11,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from .core import SkillMagnetError
+from .core import Config, SkillMagnetError
 
 
 @dataclass(frozen=True)
@@ -33,14 +34,47 @@ class ContextMenuSpec:
                 "open_context_menu",
                 "choose_skill_magnet",
                 "explicitly_select_pack",
+                "explicitly_select_runtime",
                 "confirm_target_version_and_purpose",
                 "launch",
             ],
         }
 
 
+@dataclass(frozen=True)
+class WindowsMenuLeaf:
+    pack_id: str
+    skill_ids: tuple[str, ...]
+    runtime: str
+    command: tuple[str, ...]
+
+    @property
+    def pack_label(self) -> str:
+        return f"Pack: {self.pack_id} ({len(self.skill_ids)} skills)"
+
+    @property
+    def runtime_label(self) -> str:
+        return self.runtime.title()
+
+    @property
+    def skill_ids_digest(self) -> str:
+        payload = json.dumps(self.skill_ids, ensure_ascii=False, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _cli_prefix(config: Path) -> tuple[str, ...]:
+    """Return a command that works from Explorer's unrelated working directory."""
+    source_root = Path(__file__).resolve().parents[1]
+    bootstrap = (
+        "import runpy,sys;"
+        f"sys.path.insert(0,{str(source_root)!r});"
+        "runpy.run_module('skill_magnet',run_name='__main__')"
+    )
+    return (sys.executable, "-c", bootstrap, "--config", str(config.resolve()))
+
+
 def context_menu_spec(platform: str, config: Path) -> ContextMenuSpec:
-    prefix = (sys.executable, "-m", "skill_magnet", "--config", str(config.resolve()))
+    prefix = _cli_prefix(config)
     if platform == "windows":
         placeholder = "%V"
         return ContextMenuSpec(
@@ -62,30 +96,97 @@ def context_menu_spec(platform: str, config: Path) -> ContextMenuSpec:
     raise SkillMagnetError(f"Unsupported platform: {platform}")
 
 
+def windows_menu_leaves(config: Path, placeholder: str) -> tuple[WindowsMenuLeaf, ...]:
+    """Build the static pack-only Explorer tree without activating anything."""
+    loaded = Config.load(config)
+    prefix = _cli_prefix(config)
+    return tuple(
+        WindowsMenuLeaf(
+            pack_id=pack.pack_id,
+            skill_ids=pack.skills,
+            runtime=runtime,
+            command=(
+                *prefix,
+                "context",
+                "--platform",
+                "windows",
+                "--project",
+                placeholder,
+                "--pack",
+                pack.pack_id,
+                "--runtime",
+                runtime,
+                "--menu-commit",
+                pack.expected_commit,
+                "--menu-skill-digest",
+                hashlib.sha256(
+                    json.dumps(
+                        pack.skills, ensure_ascii=False, separators=(",", ":")
+                    ).encode("utf-8")
+                ).hexdigest(),
+            ),
+        )
+        for pack in loaded.packs.values()
+        for runtime in ("codex", "claude")
+    )
+
+
+def windows_command(parts: tuple[str, ...]) -> str:
+    """Quote an argv vector with the Windows command-line parsing contract."""
+    return subprocess.list2cmdline(list(parts))
+
+
+def _windows_menu_roots(prefix: str = "HKCU") -> tuple[tuple[str, str], ...]:
+    return (
+        (prefix + r"\Software\Classes\Directory\shell\SkillMagnet", "%1"),
+        (prefix + r"\Software\Classes\Directory\Background\shell\SkillMagnet", "%V"),
+    )
+
+
+def _windows_registry_entries(config: Path, root: str, placeholder: str) -> list[tuple[str, str, str]]:
+    """Return (key, value-name, value) entries owned by one Skill Magnet subtree."""
+    entries: list[tuple[str, str, str]] = [
+        (root, "", ""),
+        (root, "MUIVerb", "Skill Magnet"),
+        (root, "SubCommands", ""),
+    ]
+    leaves = windows_menu_leaves(config, placeholder)
+    pack_order: list[str] = []
+    for leaf in leaves:
+        if leaf.pack_id not in pack_order:
+            pack_order.append(leaf.pack_id)
+    for pack_index, pack_id in enumerate(pack_order):
+        pack_leaves = [leaf for leaf in leaves if leaf.pack_id == pack_id]
+        pack_root = root + rf"\shell\pack-{pack_index:03d}"
+        entries.extend(
+            [
+                (pack_root, "", ""),
+                (pack_root, "MUIVerb", pack_leaves[0].pack_label),
+                (pack_root, "SubCommands", ""),
+            ]
+        )
+        for runtime_index, leaf in enumerate(pack_leaves):
+            runtime_root = (
+                pack_root + rf"\shell\runtime-{runtime_index:03d}"
+            )
+            entries.extend(
+                [
+                    (runtime_root, "MUIVerb", leaf.runtime_label),
+                    (runtime_root + r"\command", "", windows_command(leaf.command)),
+                ]
+            )
+    return entries
+
+
 def render_registration(platform: str, config: Path) -> str:
     spec = context_menu_spec(platform, config)
     if platform == "windows":
-        background_command = subprocess_command(spec.command)
-        directory_command = background_command.replace("%V", "%1")
         sections: list[str] = ["Windows Registry Editor Version 5.00\n"]
-        for key, command in (
-            (
-                "HKEY_CURRENT_USER\\Software\\Classes\\Directory\\shell\\SkillMagnet",
-                directory_command,
-            ),
-            (
-                "HKEY_CURRENT_USER\\Software\\Classes\\Directory\\Background\\shell\\SkillMagnet",
-                background_command,
-            ),
-        ):
-            sections.extend(
-                [
-                    f"[{key}]\n",
-                    '"MUIVerb"="Skill Magnet..."\n\n',
-                    f"[{key}\\command]\n",
-                    f'@="{command.replace(chr(34), chr(92) + chr(34))}"\n',
-                ]
-            )
+        for root, placeholder in _windows_menu_roots("HKEY_CURRENT_USER"):
+            for key, name, value in _windows_registry_entries(config, root, placeholder):
+                escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+                rendered_name = "@" if not name else f'"{name}"'
+                sections.extend([f"[{key}]\n", f'{rendered_name}="{escaped}"\n\n'])
         return "\n".join(sections)
     payload = json.dumps(spec.as_dict(), ensure_ascii=False, sort_keys=True)
     return (
@@ -117,17 +218,18 @@ def install_context_menu(
     if platform == "windows":
         if os.name != "nt":
             raise SkillMagnetError("Windows context menu can only be installed on Windows")
-        base_command = subprocess_command(spec.command)
-        roots = (
-            (r"HKCU\Software\Classes\Directory\shell\SkillMagnet", base_command.replace("%V", "%1")),
-            (r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnet", base_command),
-        )
+        roots = _windows_menu_roots()
         try:
-            for root, command in roots:
-                for args in (
-                    ["reg", "add", root, "/ve", "/d", "Skill Magnet...", "/f"],
-                    ["reg", "add", root + r"\command", "/ve", "/d", command, "/f"],
-                ):
+            for root, placeholder in roots:
+                stale = run(["reg", "delete", root, "/f"], capture_output=True, text=True)
+                if stale.returncode not in (0, 1):
+                    raise SkillMagnetError(
+                        f"Cannot remove stale Windows context menu: {stale.stderr.strip()}"
+                    )
+                for key, name, value in _windows_registry_entries(config, root, placeholder):
+                    args = ["reg", "add", key]
+                    args.extend(["/v", name] if name else ["/ve"])
+                    args.extend(["/d", value, "/f"])
                     result = run(args, capture_output=True, text=True)
                     if result.returncode != 0:
                         raise SkillMagnetError(
@@ -141,6 +243,11 @@ def install_context_menu(
             "installed": True,
             "platform": platform,
             "locations": [root for root, _ in roots],
+            "packs": [
+                leaf.pack_label
+                for leaf in windows_menu_leaves(config, "%V")[::2]
+            ],
+            "reinstall_required_after_pack_change": True,
         }
 
     if sys.platform != "darwin" and services_dir is None:
