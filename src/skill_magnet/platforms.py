@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import base64
 import os
 import plistlib
 import shutil
@@ -11,7 +12,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from .core import Config, SkillMagnetError
+from .core import Config, Pack, SkillMagnetError
 
 
 @dataclass(frozen=True)
@@ -45,12 +46,19 @@ class ContextMenuSpec:
 class WindowsMenuLeaf:
     pack_id: str
     skill_ids: tuple[str, ...]
+    skill_id: str
+    instruction_digest: str
+    acceptance_digest: str
     runtime: str
     command: tuple[str, ...]
 
     @property
     def pack_label(self) -> str:
-        return f"Pack: {self.pack_id} ({len(self.skill_ids)} skills)"
+        return f"Pack: {self.pack_id}"
+
+    @property
+    def skill_label(self) -> str:
+        return f"Skill: {self.skill_id}"
 
     @property
     def runtime_label(self) -> str:
@@ -70,7 +78,12 @@ def _cli_prefix(config: Path) -> tuple[str, ...]:
         f"sys.path.insert(0,{str(source_root)!r});"
         "runpy.run_module('skill_magnet',run_name='__main__')"
     )
-    return (sys.executable, "-c", bootstrap, "--config", str(config.resolve()))
+    executable = Path(sys.executable)
+    if sys.platform == "win32":
+        windowless = executable.with_name("pythonw.exe")
+        if windowless.is_file():
+            executable = windowless
+    return (str(executable), "-c", bootstrap, "--config", str(config.resolve()))
 
 
 def context_menu_spec(platform: str, config: Path) -> ContextMenuSpec:
@@ -96,44 +109,462 @@ def context_menu_spec(platform: str, config: Path) -> ContextMenuSpec:
     raise SkillMagnetError(f"Unsupported platform: {platform}")
 
 
-def windows_menu_leaves(config: Path, placeholder: str) -> tuple[WindowsMenuLeaf, ...]:
-    """Build the static pack-only Explorer tree without activating anything."""
+def windows_leaf_command_argv(
+    config: Path,
+    project: str,
+    pack_id: str,
+    skill_id: str,
+    runtime: str,
+) -> tuple[str, ...]:
+    """Build one Explorer leaf argv without invoking or composing a shell."""
     loaded = Config.load(config)
-    prefix = _cli_prefix(config)
-    return tuple(
-        WindowsMenuLeaf(
-            pack_id=pack.pack_id,
-            skill_ids=pack.skills,
-            runtime=runtime,
-            command=(
-                *prefix,
-                "context",
-                "--platform",
-                "windows",
-                "--project",
-                placeholder,
-                "--pack",
-                pack.pack_id,
-                "--runtime",
-                runtime,
-                "--menu-commit",
-                pack.expected_commit,
-                "--menu-skill-digest",
-                hashlib.sha256(
-                    json.dumps(
-                        pack.skills, ensure_ascii=False, separators=(",", ":")
-                    ).encode("utf-8")
-                ).hexdigest(),
-            ),
-        )
-        for pack in loaded.packs.values()
-        for runtime in ("codex", "claude")
+    if pack_id not in loaded.packs:
+        raise SkillMagnetError(f"Unknown pack: {pack_id}")
+    pack = loaded.packs[pack_id]
+    if skill_id not in pack.skills:
+        raise SkillMagnetError(f"Unknown skill for pack {pack_id}: {skill_id}")
+    if runtime not in ("codex", "claude"):
+        raise SkillMagnetError(f"Unsupported runtime: {runtime}")
+    instruction_digest = _fixed_blob_digest(pack, skill_id, "SKILL.md")
+    acceptance_digest = _fixed_blob_digest(pack, skill_id, "acceptance.json")
+    return _windows_leaf_argv(
+        config,
+        project,
+        pack,
+        skill_id,
+        runtime,
+        instruction_digest,
+        acceptance_digest,
     )
+
+
+def _windows_leaf_argv(
+    config: Path,
+    project: str,
+    pack: Pack,
+    skill_id: str,
+    runtime: str,
+    instruction_digest: str,
+    acceptance_digest: str,
+) -> tuple[str, ...]:
+    skill_ids_digest = hashlib.sha256(
+        json.dumps(pack.skills, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+    return (
+        *_cli_prefix(config),
+        "context",
+        "--platform",
+        "windows",
+        "--project",
+        project,
+        "--pack",
+        pack.pack_id,
+        "--skill",
+        skill_id,
+        "--runtime",
+        runtime,
+        "--menu-instruction-digest",
+        instruction_digest,
+        "--menu-acceptance-digest",
+        acceptance_digest,
+        "--menu-commit",
+        pack.expected_commit,
+        "--menu-skill-digest",
+        skill_ids_digest,
+    )
+
+
+def _fixed_blob_digest(pack: Pack, skill_id: str, filename: str) -> str:
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(pack.source),
+            "show",
+            f"{pack.expected_commit}:{skill_id}/{filename}",
+        ],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise SkillMagnetError(
+            f"Cannot read approved skill artifact: {skill_id}/{filename}"
+        )
+    return hashlib.sha256(result.stdout).hexdigest()
+
+
+def windows_menu_leaves(config: Path, placeholder: str) -> tuple[WindowsMenuLeaf, ...]:
+    """Build the static Pack/Skill/runtime Explorer leaves without activation."""
+    loaded = Config.load(config)
+    leaves: list[WindowsMenuLeaf] = []
+    for pack in loaded.packs.values():
+        for skill_id in pack.skills:
+            instruction_digest = _fixed_blob_digest(pack, skill_id, "SKILL.md")
+            acceptance_digest = _fixed_blob_digest(pack, skill_id, "acceptance.json")
+            for runtime in ("codex", "claude"):
+                leaves.append(
+                    WindowsMenuLeaf(
+                        pack_id=pack.pack_id,
+                        skill_ids=pack.skills,
+                        skill_id=skill_id,
+                        instruction_digest=instruction_digest,
+                        acceptance_digest=acceptance_digest,
+                        runtime=runtime,
+                        command=_windows_leaf_argv(
+                            config,
+                            placeholder,
+                            pack,
+                            skill_id,
+                            runtime,
+                            instruction_digest,
+                            acceptance_digest,
+                        ),
+                    )
+                )
+    return tuple(leaves)
 
 
 def windows_command(parts: tuple[str, ...]) -> str:
     """Quote an argv vector with the Windows command-line parsing contract."""
-    return subprocess.list2cmdline(list(parts))
+    return " ".join(
+        f'"{part}"'
+        if part in ("%1", "%V")
+        else subprocess.list2cmdline([part])
+        for part in parts
+    )
+
+
+WINDOWS_MODERN_PROJECT_MARKER = "__SKILL_MAGNET_PROJECT__"
+
+
+def render_windows_modern_menu_manifest(config: Path) -> str:
+    """Render the immutable, low-cost menu data consumed by IExplorerCommand."""
+    loaded = Config.load(config)
+    lines = ["skill-magnet-menu-v2"]
+    for leaf in windows_menu_leaves(config, WINDOWS_MODERN_PROJECT_MARKER):
+        pack = loaded.packs[leaf.pack_id]
+        fields = (
+            leaf.pack_id,
+            pack.menu_label,
+            pack.selection_kind,
+            leaf.skill_id,
+            leaf.runtime_label,
+            windows_command(leaf.command),
+        )
+        if any("\t" in field or "\r" in field or "\n" in field for field in fields):
+            raise SkillMagnetError("Windows modern menu fields cannot contain tabs or newlines")
+        lines.append("\t".join(fields))
+    return "\n".join(lines) + "\n"
+
+
+_WINDOWS_MODERN_PACKAGE_NAME = "SkillMagnet.ContextMenu"
+_TRANSPARENT_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+
+
+def _windows_modern_paths(install_root: Path | None = None) -> tuple[Path, Path, Path]:
+    source_root = Path(__file__).resolve().parents[2]
+    native_root = source_root / "native" / "windows-modern-context-menu"
+    if install_root is None:
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if not local_app_data:
+            raise SkillMagnetError("LOCALAPPDATA is required for modern context-menu installation")
+        install_root = Path(local_app_data) / "SkillMagnet" / "ContextMenu"
+    return native_root, install_root.resolve(), native_root / "package.ps1"
+
+
+def _powershell_executable() -> str:
+    # The desktop host already supplies pwsh with a coherent module path. Starting
+    # Windows PowerShell from that environment can mix PS7 type data into PS5 and
+    # omit the Certificate provider.
+    return shutil.which("pwsh.exe") or shutil.which("powershell.exe") or "powershell.exe"
+
+
+def _package_action(
+    action: str,
+    script: Path,
+    *,
+    install_root: Path,
+    run: object,
+) -> dict[str, object]:
+    command = [
+        _powershell_executable(),
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        "-Action",
+        action,
+    ]
+    if action in {"install", "cleanup-certificate"}:
+        if action == "install":
+            command.extend(["-Manifest", str(install_root / "AppxManifest.xml")])
+        command.extend(
+            [
+                "-ExternalLocation",
+                str(install_root),
+            ]
+        )
+    result = run(command, capture_output=True, text=True, errors="replace")
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "unknown package error").strip()
+        raise SkillMagnetError(f"Windows modern context-menu {action} failed: {detail}")
+    try:
+        return json.loads(result.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError) as exc:
+        raise SkillMagnetError("Windows package command returned invalid status") from exc
+
+
+def windows_modern_context_menu_status(
+    *, install_root: Path | None = None, run: object = subprocess.run
+) -> dict[str, object]:
+    _, root, script = _windows_modern_paths(install_root)
+    status = _package_action("status", script, install_root=root, run=run)
+    status.update(
+        {
+            "platform": "windows",
+            "integration": "windows_11_modern_context_menu",
+            "external_location": str(root),
+            "dll_exists": (root / "SkillMagnetCommand.dll").is_file(),
+            "menu_manifest_exists": (root / "SkillMagnetMenu.tsv").is_file(),
+            "contexts": ["Directory", r"Directory\Background"],
+        }
+    )
+    return status
+
+
+def install_windows_modern_context_menu(
+    config: Path,
+    *,
+    install_root: Path | None = None,
+    run: object = subprocess.run,
+    build: bool = True,
+) -> dict[str, object]:
+    if os.name != "nt":
+        raise SkillMagnetError("Windows modern context menu can only be installed on Windows")
+    native_root, root, script = _windows_modern_paths(install_root)
+    output = native_root / "out"
+    if build:
+        build_result = run(
+            [
+                _powershell_executable(),
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(native_root / "build.ps1"),
+                "-OutDir",
+                str(output),
+                "-SkipContractTest",
+            ],
+            capture_output=True,
+            text=True,
+            errors="replace",
+        )
+        if build_result.returncode != 0:
+            detail = (build_result.stderr or build_result.stdout or "unknown build error").strip()
+            raise SkillMagnetError(f"Windows modern context-menu build failed: {detail}")
+    required = (output / "SkillMagnetCommand.dll", output / "SkillMagnetLauncher.exe")
+    if not all(path.is_file() for path in required):
+        raise SkillMagnetError("Windows modern context-menu build outputs are missing")
+
+    root.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(required[0], root / required[0].name)
+    shutil.copy2(required[1], root / required[1].name)
+    shutil.copy2(native_root / "AppxManifest.xml", root / "AppxManifest.xml")
+    (root / "SkillMagnetMenu.tsv").write_text(
+        render_windows_modern_menu_manifest(config), encoding="utf-8", newline="\n"
+    )
+    assets = root / "Assets"
+    assets.mkdir(exist_ok=True)
+    for name in ("StoreLogo.png", "Square150x150Logo.png", "Square44x44Logo.png"):
+        (assets / name).write_bytes(_TRANSPARENT_PNG)
+
+    if build:
+        package_build = run(
+            [
+                _powershell_executable(),
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(native_root / "build-package.ps1"),
+                "-ExternalLocation",
+                str(root),
+            ],
+            capture_output=True,
+            text=True,
+            errors="replace",
+        )
+        if package_build.returncode != 0:
+            detail = (package_build.stderr or package_build.stdout or "unknown package build error").strip()
+            raise SkillMagnetError(f"Windows signed identity package build failed: {detail}")
+
+    status = _package_action("install", script, install_root=root, run=run)
+    if not status.get("installed"):
+        raise SkillMagnetError("Windows modern context-menu package did not register")
+    status.update(
+        {
+            "platform": "windows",
+            "integration": "windows_11_modern_context_menu",
+            "external_location": str(root),
+            "contexts": ["Directory", r"Directory\Background"],
+            "reinstall_required_after_pack_change": True,
+        }
+    )
+    return status
+
+
+def uninstall_windows_modern_context_menu(
+    *, install_root: Path | None = None, run: object = subprocess.run
+) -> dict[str, object]:
+    if os.name != "nt":
+        raise SkillMagnetError("Windows modern context menu can only be removed on Windows")
+    _, root, script = _windows_modern_paths(install_root)
+    status = _package_action("uninstall", script, install_root=root, run=run)
+    if status.get("installed"):
+        raise SkillMagnetError("Windows modern context-menu package remains registered")
+    if root.exists():
+        _package_action("cleanup-certificate", script, install_root=root, run=run)
+        shutil.rmtree(root)
+    return {
+        "removed": True,
+        "platform": "windows",
+        "integration": "windows_11_modern_context_menu",
+        "external_location": str(root),
+    }
+
+
+def _windows_context_backup_root(install_root: Path) -> Path:
+    return install_root.with_name(install_root.name + ".rollback")
+
+
+def _restore_windows_context_backup(
+    backup: Path,
+    *,
+    install_root: Path,
+    run: object,
+) -> None:
+    metadata_path = backup / "backup.json"
+    if not metadata_path.is_file():
+        raise SkillMagnetError("Windows context-menu rollback metadata is missing")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    _, _, package_script = _windows_modern_paths(install_root)
+
+    # Remove the current package before replacing its external content.
+    _package_action("uninstall", package_script, install_root=install_root, run=run)
+    if install_root.exists():
+        _package_action("cleanup-certificate", package_script, install_root=install_root, run=run)
+        shutil.rmtree(install_root)
+    saved_external = backup / "external"
+    if metadata["external_existed"]:
+        shutil.copytree(saved_external, install_root)
+    if metadata["package_installed"]:
+        restored = _package_action("install", package_script, install_root=install_root, run=run)
+        if not restored.get("installed"):
+            raise SkillMagnetError("Cannot restore the previous modern context-menu package")
+
+    for index, (root, _) in enumerate(_windows_menu_roots()):
+        deleted = run(["reg", "delete", root, "/f"], capture_output=True, text=True)
+        if deleted.returncode not in (0, 1):
+            raise SkillMagnetError(f"Cannot clear context-menu root during rollback: {root}")
+        if metadata["classic_roots"][index]:
+            restored = run(
+                ["reg", "import", str(backup / f"classic-{index}.reg")],
+                capture_output=True,
+                text=True,
+            )
+            if restored.returncode != 0:
+                raise SkillMagnetError(f"Cannot restore context-menu root: {root}")
+
+
+def install_windows_context_menus(
+    config: Path,
+    *,
+    install_root: Path | None = None,
+    run: object = subprocess.run,
+    build: bool = True,
+) -> dict[str, object]:
+    """Install classic+modern menus transactionally and retain one rollback point."""
+    if os.name != "nt":
+        raise SkillMagnetError("Windows context menus can only be installed on Windows")
+    _, root, _ = _windows_modern_paths(install_root)
+    backup = _windows_context_backup_root(root)
+    if backup.exists():
+        raise SkillMagnetError("A Windows context-menu rollback point already exists")
+    backup.mkdir(parents=True)
+    package_status = windows_modern_context_menu_status(install_root=root, run=run)
+    roots_present: list[bool] = []
+    try:
+        for index, (registry_root, _) in enumerate(_windows_menu_roots()):
+            queried = run(["reg", "query", registry_root], capture_output=True, text=True)
+            if queried.returncode not in (0, 1):
+                raise SkillMagnetError(f"Cannot inspect Windows context-menu root: {registry_root}")
+            present = queried.returncode == 0
+            roots_present.append(present)
+            if present:
+                exported = run(
+                    ["reg", "export", registry_root, str(backup / f"classic-{index}.reg"), "/y"],
+                    capture_output=True,
+                    text=True,
+                )
+                if exported.returncode != 0:
+                    raise SkillMagnetError(f"Cannot back up Windows context-menu root: {registry_root}")
+        external_existed = root.exists()
+        if external_existed:
+            shutil.copytree(root, backup / "external")
+        (backup / "backup.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "classic_roots": roots_present,
+                    "package_installed": bool(package_status.get("installed")),
+                    "external_existed": external_existed,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        classic = install_context_menu("windows", config, run=run)
+        modern = install_windows_modern_context_menu(
+            config, install_root=root, run=run, build=build
+        )
+        return {
+            "installed": True,
+            "platform": "windows",
+            "classic": classic,
+            "modern": modern,
+            "rollback_point": str(backup),
+        }
+    except Exception:
+        if (backup / "backup.json").is_file():
+            _restore_windows_context_backup(backup, install_root=root, run=run)
+        if backup.exists():
+            shutil.rmtree(backup)
+        raise
+
+
+def rollback_windows_context_menus(
+    *, install_root: Path | None = None, run: object = subprocess.run
+) -> dict[str, object]:
+    if os.name != "nt":
+        raise SkillMagnetError("Windows context menus can only be rolled back on Windows")
+    _, root, _ = _windows_modern_paths(install_root)
+    backup = _windows_context_backup_root(root)
+    _restore_windows_context_backup(backup, install_root=root, run=run)
+    shutil.rmtree(backup)
+    return {
+        "rolled_back": True,
+        "platform": "windows",
+        "external_location": str(root),
+        "rollback_point_removed": True,
+    }
 
 
 def _windows_menu_roots(prefix: str = "HKCU") -> tuple[tuple[str, str], ...]:
@@ -165,17 +596,45 @@ def _windows_registry_entries(config: Path, root: str, placeholder: str) -> list
                 (pack_root, "SubCommands", ""),
             ]
         )
-        for runtime_index, leaf in enumerate(pack_leaves):
-            runtime_root = (
-                pack_root + rf"\shell\runtime-{runtime_index:03d}"
-            )
+        skill_order = tuple(dict.fromkeys(leaf.skill_id for leaf in pack_leaves))
+        for skill_index, skill_id in enumerate(skill_order):
+            skill_leaves = [leaf for leaf in pack_leaves if leaf.skill_id == skill_id]
+            skill_root = pack_root + rf"\shell\skill-{skill_index:03d}"
             entries.extend(
                 [
-                    (runtime_root, "MUIVerb", leaf.runtime_label),
-                    (runtime_root + r"\command", "", windows_command(leaf.command)),
+                    (skill_root, "MUIVerb", skill_leaves[0].skill_label),
+                    (skill_root, "SubCommands", ""),
                 ]
             )
+            for runtime_index, leaf in enumerate(skill_leaves):
+                runtime_root = skill_root + rf"\shell\runtime-{runtime_index:03d}"
+                entries.extend(
+                    [
+                        (runtime_root, "MUIVerb", leaf.runtime_label),
+                        (
+                            runtime_root + r"\command",
+                            "",
+                            windows_command(leaf.command),
+                        ),
+                    ]
+                )
     return entries
+
+
+def windows_directory_registry_entries(
+    config: Path, prefix: str = "HKCU"
+) -> tuple[tuple[str, str, str], ...]:
+    """Build only Skill Magnet's Directory/%1 registry subtree."""
+    root = prefix + r"\Software\Classes\Directory\shell\SkillMagnet"
+    return tuple(_windows_registry_entries(config, root, "%1"))
+
+
+def windows_background_registry_entries(
+    config: Path, prefix: str = "HKCU"
+) -> tuple[tuple[str, str, str], ...]:
+    """Build only Skill Magnet's Directory/Background/%V registry subtree."""
+    root = prefix + r"\Software\Classes\Directory\Background\shell\SkillMagnet"
+    return tuple(_windows_registry_entries(config, root, "%V"))
 
 
 def render_registration(platform: str, config: Path) -> str:
@@ -219,14 +678,18 @@ def install_context_menu(
         if os.name != "nt":
             raise SkillMagnetError("Windows context menu can only be installed on Windows")
         roots = _windows_menu_roots()
+        registrations = (
+            (roots[0][0], windows_directory_registry_entries(config)),
+            (roots[1][0], windows_background_registry_entries(config)),
+        )
         try:
-            for root, placeholder in roots:
+            for root, entries in registrations:
                 stale = run(["reg", "delete", root, "/f"], capture_output=True, text=True)
                 if stale.returncode not in (0, 1):
                     raise SkillMagnetError(
                         f"Cannot remove stale Windows context menu: {stale.stderr.strip()}"
                     )
-                for key, name, value in _windows_registry_entries(config, root, placeholder):
+                for key, name, value in entries:
                     args = ["reg", "add", key]
                     args.extend(["/v", name] if name else ["/ve"])
                     args.extend(["/d", value, "/f"])
@@ -243,10 +706,7 @@ def install_context_menu(
             "installed": True,
             "platform": platform,
             "locations": [root for root, _ in roots],
-            "packs": [
-                leaf.pack_label
-                for leaf in windows_menu_leaves(config, "%V")[::2]
-            ],
+            "packs": [f"Pack: {pack_id}" for pack_id in Config.load(config).packs],
             "reinstall_required_after_pack_change": True,
         }
 
@@ -321,10 +781,7 @@ def uninstall_context_menu(
     if platform == "windows":
         if os.name != "nt":
             raise SkillMagnetError("Windows context menu can only be removed on Windows")
-        roots = (
-            r"HKCU\Software\Classes\Directory\shell\SkillMagnet",
-            r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnet",
-        )
+        roots = tuple(root for root, _ in _windows_menu_roots())
         for root in roots:
             result = run(["reg", "delete", root, "/f"], capture_output=True, text=True)
             if result.returncode not in (0, 1):

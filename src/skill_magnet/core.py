@@ -150,6 +150,8 @@ class Pack:
     approved_by: str = ""
     approved_at: str = ""
     purpose: str = ""
+    menu_label: str = ""
+    selection_kind: str = "package"
 
 
 @dataclass(frozen=True)
@@ -218,7 +220,15 @@ class Config:
                 approved_by=str(raw.get("approved_by", "")).strip(),
                 approved_at=str(raw.get("approved_at", "")).strip(),
                 purpose=str(raw.get("purpose", "")).strip(),
+                menu_label=str(raw.get("menu_label", pack_id)).strip(),
+                selection_kind=str(raw.get("selection_kind", "package")).strip(),
             )
+            if self.packs[pack_id].selection_kind not in {"package", "skill"}:
+                raise SkillMagnetError(
+                    f"Pack {pack_id} selection_kind must be package or skill"
+                )
+            if not self.packs[pack_id].menu_label:
+                raise SkillMagnetError(f"Pack {pack_id} requires a menu_label")
             if not COMMIT_SHA.fullmatch(self.packs[pack_id].expected_commit):
                 raise SkillMagnetError(f"Pack {pack_id} requires a full expected_commit SHA")
 

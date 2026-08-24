@@ -1,4 +1,5 @@
-from .cli import main
+from .cli import exit_process, main
 
-raise SystemExit(main())
 
+exit_code = main()
+exit_process(exit_code)

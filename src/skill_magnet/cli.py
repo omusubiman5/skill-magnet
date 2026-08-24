@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -10,10 +11,24 @@ from .core import Config, Engine, SkillMagnetError
 from .platforms import (
     context_menu_spec,
     install_context_menu,
+    install_windows_context_menus,
+    install_windows_modern_context_menu,
     render_registration,
     uninstall_context_menu,
+    uninstall_windows_modern_context_menu,
+    rollback_windows_context_menus,
+    windows_modern_context_menu_status,
 )
-from .ui import show_context_selection
+from .ui import launch_context_leaf, show_context_error, show_context_selection
+
+
+def exit_process(exit_code: int, *, executable: str | None = None) -> None:
+    """End Explorer's windowless Python leaf without retaining Tk threads."""
+    executable_name = Path(executable or sys.executable).name.casefold()
+    if os.name == "nt" and executable_name == "pythonw.exe":
+        os._exit(exit_code)
+        return
+    raise SystemExit(exit_code)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -66,9 +81,12 @@ def _parser() -> argparse.ArgumentParser:
     context.add_argument("--platform", required=True, choices=("windows", "macos"))
     context.add_argument("--project", required=True, type=Path)
     context.add_argument("--pack")
+    context.add_argument("--skill")
     context.add_argument("--runtime", choices=("codex", "claude"))
     context.add_argument("--menu-commit")
     context.add_argument("--menu-skill-digest")
+    context.add_argument("--menu-instruction-digest")
+    context.add_argument("--menu-acceptance-digest")
     spec = commands.add_parser("context-menu-spec")
     spec.add_argument("--platform", required=True, choices=("windows", "macos"))
     render = commands.add_parser("render-context-menu")
@@ -80,9 +98,20 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Explicitly install the OS context-menu entry. Does not activate a pack.",
     )
+    install.add_argument(
+        "--modern",
+        action="store_true",
+        help="Deprecated compatibility flag; Windows installs modern and classic menus together.",
+    )
     remove = commands.add_parser("uninstall-context-menu")
     remove.add_argument("--platform", required=True, choices=("windows", "macos"))
     remove.add_argument("--confirm", action="store_true")
+    remove.add_argument("--modern", action="store_true")
+    menu_status = commands.add_parser("context-menu-status")
+    menu_status.add_argument("--platform", required=True, choices=("windows", "macos"))
+    menu_rollback = commands.add_parser("rollback-context-menu")
+    menu_rollback.add_argument("--platform", required=True, choices=("windows",))
+    menu_rollback.add_argument("--confirm", action="store_true")
     return parser
 
 
@@ -136,19 +165,53 @@ def main(argv: list[str] | None = None) -> int:
                 )
         elif args.command == "context":
             activation = ActivationEngine(config, args.state_dir)
-            contract = show_context_selection(
-                activation,
-                platform=args.platform,
-                project=args.project,
-                pack_id=args.pack,
-                runtime=args.runtime,
-                menu_commit=args.menu_commit,
-                menu_skill_digest=args.menu_skill_digest,
-            )
-            if contract is None:
-                result = {"status": "cancelled"}
+            if args.platform == "windows":
+                required = (
+                    args.pack,
+                    args.skill,
+                    args.runtime,
+                    args.menu_commit,
+                    args.menu_skill_digest,
+                    args.menu_instruction_digest,
+                    args.menu_acceptance_digest,
+                )
+                if any(value is None for value in required):
+                    raise SkillMagnetError(
+                        "Windows context leaf requires pack, skill, runtime, commit and digests"
+                    )
+                result = launch_context_leaf(
+                    activation,
+                    platform=args.platform,
+                    project=args.project,
+                    pack_id=args.pack,
+                    skill_id=args.skill,
+                    runtime=args.runtime,
+                    menu_commit=args.menu_commit,
+                    menu_skill_digest=args.menu_skill_digest,
+                    menu_instruction_digest=args.menu_instruction_digest,
+                    menu_acceptance_digest=args.menu_acceptance_digest,
+                    destination="web",
+                    error_ui=show_context_error,
+                )
+                if result.get("status") in {"verified_applied", "web_prompt_ready"}:
+                    return 0
             else:
-                result = activation.execute(contract.contract_id)
+                contract = show_context_selection(
+                    activation,
+                    platform=args.platform,
+                    project=args.project,
+                    pack_id=args.pack,
+                    skill_id=args.skill,
+                    runtime=args.runtime,
+                    menu_commit=args.menu_commit,
+                    menu_skill_digest=args.menu_skill_digest,
+                    menu_instruction_digest=args.menu_instruction_digest,
+                    menu_acceptance_digest=args.menu_acceptance_digest,
+                )
+                if contract is None:
+                    result = {"status": "cancelled"}
+                else:
+                    result = activation.execute(contract.contract_id)
         elif args.command == "context-menu-spec":
             result = context_menu_spec(args.platform, args.config).as_dict()
         elif args.command == "render-context-menu":
@@ -157,14 +220,34 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "install-context-menu":
             if not args.confirm:
                 raise SkillMagnetError("Context-menu installation requires --confirm")
-            result = install_context_menu(args.platform, args.config)
-        else:
+            if args.platform == "windows":
+                result = install_windows_context_menus(args.config)
+            else:
+                result = {"classic": install_context_menu(args.platform, args.config)}
+        elif args.command == "uninstall-context-menu":
             if not args.confirm:
                 raise SkillMagnetError("Context-menu removal requires --confirm")
-            result = uninstall_context_menu(args.platform)
+            result = {}
+            if args.platform == "windows":
+                result = rollback_windows_context_menus()
+            else:
+                result["classic"] = uninstall_context_menu(args.platform)
+        elif args.command == "context-menu-status":
+            if args.platform != "windows":
+                raise SkillMagnetError("Modern context-menu status is available on Windows")
+            result = windows_modern_context_menu_status()
+        else:
+            if not args.confirm:
+                raise SkillMagnetError("Context-menu rollback requires --confirm")
+            result = rollback_windows_context_menus()
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0
     except SkillMagnetError as exc:
+        if args.command == "context" and args.platform == "windows":
+            # The Explorer leaf already displayed the one permitted error UI.
+            # pythonw has no reliable stderr sink; writing to it can retain the
+            # windowless process instead of returning to the hard-exit boundary.
+            return 2
         print(f"error: {exc}", file=sys.stderr)
         return 2
 

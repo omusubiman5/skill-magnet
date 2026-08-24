@@ -73,9 +73,7 @@ python -m skill_magnet --config C:\Projects\skill-magnet\skill-magnet.json insta
 python -m skill_magnet --config C:\Projects\skill-magnet\skill-magnet.json uninstall-context-menu --platform windows --confirm
 ```
 
-packの追加・削除・版・含有skillを変更した後は、同じ `install-context-menu` を再実行して静的メニューを更新する必要があります。古いメニューからの起動はcommitとskill集合のdigest不一致でfail-closedになります。Cancelまたはウィンドウcloseではcontract、evidence、stateを作成しません。Claudeはverified runtime adapterが未実装のため、メニューには明示しますが起動は副作用なしでfail-closedです。
-
-このHKCU静的カスケードはWindows 11の「その他のオプションを確認（Show more options）」側に表示されます。Windows 11の現代メニューへ直接統合するには、Microsoft仕様のネイティブ `IExplorerCommand` DLLとapp identity（MSIXまたはsparse package）が必要であり、MVPには含みません。
+packの追加・削除・版・含有skillを変更した後は、同じ `install-context-menu` を再実行して静的メニューを更新する必要があります。Windowsの標準installはclassicメニューとWindows 11の `IExplorerCommand` modernメニューを同一transactionで登録し、標準uninstallはそのrollback pointを復元します。古いメニューからの起動はcommitとskill集合のdigest不一致でfail-closedになります。Cancelまたはウィンドウcloseではcontract、evidence、stateを作成しません。
 
 ```bash
 python -m skill_magnet --config /path/to/skill-magnet.json install-context-menu --platform macos --confirm
