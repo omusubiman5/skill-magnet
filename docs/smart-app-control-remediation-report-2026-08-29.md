@@ -28,7 +28,7 @@ launcherを外した初期0.3.1でも、外部locationの自己署名`SkillMagne
 | unit/integration | PASS: 125 tests、1 environment-dependent skip |
 | full MSIX status | PASS: `SkillMagnet.ContextMenu_0.3.2.0_x64`、package contentは`Program Files\\WindowsApps` |
 | Explorer real UI | PASS: 通常右クリック → `Skill Magnet` → `PMO` → `Skill Magnet — 実行確認` |
-| process launch | PASS: `create_process_succeeded`、PID 7868 |
+| process launch | PASS: 最終DLLで`create_process_succeeded`、PID 24068 |
 | Code Integrity after 0.3.2 invocation | PASS: Skill Magnet関連3033/3077は0件 |
 | candidate artifact-input commit | PASS: `69d5029aaa2a4ae3338e664a7c4af524ae655f43` |
 | canonical wheel | PASS: physical SHA-256 `e86ad84ef4d82235db5358bae952f9668a72ee4f70a9c3d747058af06b38b32c`、logical payload SHA-256 `9dd17c9ec1e7b4fa97fcd74fd55b34c46e2fc2a698f590eabca4cf21c5f17d40` |
