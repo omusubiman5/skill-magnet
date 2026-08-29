@@ -4,6 +4,7 @@ import hashlib
 import json
 import io
 import os
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -3468,6 +3469,11 @@ class ActivationEndToEndTest(unittest.TestCase):
         workflow_bytes = workflow.read_bytes()
         self.assertIn(b"com.apple.RunShellScript", workflow_bytes)
         self.assertIn(b"finder probe.txt", workflow_bytes)
+        workflow_document = plistlib.loads(workflow_bytes)
+        action = workflow_document["actions"][0]["action"]
+        self.assertIn("ActionParameters", action)
+        self.assertNotIn("parameters", action)
+        self.assertIn("finder probe.txt", action["ActionParameters"]["COMMAND_STRING"])
         removed = uninstall_context_menu("macos", services_dir=services)
         self.assertTrue(removed["removed"])
         self.assertFalse(workflow.parent.parent.exists())

@@ -1091,11 +1091,12 @@ def install_context_menu(
                     "BundleIdentifier": "com.apple.RunShellScript",
                     "CFBundleVersion": "2.0.3",
                     "Class Name": "RunShellScriptAction",
-                    "parameters": {
+                    "ActionParameters": {
                         "COMMAND_STRING": shell_command,
                         "CheckedForUserDefaultShell": True,
                         "inputMethod": 1,
                         "shell": "/bin/zsh",
+                        "source": "",
                     },
                 }
             }
