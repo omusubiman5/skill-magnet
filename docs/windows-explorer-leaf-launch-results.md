@@ -33,6 +33,6 @@ Windows 0.3.0候補の最終受入では、次を新しい証拠として追記�
 
 1. wheelからのnative build、MSIX署名・install、Directory/Backgroundの単一`PMO`表示。
 2. package leafからCodex Desktop新規タスクを開き、materialized INDEX/全SKILLを読み、依頼に必要な部分集合だけを適用した自然文回答。
-3. update、rollback、uninstall後のAppx・証明書・ContextMenu/rollback残留ゼロ。
+3. update、rollback、uninstall後のAppx・証明書・ContextMenu/rollback残留ゼロ。CIでは旧自己署名trust 2世代のupgrade cleanupも含めて確認済み。
 
-macOS Finderはcommunity betaです。macOS runner上の実Quick Action install、`/usr/bin/automator`実行、selected path probe、uninstall、残留ゼロはrun `33244266015`で独立に確認済みです。Finderのメニュー表示そのものは人手UX受入であり、このWindows証拠を転用しません。
+macOS Finderはcommunity betaです。macOS runner上の実Quick Action install、`/usr/bin/automator`実行、selected path probe、uninstall、残留ゼロは実装HEAD `76aad58`のrun `33246388633`で独立に確認済みです。Finderのメニュー表示そのものは人手UX受入であり、このWindows証拠を転用しません。

@@ -6,9 +6,9 @@
 
 ## 結論
 
-NO-GOレビューでコード修正対象となった、壊れたwheel、固定project path、証明書ownership消失、rollback残留、Desktop入力TOCTOU、削除された結果gate、旧個別leaf文書、版不整合、CIのsubmodule/native欠落を修正した。0.3.0 wheelからの隔離install、Windows native build、MSIX署名、実Appx update/installまで成功し、現在の実機は`SkillMagnet.ContextMenu_0.3.0.0_x64`のusable状態である。
+NO-GOレビューでコード修正対象となった、壊れたwheel、固定project path、証明書ownership消失、旧自己署名trust残留、rollback異常残留、Desktop入力TOCTOU、削除された結果gate、旧個別leaf文書、版不整合、CIのsubmodule/native欠落を修正した。0.3.0 wheelからの隔離install、Windows native build、MSIX署名、実Appx update/installまで成功し、現在の実機は`SkillMagnet.ContextMenu_0.3.0.0_x64`のusable状態である。
 
-実装基準commit `7cd912e`はremote Windows/macOS CIがgreenで、Windows CI内の実MSIX install/rollback/uninstallと残留ゼロ、macOS CI内の実Quick Action install/Automator実行/uninstall/残留ゼロも完走した。Windows 0.3.0実機ではExplorerから単一`PMO`を選び、Codex Desktop handoffまで確認した。リリース判定は、新規Desktop taskの自然文回答を確認するまで`CONDITIONAL NO-GO`とする。handoff受理を実回答完了へ読み替えない。
+証明書cleanup実装基準commit `668d45b`はremote Windows/macOS CIがgreenで、Windows CI内の旧証明書upgrade cleanup、実MSIX install/rollback/uninstallと残留ゼロ、macOS CI内の実Quick Action install/Automator実行/uninstall/残留ゼロも完走した。cleanup証拠をCLIへ保持する修正は`76aad58`。Windows 0.3.0実機ではExplorerから単一`PMO`を選び、Codex Desktop handoffまで確認した。ローカル導入版の判定は、新規Desktop taskの自然文回答を確認するまで`CONDITIONAL NO-GO`とする。handoff受理を実回答完了へ読み替えない。公開Store配布は正式publisher identityがないため別途`NO-GO`である。
 
 ## 実装内容
 
@@ -24,6 +24,8 @@ NO-GOレビューでコード修正対象となった、壊れたwheel、固定p
 
 - 同一thumbprintの更新では`created_my`、`created_trusted_people`、`created_machine_trusted_people`を累積保持する純粋PowerShell関数を追加した。
 - 旧更新でfalseへ上書きされた実機stateは、正規rollback metadata内の同一thumbprint履歴から3フラグをtrueへmigrationした。
+- upgrade時に、現行thumbprintではなく、subject/issuerがともに`CN=Skill Magnet Local`、code-signing EKUを持ち、CurrentUser/LocalMachineのTrustedPeople双方に存在する証明書だけを旧製品所有trustとして削除する。subjectだけが同じ証明書や現行証明書は削除しない。
+- install transactionが削除した旧thumbprint一覧を、後続status readbackで捨てずCLI結果へ保持する。
 - `ContextMenu.rollback.interrupted-*` / `recovered-*`は、正規path・厳密なtimestamp名・非link・backup.json versionを満たす製品所有物だけ削除する。実機の旧3件は削除済み。
 - UAC取消時はAppx削除後も証明書state、external root、rollback pointを保持し、完了扱いせず再試行可能に停止することを実機確認した。
 
@@ -47,7 +49,7 @@ NO-GOレビューでコード修正対象となった、壊れたwheel、固定p
 
 | 検証 | 結果 |
 |---|---|
-| `python -m unittest discover -s tests -v` | PASS。117 tests / 188.112s、条件付き1 skip。最終remote Windows/macOS suiteも全件green |
+| `python -m unittest discover -s tests -v` | PASS。117 tests / 133.453s、条件付き1 skip。最終remote Windows/macOS suiteも全件green |
 | wheel隔離install | PASS。既定config、固定commit、9 skills、native scripts、1 package leafを確認 |
 | PowerShell certificate ownership test | PASS |
 | Windows native build | PASS。DLL/launcher生成・署名成功 |
@@ -58,8 +60,10 @@ NO-GOレビューでコード修正対象となった、壊れたwheel、固定p
 | `pip check` | PASS |
 | `git diff --check` | PASS（改行変換warningのみ） |
 | results gate | PASS |
-| remote macOS CI | PASS。117 tests、実Quick Action install/Automator実行/selected path probe/uninstall/残留ゼロ、run `33244266015` |
-| remote Windows CI | PASS。117 tests、ownership、native build、実MSIX lifecycle、残留ゼロ、run `33244266015` |
+| remote macOS CI | PASS。117 tests、実Quick Action install/Automator実行/selected path probe/uninstall/残留ゼロ、run `33246388633` |
+| remote Windows CI | PASS。117 tests、ownership、旧証明書2世代cleanup、native build、実MSIX lifecycle、残留ゼロ、run `33246388633` |
+| Windows実機旧trust cleanup | PASS。旧7 unique thumbprintsがCurrentUser/LocalMachine TrustedPeopleとも0。現行`022B95...`のみ残存 |
+| Windows実機最終status | PASS。0.3.0.0、1 package leaf、config一致、`usable_installed_state: true` |
 | Windows Explorer実UI | PASS。BEADS folder右クリック→`Skill Magnet`→`PMO`→確認UI→Codex→最終確認 |
 | Desktop handoff | PASS。contract `d372a02620e84f01a9a6e326d1826ba7`、selection kind `pack`、9 skills、immutable materialization、`desktop_handoff_ready` |
 
@@ -69,4 +73,6 @@ NO-GOレビューでコード修正対象となった、壊れたwheel、固定p
 
 Windows Explorer実入口、Desktop handoff、Windows実MSIX lifecycle、macOS実Automator lifecycle、両OSの残留ゼロは完了した。残る1件は製品がDesktop task結果を取得できない外部UIゲートであり、自動試験の成功として代替しない。
 
-CI証拠: [GitHub Actions run 33244266015](https://github.com/omusubiman5/skill-magnet/actions/runs/33244266015)
+公開配布境界: 現在のMSIXは製品仕様どおりローカル自己署名であり、Microsoft Store等へ公開する正式publisher identityではない。公開配布には外部の証明書・配布アカウント・秘密鍵管理が必要であり、これらを受領していない状態をGOへ読み替えない。
+
+CI証拠: 実装HEAD `76aad582945b4b692bfb24b3fe725bf871de2ad7`の[GitHub Actions run 33246388633](https://github.com/omusubiman5/skill-magnet/actions/runs/33246388633)

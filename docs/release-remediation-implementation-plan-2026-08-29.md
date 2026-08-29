@@ -15,7 +15,7 @@
 - **Situation classification:** Complicated（Cynefin）。故障点は配布、CI、証明書、Desktop/Finder受入、監査資料に分解でき、各原因と修正方法を技術的に検証できる。
 - **The binding constraint:** 空環境で再現できる単一のリリースartifactが存在しないこと（Theory of Constraints）。
 - **The critical next effort (P1):** wheel/source releaseからnative資材と固定packを解決できるようにし、隔離環境のartifact-first smokeを必須化する。
-- **Overall plan confidence:** High。Windows/macOS CI、Windowsの実MSIX lifecycle、macOSの実Automator lifecycle、Windows ExplorerからDesktop handoffまでgreen。残るのはCodex Desktop新規taskの自然文回答確認だけである。
+- **Overall plan confidence:** High。Windows/macOS CI、Windowsの実MSIX lifecycle、macOSの実Automator lifecycle、Windows ExplorerからDesktop handoffまでgreen。旧自己署名証明書のupgrade cleanupも実機とCI fixtureの双方で確認した。残る製品外ゲートはCodex Desktop新規taskの自然文回答確認である。
 - **Time-to-value:** P1の最初の信号は、隔離wheelでnative path・status・manifest生成が成功した時点で得る。
 
 ## 1. Input mirror
@@ -137,11 +137,12 @@
 ## 9. 実行結果
 
 - P1-P4の実装項目は完了した。
-- 実装基準commitは`26d30db9d25544ec89e7cd9164effef3908d07c7`。
-- GitHub Actions run [33244266015](https://github.com/omusubiman5/skill-magnet/actions/runs/33244266015)でWindows/macOSの117 testsがgreen。
-- Windows jobでは追加でcertificate ownership、native build、実MSIX install/status/rollback/uninstall、証明書・Appx・registry・external rootの残留ゼロがgreen。
+- 証明書cleanup実装基準commitは`668d45b2460955b39d7af97df2aa7ea7d379f6e5`、cleanup証拠をCLI結果へ保持する実装は`76aad58`。
+- 実装HEAD `76aad582945b4b692bfb24b3fe725bf871de2ad7`のGitHub Actions run [33246388633](https://github.com/omusubiman5/skill-magnet/actions/runs/33246388633)でWindows/macOSの117 testsがgreen。
+- Windows jobでは追加でcertificate ownership、旧自己署名証明書2世代のupgrade cleanup、native build、実MSIX install/status/rollback/uninstall、証明書・Appx・registry・external rootの残留ゼロがgreen。
 - macOS jobでは実Quick Actionのinstall、`/usr/bin/automator`実行、selected path probe、uninstall、transaction residueゼロがgreen。
 - Windows 0.3.0実機で、BEADS folderの右クリックから`Skill Magnet`→単一`PMO`→実行確認→Codex→最終確認を操作し、pack 9件を束縛したcontract `d372a02620e84f01a9a6e326d1826ba7`の`desktop_handoff_ready`を確認した。
+- Windows 0.3.0実機upgradeで、exact subject/issuer、code-signing EKU、CurrentUser/LocalMachine双方の存在を満たす旧`CN=Skill Magnet Local` thumbprint 7件を削除した。現行thumbprint `022B95CF60214A2F7A36BE33E1112B5A62831561`だけが3 storeに残り、modern menuは`usable_installed_state: true`である。
 - 自動化で代替しない残件は、Codex Desktop新規taskの自然文回答確認のみ。実行中のCodex taskから自己起動したため、task一覧に新規の送信済みtaskは現れず、完了へ昇格していない。
 
-**Evidence gaps:** 正式コード署名identityは公開配布前に別途必要。機能release gateの残件はCodex Desktop新規taskの自然文回答確認。
+**Release boundary:** このrepositoryが定義するローカル導入版0.3.0の実装ゲートは、Desktop自然文結果の人手確認を除き完了。Microsoft Store等の公開配布は製品仕様外で、正式publisher identity・配布アカウント・秘密鍵が別途必要であり、このローカル自己署名候補を公開版GOとは扱わない。
