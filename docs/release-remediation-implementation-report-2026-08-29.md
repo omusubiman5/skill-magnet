@@ -8,7 +8,7 @@
 
 NO-GOレビューでコード修正対象となった、壊れたwheel、固定project path、証明書ownership消失、rollback残留、Desktop入力TOCTOU、削除された結果gate、旧個別leaf文書、版不整合、CIのsubmodule/native欠落を修正した。0.3.0 wheelからの隔離install、Windows native build、MSIX署名、実Appx update/installまで成功し、現在の実機は`SkillMagnet.ContextMenu_0.3.0.0_x64`のusable状態である。
 
-実装基準commit `26d30db9d25544ec89e7cd9164effef3908d07c7`はremote Windows/macOS CIがgreenで、Windows CI内の実MSIX install/rollback/uninstallと残留ゼロも完走した。リリース判定は、人の操作を必要とするCodex Desktop実回答とmacOS Finder実機が揃うまで`CONDITIONAL NO-GO`とする。自動試験やhandoff受理を実回答完了へ読み替えない。
+実装基準commit `7cd912e`はremote Windows/macOS CIがgreenで、Windows CI内の実MSIX install/rollback/uninstallと残留ゼロ、macOS CI内の実Quick Action install/Automator実行/uninstall/残留ゼロも完走した。Windows 0.3.0実機ではExplorerから単一`PMO`を選び、Codex Desktop handoffまで確認した。リリース判定は、新規Desktop taskの自然文回答を確認するまで`CONDITIONAL NO-GO`とする。handoff受理を実回答完了へ読み替えない。
 
 ## 実装内容
 
@@ -38,6 +38,7 @@ NO-GOレビューでコード修正対象となった、壊れたwheel、固定p
 - GitHub Actions checkoutを`submodules: recursive`へ変更し、WindowsでPowerShell ownership testとnative buildを追加した。
 - Windows CIに、非対話の管理者runnerだけで有効にする証明書trust経路と、実MSIX install/status/rollback/uninstall・全残留ゼロ検査を追加した。通常利用時のUAC経路は維持する。
 - wheel build→隔離`pip --target` install→bundled config/pack/native/menu command検証をWindows/macOS共通suiteへ追加した。
+- macOS CIに、実Quick Actionを`~/Library/Services`へinstallし、`/usr/bin/automator`で選択folderを渡し、adapter到達後にuninstallしてworkflow/transaction残留ゼロを確認するrelease lifecycleを追加した。
 - `integration/explorer_results_gate.py`とテストを復旧し、現在のtest count、1 package leaf、selection kind、9 skillsを実configへ照合する。
 - Explorer結果正本とREADMEを現行package選択仕様へ更新し、旧個別leaf計画はアーカイブ表示にした。
 - `.e2e-state`、native output、compiler/linker生成物、証明書/package生成物をignoreへ追加した。
@@ -46,7 +47,7 @@ NO-GOレビューでコード修正対象となった、壊れたwheel、固定p
 
 | 検証 | 結果 |
 |---|---|
-| `python -m unittest discover -s tests -v` | PASS。116 tests / 163.287s、環境に`pythonw.exe`がない条件付き1 skip |
+| `python -m unittest discover -s tests -v` | PASS。117 tests / 188.112s、条件付き1 skip。最終remote Windows/macOS suiteも全件green |
 | wheel隔離install | PASS。既定config、固定commit、9 skills、native scripts、1 package leafを確認 |
 | PowerShell certificate ownership test | PASS |
 | Windows native build | PASS。DLL/launcher生成・署名成功 |
@@ -57,14 +58,15 @@ NO-GOレビューでコード修正対象となった、壊れたwheel、固定p
 | `pip check` | PASS |
 | `git diff --check` | PASS（改行変換warningのみ） |
 | results gate | PASS |
-| remote macOS CI | PASS。116 tests、run `33243353005` |
-| remote Windows CI | PASS。116 tests、ownership、native build、実MSIX lifecycle、残留ゼロ、run `33243353005` |
+| remote macOS CI | PASS。117 tests、実Quick Action install/Automator実行/selected path probe/uninstall/残留ゼロ、run `33244266015` |
+| remote Windows CI | PASS。117 tests、ownership、native build、実MSIX lifecycle、残留ゼロ、run `33244266015` |
+| Windows Explorer実UI | PASS。BEADS folder右クリック→`Skill Magnet`→`PMO`→確認UI→Codex→最終確認 |
+| Desktop handoff | PASS。contract `d372a02620e84f01a9a6e326d1826ba7`、selection kind `pack`、9 skills、immutable materialization、`desktop_handoff_ready` |
 
 ## 残存リリースゲート
 
-1. Windows ExplorerのDirectory/Backgroundから0.3.0の単一`PMO`を実選択し、Codex Desktop新規taskの自然文回答まで確認する。
-2. macOS hostでFinder Quick Actionのinstall、起動、uninstall、残留ゼロを確認する。
+1. Codex Desktop新規taskに送信されたpromptと自然文回答を確認し、contract ID・prompt hash・回答を人手受入記録へ束縛する。
 
-Windowsの実MSIX lifecycleと残留ゼロはCIで完了した。上記2件は別OS・人のDesktop結果が必要な外部UIゲートであり、自動試験の成功として代替しない。
+Windows Explorer実入口、Desktop handoff、Windows実MSIX lifecycle、macOS実Automator lifecycle、両OSの残留ゼロは完了した。残る1件は製品がDesktop task結果を取得できない外部UIゲートであり、自動試験の成功として代替しない。
 
-CI証拠: [GitHub Actions run 33243353005](https://github.com/omusubiman5/skill-magnet/actions/runs/33243353005)
+CI証拠: [GitHub Actions run 33244266015](https://github.com/omusubiman5/skill-magnet/actions/runs/33244266015)

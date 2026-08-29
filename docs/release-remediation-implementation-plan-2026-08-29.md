@@ -15,7 +15,7 @@
 - **Situation classification:** Complicated（Cynefin）。故障点は配布、CI、証明書、Desktop/Finder受入、監査資料に分解でき、各原因と修正方法を技術的に検証できる。
 - **The binding constraint:** 空環境で再現できる単一のリリースartifactが存在しないこと（Theory of Constraints）。
 - **The critical next effort (P1):** wheel/source releaseからnative資材と固定packを解決できるようにし、隔離環境のartifact-first smokeを必須化する。
-- **Overall plan confidence:** High。Windows/macOS CIとWindowsの実MSIX lifecycleはgreen。残るのは人が操作するDesktop/Finder受入である。
+- **Overall plan confidence:** High。Windows/macOS CI、Windowsの実MSIX lifecycle、macOSの実Automator lifecycle、Windows ExplorerからDesktop handoffまでgreen。残るのはCodex Desktop新規taskの自然文回答確認だけである。
 - **Time-to-value:** P1の最初の信号は、隔離wheelでnative path・status・manifest生成が成功した時点で得る。
 
 ## 1. Input mirror
@@ -47,7 +47,7 @@
 | Q2 | 固定packを別PCでどう取得するか | `C:\Projects`固定を排除する必要がある | No | config-relative sourceとsubmodule/bootstrapを実装 |
 | Q3 | 自己署名証明書ownershipを更新間で保持できるか | uninstall後のmachine trust残留を防ぐ | No | ownership stateをmergeしstore全件をnegative test |
 | Q4 | Desktopの読込bytesを固定できるか | path参照TOCTOUを除去する | No | contract専用content-addressed materialization |
-| Q5 | macOS Finder実機を誰が実行するか | 現Windows hostだけではFinder UI証拠を作れない | Yes, external gate | candidate commitをmacOS実機で手動受入 |
+| Q5 | macOS Finder workflowを実macOS hostで実行できるか | Windows fixtureだけではQuick Actionの実行を証明できない | Resolved | macOS runnerでinstall、`/usr/bin/automator`実行、selected path probe、uninstall、残留ゼロを必須化 |
 
 ## 5. Prioritized action plan
 
@@ -76,8 +76,8 @@
 ### P3. Desktop/Finderの固定入力と完了証拠
 
 - **Why:** CLI成功を製品Desktop成功へ誤転用しないため。
-- **What:** content-addressed read-only handoff、Desktop手動受入記録、Finder実機手順。
-- **How:** contract専用immutable materializationを作る。promptをそのpath/digestへ束縛する。handoffは未完了のまま保持する。人手確認項目とtask ID/hashを証拠schemaへ追加する。
+- **What:** content-addressed read-only handoff、Desktop実機受入記録、Finder実workflow lifecycle。
+- **How:** contract専用immutable materializationを作る。promptをそのpath/digestへ束縛する。handoffは未完了のまま保持する。macOSでは実Quick ActionをinstallしてAutomatorから起動し、WindowsではExplorerの実メニューからDesktop handoffまで操作する。
 - **Confidence:** Medium。Desktop結果の機械取得不可部分は人手ゲートが残る。
 - **Source:** S5, S6
 - **Expected outcome / success signal:** prompt後のsource変更でhandoff bytesが変わらず、Desktop/Finder証拠がcandidate SHAへ結び付く。
@@ -138,8 +138,10 @@
 
 - P1-P4の実装項目は完了した。
 - 実装基準commitは`26d30db9d25544ec89e7cd9164effef3908d07c7`。
-- GitHub Actions run [33243353005](https://github.com/omusubiman5/skill-magnet/actions/runs/33243353005)でWindows/macOSの116 testsがgreen。
+- GitHub Actions run [33244266015](https://github.com/omusubiman5/skill-magnet/actions/runs/33244266015)でWindows/macOSの117 testsがgreen。
 - Windows jobでは追加でcertificate ownership、native build、実MSIX install/status/rollback/uninstall、証明書・Appx・registry・external rootの残留ゼロがgreen。
-- 自動化で代替しない残件は、Windows Explorer→Codex Desktopの自然文回答とmacOS Finder Quick Actionの実UI受入のみ。
+- macOS jobでは実Quick Actionのinstall、`/usr/bin/automator`実行、selected path probe、uninstall、transaction residueゼロがgreen。
+- Windows 0.3.0実機で、BEADS folderの右クリックから`Skill Magnet`→単一`PMO`→実行確認→Codex→最終確認を操作し、pack 9件を束縛したcontract `d372a02620e84f01a9a6e326d1826ba7`の`desktop_handoff_ready`を確認した。
+- 自動化で代替しない残件は、Codex Desktop新規taskの自然文回答確認のみ。実行中のCodex taskから自己起動したため、task一覧に新規の送信済みtaskは現れず、完了へ昇格していない。
 
-**Evidence gaps:** macOS Finder実機host、正式コード署名identity、Desktop/Finderの人手UI受入記録は現在の入力に含まれない。
+**Evidence gaps:** 正式コード署名identityは公開配布前に別途必要。機能release gateの残件はCodex Desktop新規taskの自然文回答確認。
