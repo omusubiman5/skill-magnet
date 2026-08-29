@@ -15,7 +15,7 @@
 - **Situation classification:** Complicated（Cynefin）。故障点は配布、CI、証明書、Desktop/Finder受入、監査資料に分解でき、各原因と修正方法を技術的に検証できる。
 - **The binding constraint:** 空環境で再現できる単一のリリースartifactが存在しないこと（Theory of Constraints）。
 - **The critical next effort (P1):** wheel/source releaseからnative資材と固定packを解決できるようにし、隔離環境のartifact-first smokeを必須化する。
-- **Overall plan confidence:** Medium-High。Windowsローカル動作と故障再現は取得済みだが、macOS Finder実機と公開CIは外部環境を必要とする。
+- **Overall plan confidence:** High。Windows/macOS CIとWindowsの実MSIX lifecycleはgreen。残るのは人が操作するDesktop/Finder受入である。
 - **Time-to-value:** P1の最初の信号は、隔離wheelでnative path・status・manifest生成が成功した時点で得る。
 
 ## 1. Input mirror
@@ -47,7 +47,7 @@
 | Q2 | 固定packを別PCでどう取得するか | `C:\Projects`固定を排除する必要がある | No | config-relative sourceとsubmodule/bootstrapを実装 |
 | Q3 | 自己署名証明書ownershipを更新間で保持できるか | uninstall後のmachine trust残留を防ぐ | No | ownership stateをmergeしstore全件をnegative test |
 | Q4 | Desktopの読込bytesを固定できるか | path参照TOCTOUを除去する | No | contract専用content-addressed materialization |
-| Q5 | macOS Finderと公開CIを誰が実行するか | 現Windows hostだけでは実機証拠を作れない | Yes, external gate | candidate commit後にmacOS runner/hostで実行 |
+| Q5 | macOS Finder実機を誰が実行するか | 現Windows hostだけではFinder UI証拠を作れない | Yes, external gate | candidate commitをmacOS実機で手動受入 |
 
 ## 5. Prioritized action plan
 
@@ -133,4 +133,13 @@
 | P1-P3残存を全件修正 | S6 | 「ありえないだろ」 |
 
 **Inferred claims:** 公開Store/PyPIへの実配布は今回の権限範囲外。binding constraintとP1は推論ではなくS3-S5に基づく。  
-**Evidence gaps:** macOS実機host、公開CIを起動するcandidate commit、正式コード署名identityは現在の入力に含まれない。
+
+## 9. 実行結果
+
+- P1-P4の実装項目は完了した。
+- 実装基準commitは`26d30db9d25544ec89e7cd9164effef3908d07c7`。
+- GitHub Actions run [33243353005](https://github.com/omusubiman5/skill-magnet/actions/runs/33243353005)でWindows/macOSの116 testsがgreen。
+- Windows jobでは追加でcertificate ownership、native build、実MSIX install/status/rollback/uninstall、証明書・Appx・registry・external rootの残留ゼロがgreen。
+- 自動化で代替しない残件は、Windows Explorer→Codex Desktopの自然文回答とmacOS Finder Quick Actionの実UI受入のみ。
+
+**Evidence gaps:** macOS Finder実機host、正式コード署名identity、Desktop/Finderの人手UI受入記録は現在の入力に含まれない。
