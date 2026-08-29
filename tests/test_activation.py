@@ -698,7 +698,7 @@ class ActivationEndToEndTest(unittest.TestCase):
 
         def replace_index_before_copy(source: object, destination: object, *args: object, **kwargs: object):
             source_path = Path(source)
-            if source_path == index:
+            if source_path.name == "INDEX.md":
                 index.write_text("# injected after validation\n", encoding="utf-8")
             return real_copy2(source, destination, *args, **kwargs)
 
