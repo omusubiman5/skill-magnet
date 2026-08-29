@@ -9,17 +9,19 @@
 <!-- explorer-results-ledger:start
 {
   "release_scope": "one-package-leaf",
-  "full_test_count": 117,
+  "full_test_count": 119,
   "menu_leaf_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
+  "release_code_sha": "878f645e4b4f9a62ba82bc41debe20f303d0abb6",
+  "wheel_payload_sha256": "ba5dd40ee37ad31a49f29ea1542f64ec699b7a5436f1a571c38e36d4425eb594",
   "automated_status": "PASS",
   "windows_explorer_field_status": "PASS_0.3.0_REAL_UI_TO_DESKTOP_HANDOFF",
   "codex_desktop_result_status": "MANUAL_RESULT_VERIFICATION_REQUIRED"
 }
 explorer-results-ledger:end -->
 
-- 統合テスト: `python -m unittest discover -s tests -v` — 117 tests PASS
+- 統合テスト: `python -m unittest discover -s tests -v` — 119 tests PASS
 - menu contract: 1 package leaf / selection kind `package` / pack内9 skills
 - 自動証拠: contract固定、INDEX/全SKILL materialization、source改変耐性、deep-link binding、CLI非起動、rollback、残留物回収
 - 実機証拠: 0.3.0のBEADS folderで右クリック→`Skill Magnet`→単一`PMO`→確認UI→Codex→最終確認を実操作し、contract `d372a02620e84f01a9a6e326d1826ba7`の`desktop_handoff_ready`を確認
