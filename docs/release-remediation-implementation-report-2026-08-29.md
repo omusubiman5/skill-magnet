@@ -38,6 +38,7 @@ NO-GOレビューでコード修正対象となった、壊れたwheel、固定p
 ### CI・監査・文書
 
 - GitHub Actions checkoutを`submodules: recursive`へ変更し、WindowsでPowerShell ownership testとnative buildを追加した。
+- `actions/checkout@v5`と`actions/setup-python@v6`へ更新し、Node 24 runtimeで最終candidateを再検証した。
 - Windows CIに、非対話の管理者runnerだけで有効にする証明書trust経路と、実MSIX install/status/rollback/uninstall・全残留ゼロ検査を追加した。通常利用時のUAC経路は維持する。
 - wheel build→隔離`pip --target` install→bundled config/pack/native/menu command検証をWindows/macOS共通suiteへ追加した。
 - macOS CIに、実Quick Actionを`~/Library/Services`へinstallし、`/usr/bin/automator`で選択folderを渡し、adapter到達後にuninstallしてworkflow/transaction残留ゼロを確認するrelease lifecycleを追加した。
@@ -60,8 +61,8 @@ NO-GOレビューでコード修正対象となった、壊れたwheel、固定p
 | `pip check` | PASS |
 | `git diff --check` | PASS（改行変換warningのみ） |
 | results gate | PASS |
-| remote macOS CI | PASS。117 tests、実Quick Action install/Automator実行/selected path probe/uninstall/残留ゼロ、run `33246388633` |
-| remote Windows CI | PASS。117 tests、ownership、旧証明書2世代cleanup、native build、実MSIX lifecycle、残留ゼロ、run `33246388633` |
+| remote macOS CI | PASS。117 tests、実Quick Action install/Automator実行/selected path probe/uninstall/残留ゼロ、run `33246589566` |
+| remote Windows CI | PASS。117 tests、ownership、旧証明書2世代cleanup、native build、実MSIX lifecycle、残留ゼロ、run `33246589566` |
 | Windows実機旧trust cleanup | PASS。旧7 unique thumbprintsがCurrentUser/LocalMachine TrustedPeopleとも0。現行`022B95...`のみ残存 |
 | Windows実機最終status | PASS。0.3.0.0、1 package leaf、config一致、`usable_installed_state: true` |
 | Windows Explorer実UI | PASS。BEADS folder右クリック→`Skill Magnet`→`PMO`→確認UI→Codex→最終確認 |
@@ -75,4 +76,4 @@ Windows Explorer実入口、Desktop handoff、Windows実MSIX lifecycle、macOS�
 
 公開配布境界: 現在のMSIXは製品仕様どおりローカル自己署名であり、Microsoft Store等へ公開する正式publisher identityではない。公開配布には外部の証明書・配布アカウント・秘密鍵管理が必要であり、これらを受領していない状態をGOへ読み替えない。
 
-CI証拠: 実装HEAD `76aad582945b4b692bfb24b3fe725bf871de2ad7`の[GitHub Actions run 33246388633](https://github.com/omusubiman5/skill-magnet/actions/runs/33246388633)
+CI証拠: 最終実装HEAD `ba37618d0af51847ebad9a1e00d4fee7b5758d6d`の[GitHub Actions run 33246589566](https://github.com/omusubiman5/skill-magnet/actions/runs/33246589566)

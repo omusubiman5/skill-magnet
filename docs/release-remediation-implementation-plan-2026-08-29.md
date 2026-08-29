@@ -138,7 +138,7 @@
 
 - P1-P4の実装項目は完了した。
 - 証明書cleanup実装基準commitは`668d45b2460955b39d7af97df2aa7ea7d379f6e5`、cleanup証拠をCLI結果へ保持する実装は`76aad58`。
-- 実装HEAD `76aad582945b4b692bfb24b3fe725bf871de2ad7`のGitHub Actions run [33246388633](https://github.com/omusubiman5/skill-magnet/actions/runs/33246388633)でWindows/macOSの117 testsがgreen。
+- 最終実装HEAD `ba37618d0af51847ebad9a1e00d4fee7b5758d6d`のGitHub Actions run [33246589566](https://github.com/omusubiman5/skill-magnet/actions/runs/33246589566)でWindows/macOSの117 testsがgreen。CI actionもNode 24対応版へ更新し、Node 20廃止警告を除去した。
 - Windows jobでは追加でcertificate ownership、旧自己署名証明書2世代のupgrade cleanup、native build、実MSIX install/status/rollback/uninstall、証明書・Appx・registry・external rootの残留ゼロがgreen。
 - macOS jobでは実Quick Actionのinstall、`/usr/bin/automator`実行、selected path probe、uninstall、transaction residueゼロがgreen。
 - Windows 0.3.0実機で、BEADS folderの右クリックから`Skill Magnet`→単一`PMO`→実行確認→Codex→最終確認を操作し、pack 9件を束縛したcontract `d372a02620e84f01a9a6e326d1826ba7`の`desktop_handoff_ready`を確認した。
