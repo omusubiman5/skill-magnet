@@ -346,6 +346,19 @@ class ActivationEndToEndTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
+        self.previous_local_app_data = os.environ.get("LOCALAPPDATA")
+        os.environ.setdefault("LOCALAPPDATA", str(self.root / "local-app-data"))
+        native_output = (
+            Path(__file__).resolve().parents[1]
+            / "native"
+            / "windows-modern-context-menu"
+            / "out"
+        )
+        native_output.mkdir(parents=True, exist_ok=True)
+        for binary in ("SkillMagnetCommand.dll", "SkillMagnetLauncher.exe"):
+            path = native_output / binary
+            if not path.exists():
+                path.write_bytes(b"unit-test-placeholder")
         self.repo = self.root / "separate-user-skill-repository"
         skill = self.repo / "bounded-answer"
         skill.mkdir(parents=True)
@@ -452,6 +465,10 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.fake_codex = self._fake_codex()
 
     def tearDown(self) -> None:
+        if self.previous_local_app_data is None:
+            os.environ.pop("LOCALAPPDATA", None)
+        else:
+            os.environ["LOCALAPPDATA"] = self.previous_local_app_data
         self.temporary.cleanup()
 
     def _fake_codex(self) -> tuple[str, ...]:
@@ -2499,7 +2516,8 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertEqual(command[0], str(expected_launcher))
         self.assertEqual(command[1], str(Path(sys.executable)))
         self.assertEqual(
-            command[command.index("--config") + 1], str(self.config_path.resolve())
+            command[command.index("--config") + 1],
+            os.path.abspath(str(self.config_path)),
         )
         self.assertEqual(command[command.index("--project") + 1], project)
         self.assertEqual(command[command.index("--pack") + 1], "bounded-pack")
@@ -2632,7 +2650,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                     self.assertEqual(substituted, windows_command(expected_argv))
                     self.assertEqual(
                         expected_argv[expected_argv.index("--config") + 1],
-                        str(config.resolve()),
+                        os.path.abspath(str(config)),
                     )
                     self.assertEqual(
                         expected_argv[expected_argv.index("--project") + 1],

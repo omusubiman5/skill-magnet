@@ -82,7 +82,7 @@ class WindowsMenuLeaf:
 def _windows_launcher_path() -> Path:
     local_app_data = os.environ.get("LOCALAPPDATA")
     if not local_app_data:
-        local_app_data = str(Path.home() / "AppData" / "Local")
+        local_app_data = tempfile.gettempdir()
     return Path(local_app_data) / "SkillMagnet" / "ContextMenu" / "SkillMagnetLauncher.exe"
 
 
