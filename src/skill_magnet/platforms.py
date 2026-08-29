@@ -392,8 +392,13 @@ def windows_modern_context_menu_status(
     status = _package_action("status", script, install_root=root, run=run)
     package_registered = bool(status.get("installed"))
     package_location = status.get("install_location")
+    # Preserve the concrete path flavour supplied by the caller.  Tests exercise
+    # the Windows contract on macOS by patching ``os.name``; constructing a new
+    # pathlib.Path while that patch is active would incorrectly try to create a
+    # WindowsPath on a POSIX host.
+    path_type = type(root)
     content_root = (
-        Path(str(package_location))
+        path_type(str(package_location))
         if package_registered and package_location
         else root
     )
@@ -466,7 +471,7 @@ def windows_modern_context_menu_status(
                 )
                 targets = {leaf.command[0] for leaf in expected_leaves}
                 if len(targets) == 1:
-                    command_target = Path(next(iter(targets)))
+                    command_target = path_type(next(iter(targets)))
                     command_target_exists = command_target.is_file()
                     self_signed_launcher_referenced = (
                         command_target.name.casefold() == "skillmagnetlauncher.exe"
