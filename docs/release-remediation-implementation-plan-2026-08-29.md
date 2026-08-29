@@ -138,11 +138,11 @@
 
 - P1-P4の実装項目は完了した。
 - 証明書cleanup実装基準commitは`668d45b2460955b39d7af97df2aa7ea7d379f6e5`、cleanup証拠をCLI結果へ保持する実装は`76aad58`。
-- 最終実装HEAD `ba37618d0af51847ebad9a1e00d4fee7b5758d6d`のGitHub Actions run [33246589566](https://github.com/omusubiman5/skill-magnet/actions/runs/33246589566)でWindows/macOSの117 testsがgreen。CI actionもNode 24対応版へ更新し、Node 20廃止警告を除去した。
-- Windows jobでは追加でcertificate ownership、旧自己署名証明書2世代のupgrade cleanup、native build、実MSIX install/status/rollback/uninstall、証明書・Appx・registry・external rootの残留ゼロがgreen。
-- macOS jobでは実Quick Actionのinstall、`/usr/bin/automator`実行、selected path probe、uninstall、transaction residueゼロがgreen。
+- release code SHA `b4f68209a2c898879c3f279ce7080ca7301a186b`のGitHub Actions run [33248318073](https://github.com/omusubiman5/skill-magnet/actions/runs/33248318073)でWindows/macOSの120 testsとcanonical wheel gateがgreen。CI actionもNode 24対応版へ更新し、廃止runtime警告を除去した。
+- Windows jobでは追加でcertificate ownership、wheel-installed native build、実MSIX初回install→update→直前版rollback→uninstall、製品所有証明書・Appx・registry・external root・rollback pointの残留ゼロがgreen。
+- macOS jobでは実Quick Actionのinstall、`/usr/bin/automator`実行、通常の製品adapter到達、uninstall、transaction residueゼロがgreen。
 - Windows 0.3.0実機で、BEADS folderの右クリックから`Skill Magnet`→単一`PMO`→実行確認→Codex→最終確認を操作し、pack 9件を束縛したcontract `d372a02620e84f01a9a6e326d1826ba7`の`desktop_handoff_ready`を確認した。
-- Windows 0.3.0実機upgradeで、exact subject/issuer、code-signing EKU、CurrentUser/LocalMachine双方の存在を満たす旧`CN=Skill Magnet Local` thumbprint 7件を削除した。現行thumbprint `022B95CF60214A2F7A36BE33E1112B5A62831561`だけが3 storeに残り、modern menuは`usable_installed_state: true`である。
-- 自動化で代替しない残件は、Codex Desktop新規taskの自然文回答確認のみ。実行中のCodex taskから自己起動したため、task一覧に新規の送信済みtaskは現れず、完了へ昇格していない。
+- Windows 0.3.0実機upgradeで旧`CN=Skill Magnet Local` thumbprint 7件を削除した。現行実装は属性一致から所有権を推定せず、stateの`owned_certificate_thumbprints`だけをcleanup対象にする。現行thumbprint `022B95CF60214A2F7A36BE33E1112B5A62831561`だけが3 storeに残り、modern menuは`usable_installed_state: true`である。
+- Codex Desktop新規taskの自然文回答をユーザーが確認した。回答はINDEXルーティングに従うPMOパックの組合せ適用、具体的なBEADS文書レビュー、対象外能力の不適用、ファイル変更なしを示した。handoff証拠自体は回答完了へ昇格させず、ユーザー実機受入として別記録した。
 
-**Release boundary:** このrepositoryが定義するローカル導入版0.3.0の実装ゲートは、Desktop自然文結果の人手確認を除き完了。Microsoft Store等の公開配布は製品仕様外で、正式publisher identity・配布アカウント・秘密鍵が別途必要であり、このローカル自己署名候補を公開版GOとは扱わない。
+**Release boundary:** このrepositoryが定義するローカル自己署名版0.3.0は全実装ゲートと実機受入を完了し`GO`。Microsoft Store等の公開配布は製品仕様外で、正式publisher identity・配布アカウント・秘密鍵が別途必要であり、このローカル自己署名候補を公開Store版GOとは扱わない。
