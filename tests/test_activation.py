@@ -3455,18 +3455,31 @@ class ActivationEndToEndTest(unittest.TestCase):
 
     def test_macos_installer_creates_and_removes_finder_quick_action(self) -> None:
         services = self.root / "Library" / "Services"
-        result = install_context_menu(
-            "macos", self.config_path, services_dir=services
-        )
+        probe = self.root / "finder probe.txt"
+        with mock.patch.dict(
+            os.environ, {"SKILL_MAGNET_FINDER_E2E_PROBE": str(probe)}
+        ):
+            result = install_context_menu(
+                "macos", self.config_path, services_dir=services
+            )
         workflow = services / "Skill Magnet.workflow" / "Contents" / "document.wflow"
         self.assertTrue(result["installed"])
         self.assertTrue(workflow.is_file())
         workflow_bytes = workflow.read_bytes()
         self.assertIn(b"com.apple.RunShellScript", workflow_bytes)
-        self.assertIn(b"SKILL_MAGNET_FINDER_E2E_PROBE", workflow_bytes)
+        self.assertIn(b"finder probe.txt", workflow_bytes)
         removed = uninstall_context_menu("macos", services_dir=services)
         self.assertTrue(removed["removed"])
         self.assertFalse(workflow.parent.parent.exists())
+
+    def test_macos_product_workflow_omits_release_probe(self) -> None:
+        services = self.root / "product-services"
+        with mock.patch.dict(
+            os.environ, {"SKILL_MAGNET_FINDER_E2E_PROBE": ""}
+        ):
+            install_context_menu("macos", self.config_path, services_dir=services)
+        workflow = services / "Skill Magnet.workflow" / "Contents" / "document.wflow"
+        self.assertNotIn(b"finder probe.txt", workflow.read_bytes())
         self.assertFalse(self.state.exists())
 
 

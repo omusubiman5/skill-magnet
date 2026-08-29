@@ -6,6 +6,7 @@ import base64
 import os
 import plistlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1060,14 +1061,19 @@ def install_context_menu(
     temporary_root = Path(tempfile.mkdtemp(prefix=".skill-magnet-workflow-", dir=base))
     workflow = temporary_root / "Contents"
     workflow.mkdir()
-    # The probe is inert unless a release CI runner explicitly supplies its
-    # output path. It lets CI execute the real Finder/Automator workflow and
-    # prove that Finder's selected path reaches the adapter without opening an
-    # interactive AI task.
-    probe_command = (
-        'if [[ -n "${SKILL_MAGNET_FINDER_E2E_PROBE:-}" ]]; then '
-        'printf "%s" "$1" > "$SKILL_MAGNET_FINDER_E2E_PROBE"; exit 0; fi\n'
-    )
+    # Automator intentionally sanitizes the parent process environment. A
+    # release runner may therefore request an install-time probe, embedded as
+    # one shell-quoted absolute path. Normal product workflows contain no
+    # probe branch at all.
+    probe_target = os.environ.get("SKILL_MAGNET_FINDER_E2E_PROBE")
+    probe_command = ""
+    if probe_target:
+        probe_path = type(_PACKAGE_ROOT)(probe_target)
+        if not probe_path.is_absolute():
+            raise SafetyError("Finder E2E probe path must be absolute")
+        probe_command = (
+            f'printf "%s" "$1" > {shlex.quote(str(probe_path))}; exit 0\n'
+        )
     shell_command = probe_command + subprocess_command(spec.command).replace(
         '"$SELECTED_PATH"', '"$1"'
     )

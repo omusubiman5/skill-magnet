@@ -9,7 +9,7 @@
 <!-- explorer-results-ledger:start
 {
   "release_scope": "one-package-leaf",
-  "full_test_count": 116,
+  "full_test_count": 117,
   "menu_leaf_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
@@ -19,7 +19,7 @@
 }
 explorer-results-ledger:end -->
 
-- 統合テスト: `python -m unittest discover -s tests -v` — 116 tests PASS
+- 統合テスト: `python -m unittest discover -s tests -v` — 117 tests PASS
 - menu contract: 1 package leaf / selection kind `package` / pack内9 skills
 - 自動証拠: contract固定、INDEX/全SKILL materialization、source改変耐性、deep-link binding、CLI非起動、rollback、残留物回収
 - 実機証拠の扱い: 旧buildのExplorer表示成功は履歴証拠に限定し、0.3.0の再build後にDirectory/Backgroundを再試験する
