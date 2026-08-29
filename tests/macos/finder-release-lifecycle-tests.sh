@@ -21,6 +21,10 @@ document="${workflow}/Contents/document.wflow"
 [[ -f "${document}" ]] || { print -u2 "Finder workflow was not installed"; exit 1; }
 
 /usr/bin/automator -v -i "${test_root}/selected folder" "${workflow}"
+for attempt in {1..100}; do
+  [[ -f "${SKILL_MAGNET_FINDER_E2E_PROBE}" ]] && break
+  sleep 0.1
+done
 [[ -f "${SKILL_MAGNET_FINDER_E2E_PROBE}" ]] || {
   print -u2 "Finder workflow did not execute its adapter"
   exit 1
