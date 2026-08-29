@@ -38,4 +38,4 @@ Windows 0.3.2候補の最終受入では、次を新しい証拠として追記�
 2. package leafからCodex Desktop新規タスクを開き、materialized INDEX/全SKILLを読み、依頼に必要な部分集合だけを適用した自然文回答。
 3. update、rollback、uninstall後のAppx・証明書・ContextMenu/rollback残留ゼロ。CIでは旧自己署名trust 2世代のupgrade cleanupも含めて確認済み。
 
-macOS Finderはcommunity betaです。macOS runner上の実Quick Action install、`/usr/bin/automator`実行、通常の製品`context` adapter到達、uninstall、残留ゼロは最終artifact-input commit `69d5029…`を含むrun `33251926434`で独立に確認済みです。Finderのメニュー表示そのものは人手UX受入であり、このWindows証拠を転用しません。
+macOS Finderはcommunity betaです。macOS runner上の実Quick Action install、`/usr/bin/automator`実行、通常の製品`context` adapter到達、uninstall、残留ゼロは最終artifact-input commit `69d5029…`と125 testsを含むrun `33252451350`で独立に確認済みです。Finderのメニュー表示そのものは人手UX受入であり、このWindows証拠を転用しません。

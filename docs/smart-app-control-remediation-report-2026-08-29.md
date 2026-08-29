@@ -34,7 +34,7 @@ launcherを外した初期0.3.1でも、外部locationの自己署名`SkillMagne
 | canonical wheel | PASS: physical SHA-256 `e86ad84ef4d82235db5358bae952f9668a72ee4f70a9c3d747058af06b38b32c`、logical payload SHA-256 `9dd17c9ec1e7b4fa97fcd74fd55b34c46e2fc2a698f590eabca4cf21c5f17d40` |
 | real OS lifecycle | PASS: install → update → rollback → uninstall |
 | lifecycle residue | PASS: Appx、owned registry、rollback point、external test rootは0 |
-| remote CI | PASS: final artifact-input commitを含むrun `33251926434`でWindows/macOS green |
+| remote CI | PASS: final artifact-input commitと125 testsを含むrun `33252451350`でWindows/macOS green |
 
 ## 旧GO判定の訂正
 
