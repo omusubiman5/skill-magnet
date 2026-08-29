@@ -41,7 +41,7 @@ class DistributionArtifactTest(unittest.TestCase):
                     name
                     for name in names
                     if name.endswith(
-                        "skill_magnet/_packs/codex-pmo-skills-c7747bba/"
+                        "skill_magnet/_packs/codex-delivery-assurance-8f12af5/"
                         "codex-sandbox-approval-boundary/SKILL.md"
                     )
                 )
@@ -50,9 +50,9 @@ class DistributionArtifactTest(unittest.TestCase):
                 [
                     "git",
                     "-C",
-                    str(ROOT / ".approved-snapshots" / "codex-pmo-skills-c7747bba"),
+                    str(ROOT / ".approved-snapshots" / "codex-delivery-assurance-8f12af5"),
                     "show",
-                    "c7747bba0bc391316aa558b3b4e8dd412045d2dc:"
+                    "8f12af5ddfdd3b985f26d33dad09d6061d675342:"
                     "codex-sandbox-approval-boundary/SKILL.md",
                 ],
                 check=True,
@@ -63,8 +63,8 @@ class DistributionArtifactTest(unittest.TestCase):
                 "skill_magnet/skill-magnet.json",
                 "skill_magnet/_native/windows-modern-context-menu/build.ps1",
                 "skill_magnet/_native/windows-modern-context-menu/package.ps1",
-                "skill_magnet/_packs/codex-pmo-skills-c7747bba/INDEX.md",
-                "skill_magnet/_packs/codex-pmo-skills-c7747bba/.skill-magnet-snapshot.json",
+                "skill_magnet/_packs/codex-delivery-assurance-8f12af5/INDEX.md",
+                "skill_magnet/_packs/codex-delivery-assurance-8f12af5/.skill-magnet-snapshot.json",
             )
             for suffix in expected_suffixes:
                 self.assertTrue(any(name.endswith(suffix) for name in names), suffix)
@@ -94,7 +94,7 @@ from skill_magnet.platforms import _windows_modern_paths
 from skill_magnet.platforms import windows_menu_leaves
 config_path = _default_config_path()
 config = Config.load(config_path)
-pack = config.packs["codex-pmo-skills"]
+pack = config.packs["codex-delivery-assurance"]
 commit, hashes = Engine(config)._validate_pack(pack)
 native, _, package_script = _windows_modern_paths(Path.cwd() / "external")
 leaves = windows_menu_leaves(config_path, "%1")
@@ -124,7 +124,7 @@ print(json.dumps({
             )
             self.assertEqual(probed.returncode, 0, probed.stderr or probed.stdout)
             result = json.loads(probed.stdout)
-            self.assertEqual(result["commit"], "c7747bba0bc391316aa558b3b4e8dd412045d2dc")
+            self.assertEqual(result["commit"], "8f12af5ddfdd3b985f26d33dad09d6061d675342")
             self.assertEqual(result["skills"], 9)
             self.assertTrue(result["config"])
             self.assertTrue(result["native"])

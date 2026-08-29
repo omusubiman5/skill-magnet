@@ -210,7 +210,7 @@ python -m skill_magnet --config /path/to/skill-magnet.json uninstall-context-men
 実packを変更せず事前検証するには `activation-plan` を使います。
 
 ```powershell
-python -m skill_magnet activation-plan --platform windows --project C:\path\to\target --pack codex-pmo-skills --purpose "このタスクの目的"
+python -m skill_magnet activation-plan --platform windows --project C:\path\to\target --pack codex-delivery-assurance --purpose "このタスクの目的"
 ```
 
 保管庫契約は [`docs/skill-repository-contract.md`](docs/skill-repository-contract.md) を参照してください。

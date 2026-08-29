@@ -1558,10 +1558,10 @@ class ActivationEndToEndTest(unittest.TestCase):
         leaves = windows_menu_leaves(product_config, "%1")
         self.assertEqual(len(leaves), 1)
         leaf = leaves[0]
-        self.assertEqual(leaf.pack_id, "codex-pmo-skills")
+        self.assertEqual(leaf.pack_id, "codex-delivery-assurance")
         self.assertIsNone(leaf.skill_id)
         self.assertEqual(len(leaf.skill_ids), 9)
-        self.assertEqual(leaf.display_name, "PMO")
+        self.assertEqual(leaf.display_name, "Delivery Assurance")
         self.assertNotIn("--skill", leaf.command)
         self.assertNotIn("--runtime", leaf.command)
         self.assertIn("--menu-instruction-digest", leaf.command)
@@ -1598,7 +1598,7 @@ class ActivationEndToEndTest(unittest.TestCase):
     def test_both_roots_propagate_complete_pack_contract_and_reject_tampering(self) -> None:
         product_config = Path(__file__).resolve().parents[1] / "skill-magnet.json"
         config = Config.load(product_config)
-        purpose = config.packs["codex-pmo-skills"].purpose
+        purpose = config.packs["codex-delivery-assurance"].purpose
         cases = (("Directory", "%1"), ("Background", "%V"))
         for root_name, placeholder in cases:
             with self.subTest(root=root_name):
@@ -1618,7 +1618,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                 self.assertEqual(details["selection_kind"], "pack")
                 self.assertIsNone(details["selected_skill_id"])
                 self.assertEqual(details["skill_ids"], config.packs[leaf.pack_id].skills)
-                self.assertEqual(details["skill_display_name"], "PMO")
+                self.assertEqual(details["skill_display_name"], "Delivery Assurance")
                 self.assertEqual(len(details["all_skill_ids"]), 9)
                 self.assertEqual(details["instruction_digest"], leaf.instruction_digest)
                 self.assertEqual(details["acceptance_digest"], leaf.acceptance_digest)

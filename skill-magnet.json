@@ -6,13 +6,13 @@
   "state_dir": "~/.skill-magnet",
   "packs": [
     {
-      "id": "codex-pmo-skills",
-      "menu_label": "PMO",
+      "id": "codex-delivery-assurance",
+      "menu_label": "Delivery Assurance",
       "selection_kind": "package",
       "repo_url": "https://github.com/omusubiman5/codex-pmo-skills.git",
-      "expected_commit": "c7747bba0bc391316aa558b3b4e8dd412045d2dc",
-      "source": "package://codex-pmo-skills-c7747bba",
-      "purpose": "Apply reviewed Codex execution, authorization, sandbox, MCP, CI, and context-routing controls.",
+      "expected_commit": "8f12af5ddfdd3b985f26d33dad09d6061d675342",
+      "source": "package://codex-delivery-assurance-8f12af5",
+      "purpose": "Assess delivery readiness with reviewed Codex execution, authorization, sandbox, MCP, CI, context-routing, and handoff controls.",
       "approved_by": "user",
       "approved_at": "2026-08-22T18:15:11.6526999+09:00",
       "skill_metadata": {

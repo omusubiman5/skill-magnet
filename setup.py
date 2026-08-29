@@ -11,7 +11,7 @@ from setuptools.command.build_py import build_py
 
 
 ROOT = Path(__file__).resolve().parent
-PACK_NAME = "codex-pmo-skills-c7747bba"
+PACK_NAME = "codex-delivery-assurance-8f12af5"
 PACK_SOURCE = ROOT / ".approved-snapshots" / PACK_NAME
 NATIVE_SOURCE = ROOT / "native" / "windows-modern-context-menu"
 
