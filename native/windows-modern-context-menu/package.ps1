@@ -91,7 +91,7 @@ if ($Action -eq "install") {
             }
         }
     }
-    Add-AppxPackage -Path $package -ExternalLocation $ExternalLocation -ForceApplicationShutdown
+    Add-AppxPackage -Path $package -ForceApplicationShutdown
 }
 elseif ($Action -eq "uninstall") {
     Get-AppxPackage -Name $name | Remove-AppxPackage

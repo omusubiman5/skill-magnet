@@ -106,7 +106,9 @@ print(json.dumps({
     "package_script": package_script.is_file(),
     "leaves": len(leaves),
     "command_uses_installed_package": (
-        repr(str(config_path.parent.parent))[1:-1] in leaves[0].command[3]
+        repr(str(config_path.parent.parent))[1:-1] in next(
+            part for part in leaves[0].command if "runpy.run_module" in part
+        )
         and str(config_path) in leaves[0].command
     ),
 }))
@@ -141,6 +143,28 @@ print(json.dumps({
         ).getroot()
         identity = next(element for element in manifest if element.tag.endswith("Identity"))
         self.assertEqual(identity.attrib["Version"], f"{python_version}.0")
+
+    def test_windows_release_packages_native_extension_inside_msix(self) -> None:
+        manifest = (
+            ROOT / "native" / "windows-modern-context-menu" / "AppxManifest.xml"
+        ).read_text(encoding="utf-8")
+        builder = (
+            ROOT / "native" / "windows-modern-context-menu" / "build-package.ps1"
+        ).read_text(encoding="utf-8")
+        installer = (
+            ROOT / "native" / "windows-modern-context-menu" / "package.ps1"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("AllowExternalContent", manifest)
+        self.assertIn('"SkillMagnetCommand.dll"', builder)
+        self.assertIn('"SkillMagnetIdentity.exe"', builder)
+        self.assertIn('"SkillMagnetMenu.tsv"', builder)
+        self.assertNotIn(
+            "-ExternalLocation $ExternalLocation -ForceApplicationShutdown",
+            installer,
+        )
+        self.assertIn(
+            "Add-AppxPackage -Path $package -ForceApplicationShutdown", installer
+        )
 
 
 if __name__ == "__main__":

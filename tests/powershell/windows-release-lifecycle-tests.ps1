@@ -1,4 +1,8 @@
 $ErrorActionPreference = "Stop"
+$lifecycleTranscript = $env:SKILL_MAGNET_LIFECYCLE_TRANSCRIPT
+if ($lifecycleTranscript) {
+    Start-Transcript -LiteralPath $lifecycleTranscript -Force | Out-Null
+}
 
 function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
@@ -6,7 +10,16 @@ function Assert-True([bool]$Condition, [string]$Message) {
 
 $originalLocalAppData = $env:LOCALAPPDATA
 $originalTrustMode = $env:SKILL_MAGNET_NONINTERACTIVE_CERTIFICATE_TRUST
-$testBase = Join-Path $env:RUNNER_TEMP ("skill-magnet-release-" + [guid]::NewGuid())
+$isElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator
+)
+$testParent = if ($env:RUNNER_TEMP) {
+    $env:RUNNER_TEMP
+}
+else {
+    [IO.Path]::GetTempPath()
+}
+$testBase = Join-Path $testParent ("skill-magnet-release-" + [guid]::NewGuid())
 $installRoot = Join-Path $testBase "SkillMagnet\ContextMenu"
 $thumbprint = $null
 $legacyThumbprints = @()
@@ -14,38 +27,39 @@ $legacyThumbprints = @()
 try {
     New-Item -ItemType Directory -Path $testBase | Out-Null
     $env:LOCALAPPDATA = $testBase
-    $env:SKILL_MAGNET_NONINTERACTIVE_CERTIFICATE_TRUST = "1"
+    $env:SKILL_MAGNET_NONINTERACTIVE_CERTIFICATE_TRUST = if ($isElevated) { "1" } else { $null }
 
-    foreach ($index in 1..2) {
-        $legacy = New-SelfSignedCertificate -Type Custom `
-            -Subject "CN=Skill Magnet Local" `
-            -FriendlyName "Skill Magnet local package signing" `
-            -KeyUsage DigitalSignature -KeyExportPolicy Exportable `
-            -CertStoreLocation Cert:\CurrentUser\My `
-            -TextExtension @(
-                "2.5.29.37={text}1.3.6.1.5.5.7.3.3",
-                "2.5.29.19={text}"
-            )
-        $legacyThumbprints += $legacy.Thumbprint
-        $legacyCer = Join-Path $testBase "legacy-$index.cer"
-        Export-Certificate -Cert $legacy -FilePath $legacyCer | Out-Null
-        Import-Certificate -FilePath $legacyCer `
-            -CertStoreLocation Cert:\CurrentUser\TrustedPeople | Out-Null
-        Import-Certificate -FilePath $legacyCer `
-            -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null
-        Remove-Item -LiteralPath ("Cert:\CurrentUser\My\" + $legacy.Thumbprint) -Force
+    if ($isElevated) {
+        foreach ($index in 1..2) {
+            $legacy = New-SelfSignedCertificate -Type Custom `
+                -Subject "CN=Skill Magnet Local" `
+                -FriendlyName "Skill Magnet local package signing" `
+                -KeyUsage DigitalSignature -KeyExportPolicy Exportable `
+                -CertStoreLocation Cert:\CurrentUser\My `
+                -TextExtension @(
+                    "2.5.29.37={text}1.3.6.1.5.5.7.3.3",
+                    "2.5.29.19={text}"
+                )
+            $legacyThumbprints += $legacy.Thumbprint
+            $legacyCer = Join-Path $testBase "legacy-$index.cer"
+            Export-Certificate -Cert $legacy -FilePath $legacyCer | Out-Null
+            Import-Certificate -FilePath $legacyCer `
+                -CertStoreLocation Cert:\CurrentUser\TrustedPeople | Out-Null
+            Import-Certificate -FilePath $legacyCer `
+                -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null
+            Remove-Item -LiteralPath ("Cert:\CurrentUser\My\" + $legacy.Thumbprint) -Force
+        }
+        New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
+        [ordered]@{
+            thumbprint = $legacyThumbprints[-1]
+            created_my = $false
+            created_trusted_people = $false
+            created_machine_trusted_people = $false
+            owned_certificate_thumbprints = @($legacyThumbprints)
+        } | ConvertTo-Json | Set-Content `
+            -LiteralPath (Join-Path $installRoot "certificate-state.json") `
+            -Encoding UTF8
     }
-
-    New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
-    [ordered]@{
-        thumbprint = $legacyThumbprints[-1]
-        created_my = $false
-        created_trusted_people = $false
-        created_machine_trusted_people = $false
-        owned_certificate_thumbprints = @($legacyThumbprints)
-    } | ConvertTo-Json | Set-Content `
-        -LiteralPath (Join-Path $installRoot "certificate-state.json") `
-        -Encoding UTF8
 
     $defaultConfig = python -c "from skill_magnet.cli import _default_config_path; print(_default_config_path())"
     $priorConfig = Join-Path $testBase "prior-skill-magnet.json"
@@ -125,13 +139,15 @@ try {
 
     Assert-True (-not (Get-AppxPackage -Name "SkillMagnet.ContextMenu")) `
         "MSIX package remains installed."
-    foreach ($storePath in @(
-        "Cert:\CurrentUser\My\$thumbprint",
-        "Cert:\CurrentUser\TrustedPeople\$thumbprint",
-        "Cert:\LocalMachine\TrustedPeople\$thumbprint"
+    foreach ($ownedStore in @(
+        @{ Path = "Cert:\CurrentUser\My\$thumbprint"; Owned = [bool]$state.created_my },
+        @{ Path = "Cert:\CurrentUser\TrustedPeople\$thumbprint"; Owned = [bool]$state.created_trusted_people },
+        @{ Path = "Cert:\LocalMachine\TrustedPeople\$thumbprint"; Owned = [bool]$state.created_machine_trusted_people }
     )) {
-        Assert-True (-not (Test-Path -LiteralPath $storePath)) `
-            "Owned certificate remains in $storePath."
+        if ($ownedStore.Owned) {
+            Assert-True (-not (Test-Path -LiteralPath $ownedStore.Path)) `
+                "Owned certificate remains in $($ownedStore.Path)."
+        }
     }
     Assert-True (-not (Test-Path -LiteralPath $installRoot)) `
         "External install root remains after rollback."
@@ -155,16 +171,20 @@ finally {
             -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath "Cert:\CurrentUser\TrustedPeople\$thumbprint" `
             -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath "Cert:\LocalMachine\TrustedPeople\$thumbprint" `
-            -Force -ErrorAction SilentlyContinue
+        if ($isElevated) {
+            Remove-Item -LiteralPath "Cert:\LocalMachine\TrustedPeople\$thumbprint" `
+                -Force -ErrorAction SilentlyContinue
+        }
     }
     foreach ($legacyThumbprint in $legacyThumbprints) {
         Remove-Item -LiteralPath ("Cert:\CurrentUser\My\" + $legacyThumbprint) `
             -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath ("Cert:\CurrentUser\TrustedPeople\" + $legacyThumbprint) `
             -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath ("Cert:\LocalMachine\TrustedPeople\" + $legacyThumbprint) `
-            -Force -ErrorAction SilentlyContinue
+        if ($isElevated) {
+            Remove-Item -LiteralPath ("Cert:\LocalMachine\TrustedPeople\" + $legacyThumbprint) `
+                -Force -ErrorAction SilentlyContinue
+        }
     }
     foreach ($registryRoot in @(
         "HKCU:\Software\Classes\Directory\shell\SkillMagnetClassic",
@@ -179,4 +199,7 @@ finally {
     }
     $env:LOCALAPPDATA = $originalLocalAppData
     $env:SKILL_MAGNET_NONINTERACTIVE_CERTIFICATE_TRUST = $originalTrustMode
+    if ($lifecycleTranscript) {
+        Stop-Transcript | Out-Null
+    }
 }

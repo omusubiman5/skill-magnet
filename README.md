@@ -62,7 +62,7 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 
    ```powershell
    python -m pip wheel . --no-deps --wheel-dir .\dist
-   python -m pip install --force-reinstall .\dist\skill_magnet-0.3.0-py3-none-any.whl
+   python -m pip install --force-reinstall .\dist\skill_magnet-0.3.2-py3-none-any.whl
    ```
 
 3. Windowsの右クリックメニューを登録します。このcommandはrepository rootで、そのままcopy/pasteできます。
@@ -111,6 +111,9 @@ python -m skill_magnet context-menu-status --platform windows
     "Directory",
     "Directory\\Background"
   ],
+  "command_target_signature_valid": true,
+  "self_signed_launcher_referenced": false,
+  "deprecated_launcher_exists": false,
   "usable_installed_state": true
 }
 ```
@@ -119,7 +122,7 @@ python -m skill_magnet context-menu-status --platform windows
 
 ### 確認画面で「いいえ」を押した／登録に失敗した
 
-UACを拒否しても、作業対象projectのfile、skill内容、Codex/Claude設定を壊しません。登録処理は途中状態を成功扱いにせず、保存した導入前状態へ戻すか、modernが使えない場合はclassic fallbackだけへ切り替えます。modernとclassicを意図的に二重登録せず、自動でUACを承認したり勝手に再試行したりしません。
+UACを拒否しても、作業対象projectのfile、skill内容、Codex/Claude設定を壊しません。登録処理は途中状態を成功扱いにせず、保存した導入前状態へ戻してerrorで停止します。Smart App Controlで遮断され得るclassic fallbackへ切り替えず、自動でUACを承認したり勝手に再試行したりしません。
 
 次の順で再開します。
 
@@ -141,7 +144,7 @@ UACを拒否しても、作業対象projectのfile、skill内容、Codex/Claude�
 
 ### その他のオプションにしか表示されない
 
-`その他のオプションを表示`にだけ`Skill Magnet`がある場合、Windows 11 modernメニューを利用できず、classic fallbackが有効になっています。fallbackは故障時にも入口を一つに保つための代替経路で、modernと同時に表示する正規状態ではありません。
+`その他のオプションを表示`にだけ`Skill Magnet`がある場合は、旧版のclassic登録が残っている異常状態です。現行版はclassic fallbackを提供しません。旧版の自己署名launcherはSmart App Controlに遮断され得るため、入口が見えても起動可能とは判定しません。
 
 まずstatusを実行し、`usable_installed_state`が`false`であることを確認します。次に、前節の手順どおり同じinstall commandを一度だけ実行してmodern登録を復旧します。復旧後は`usable_installed_state`が`true`になり、通常右クリック側だけに`Skill Magnet`が表示されます。
 
@@ -189,7 +192,7 @@ secret、API key、password、認証fileの内容は含めないでください�
 
 modernメニューは署名済みMSIX identity packageとExplorer用COM commandを登録します。初回または証明書が未登録のとき、Windows標準の`certutil.exe`を昇格起動し、`Skill Magnet Local`証明書をmachineの`TrustedPeople`へ登録します。cleanupではSkill Magnetが作成した証明書だけを削除します。
 
-installは単一transactionでrollback pointを作り、modernがusableならclassic rootを削除します。modern登録に失敗した場合は部分登録を除去してclassic fallbackだけを登録し、transaction自体が失敗した場合はrollback pointを復元します。`SkillMagnetLauncher.exe`とruntime childは`CREATE_NO_WINDOW`で起動し、通常実行でcmd/Terminalを作りません。
+installは単一transactionでrollback pointを作り、modernがusableならclassic rootを削除します。modern登録に失敗した場合は部分登録を除去し、rollback pointを復元してerrorで停止します。Explorer用COM DLLは、メニューmanifestに固定したAuthenticode-validなPythonを`CREATE_NO_WINDOW`で直接起動します。自己署名のprocess adapterは実行経路に置きません。sparse packageが要求する`SkillMagnetIdentity.exe`はidentity anchor専用で、メニュー選択時には実行されません。
 
 </details>
 

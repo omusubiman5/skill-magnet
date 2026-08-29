@@ -65,13 +65,7 @@ try {
     if ($createdTrust) {
         Import-Certificate -FilePath $cer -CertStoreLocation Cert:\CurrentUser\TrustedPeople | Out-Null
     }
-    $layout = Join-Path $temporary "layout"
-    New-Item -ItemType Directory -Path $layout | Out-Null
-    Copy-Item -LiteralPath (Join-Path $ExternalLocation "AppxManifest.xml") -Destination (Join-Path $layout "AppxManifest.xml")
-    $package = Join-Path $ExternalLocation "SkillMagnet.ContextMenu.msix"
-    & $makeAppx pack /d $layout /p $package /nv /o
-    if ($LASTEXITCODE -ne 0) { throw "makeappx failed ($LASTEXITCODE)." }
-    foreach ($binaryName in @("SkillMagnetCommand.dll", "SkillMagnetLauncher.exe")) {
+    foreach ($binaryName in @("SkillMagnetCommand.dll", "SkillMagnetIdentity.exe")) {
         $binary = Join-Path $ExternalLocation $binaryName
         if (-not (Test-Path -LiteralPath $binary)) {
             throw "Required native binary is missing: $binaryName"
@@ -79,6 +73,22 @@ try {
         & $signTool sign /fd SHA256 /s My /sha1 $certificate.Thumbprint $binary
         if ($LASTEXITCODE -ne 0) { throw "signtool failed for $binaryName ($LASTEXITCODE)." }
     }
+    $layout = Join-Path $temporary "layout"
+    New-Item -ItemType Directory -Path $layout | Out-Null
+    foreach ($fileName in @(
+        "AppxManifest.xml",
+        "SkillMagnetCommand.dll",
+        "SkillMagnetIdentity.exe",
+        "SkillMagnetMenu.tsv"
+    )) {
+        Copy-Item -LiteralPath (Join-Path $ExternalLocation $fileName) `
+            -Destination (Join-Path $layout $fileName)
+    }
+    Copy-Item -LiteralPath (Join-Path $ExternalLocation "Assets") `
+        -Destination (Join-Path $layout "Assets") -Recurse
+    $package = Join-Path $ExternalLocation "SkillMagnet.ContextMenu.msix"
+    & $makeAppx pack /d $layout /p $package /nv /o
+    if ($LASTEXITCODE -ne 0) { throw "makeappx failed ($LASTEXITCODE)." }
     & $signTool sign /fd SHA256 /s My /sha1 $certificate.Thumbprint $package
     if ($LASTEXITCODE -ne 0) { throw "signtool failed ($LASTEXITCODE)." }
     Merge-SkillMagnetCertificateState `

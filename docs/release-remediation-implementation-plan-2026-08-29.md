@@ -1,5 +1,7 @@
 # Skill Magnet リリース是正実装計画
 
+> **Superseded:** 0.3.0のGO判定はSmart App Control error 4551の実機反証により撤回しました。現行計画は[`smart-app-control-remediation-plan-2026-08-29.md`](smart-app-control-remediation-plan-2026-08-29.md)です。
+
 ## Step 0. Source ledger
 
 - **S1:** 「実装計画書MDを作って、修正して。実装報告書MDを作って。」（ユーザー依頼）

@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import ctypes
 import os
-import subprocess
 import sys
 import tempfile
-import time
 import uuid
 from pathlib import Path
 
@@ -55,8 +53,8 @@ def main() -> int:
     if len(sys.argv) != 2:
         return 2
     dll_path = Path(sys.argv[1]).resolve()
-    launcher_path = dll_path.with_name("SkillMagnetLauncher.exe")
-    if not launcher_path.is_file():
+    identity_path = dll_path.with_name("SkillMagnetIdentity.exe")
+    if not identity_path.is_file():
         return 5
     menu_path = dll_path.with_name("SkillMagnetMenu.tsv")
     lines = menu_path.read_text(encoding="utf-8-sig").splitlines()
@@ -169,25 +167,11 @@ def main() -> int:
         if library.DllCanUnloadNow() != 0:
             raise RuntimeError("DLL cannot unload after contract test")
 
-        marker = Path(local_app_data) / "console-probe.txt"
-        probe = (
-            "import ctypes,pathlib;"
-            f"pathlib.Path({str(marker)!r}).write_text("
-            "str(ctypes.windll.kernel32.GetConsoleWindow()),encoding='ascii')"
-        )
-        launched = subprocess.run(
-            [str(launcher_path), sys.executable, "-c", probe],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if launched.returncode != 0:
-            raise RuntimeError(f"launcher failed: {launched.returncode}")
-        deadline = time.monotonic() + 5
-        while not marker.is_file() and time.monotonic() < deadline:
-            time.sleep(0.02)
-        if not marker.is_file() or marker.read_text(encoding="ascii") != "0":
-            raise RuntimeError("launcher child inherited or created a console window")
+        # The sparse package needs an executable identity anchor, but Explorer
+        # commands must never run it. SkillMagnetCommand.dll launches the
+        # Authenticode-valid Python command from SkillMagnetMenu.tsv directly.
+        if any("SkillMagnetLauncher.exe" in line for line in lines):
+            raise RuntimeError("policy-incompatible launcher remains in menu contract")
     print("SkillMagnet IExplorerCommand contract PASS (Python host)")
     return 0
 

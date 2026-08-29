@@ -79,22 +79,7 @@ class WindowsMenuLeaf:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _windows_launcher_path() -> Path:
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if not local_app_data:
-        local_app_data = tempfile.gettempdir()
-    # Path chooses its concrete class from os.name at call time.  The Windows
-    # contract is also exercised on POSIX runners with os.name mocked, so keep
-    # the host-native class captured at import time.
-    return (
-        type(_PACKAGE_ROOT)(local_app_data)
-        / "SkillMagnet"
-        / "ContextMenu"
-        / "SkillMagnetLauncher.exe"
-    )
-
-
-def _cli_prefix(config: Path, *, windows_launcher: bool = False) -> tuple[str, ...]:
+def _cli_prefix(config: Path) -> tuple[str, ...]:
     """Return a command that works from Explorer's unrelated working directory."""
     source_root = _SOURCE_ROOT
     bootstrap = (
@@ -103,14 +88,11 @@ def _cli_prefix(config: Path, *, windows_launcher: bool = False) -> tuple[str, .
         "runpy.run_module('skill_magnet',run_name='__main__')"
     )
     executable = type(_PACKAGE_ROOT)(sys.executable)
-    command = (str(executable), "-c", bootstrap, "--config", str(config.absolute()))
-    if windows_launcher:
-        return (str(_windows_launcher_path()), *command)
-    return command
+    return (str(executable), "-c", bootstrap, "--config", str(config.absolute()))
 
 
 def context_menu_spec(platform: str, config: Path) -> ContextMenuSpec:
-    prefix = _cli_prefix(config, windows_launcher=platform == "windows")
+    prefix = _cli_prefix(config)
     if platform == "windows":
         placeholder = "%V"
         return ContextMenuSpec(
@@ -178,7 +160,7 @@ def _windows_leaf_argv(
         )
     ).hexdigest()
     command = [
-        *_cli_prefix(config, windows_launcher=True),
+        *_cli_prefix(config),
         "context",
         "--platform",
         "windows",
@@ -408,7 +390,14 @@ def windows_modern_context_menu_status(
 ) -> dict[str, object]:
     _, root, script = _windows_modern_paths(install_root)
     status = _package_action("status", script, install_root=root, run=run)
-    manifest = root / "AppxManifest.xml"
+    package_registered = bool(status.get("installed"))
+    package_location = status.get("install_location")
+    content_root = (
+        Path(str(package_location))
+        if package_registered and package_location
+        else root
+    )
+    manifest = content_root / "AppxManifest.xml"
     identity_matches = False
     com_identity_matches = False
     manifest_contexts: list[str] = []
@@ -436,16 +425,21 @@ def windows_modern_context_menu_status(
         except (ET.ParseError, OSError):
             pass
     expected_contexts = ["Directory", r"Directory\Background"]
-    command_target_exists = (root / "SkillMagnetLauncher.exe").is_file()
-    dll_exists = (root / "SkillMagnetCommand.dll").is_file()
-    menu_manifest_exists = (root / "SkillMagnetMenu.tsv").is_file()
+    identity_anchor_exists = (content_root / "SkillMagnetIdentity.exe").is_file()
+    deprecated_launcher_exists = (content_root / "SkillMagnetLauncher.exe").exists()
+    dll_exists = (content_root / "SkillMagnetCommand.dll").is_file()
+    menu_manifest_exists = (content_root / "SkillMagnetMenu.tsv").is_file()
     menu_leaf_count = 0
     menu_selection_kinds: list[str] = []
     menu_contract_valid = False
     menu_contract_matches_config: bool | None = None
+    command_target: Path | None = None
+    command_target_exists = False
+    command_target_signature_valid = False
+    self_signed_launcher_referenced = False
     if menu_manifest_exists:
         try:
-            menu_text = (root / "SkillMagnetMenu.tsv").read_text(encoding="utf-8-sig")
+            menu_text = (content_root / "SkillMagnetMenu.tsv").read_text(encoding="utf-8-sig")
             lines = menu_text.splitlines()
             records = [line.split("\t") for line in lines[1:] if line]
             menu_leaf_count = len(records)
@@ -467,15 +461,55 @@ def windows_modern_context_menu_status(
                 menu_contract_matches_config = (
                     menu_text == render_windows_modern_menu_manifest(config)
                 )
+                expected_leaves = windows_menu_leaves(
+                    config, WINDOWS_MODERN_PROJECT_MARKER
+                )
+                targets = {leaf.command[0] for leaf in expected_leaves}
+                if len(targets) == 1:
+                    command_target = Path(next(iter(targets)))
+                    command_target_exists = command_target.is_file()
+                    self_signed_launcher_referenced = (
+                        command_target.name.casefold() == "skillmagnetlauncher.exe"
+                    )
+                    if command_target_exists:
+                        if sys.platform != "win32":
+                            command_target_signature_valid = True
+                        else:
+                            encoded_target = base64.b64encode(
+                                str(command_target).encode("utf-8")
+                            ).decode("ascii")
+                            signature = subprocess.run(
+                                [
+                                    _powershell_executable(),
+                                    "-NoProfile",
+                                    "-NonInteractive",
+                                    "-Command",
+                                    "$p=[Text.Encoding]::UTF8.GetString("
+                                    "[Convert]::FromBase64String('"
+                                    + encoded_target
+                                    + "'));(Get-AuthenticodeSignature "
+                                    "-LiteralPath $p).Status.ToString()",
+                                ],
+                                capture_output=True,
+                                text=True,
+                                errors="replace",
+                            )
+                            command_target_signature_valid = bool(
+                                signature.returncode == 0
+                                and signature.stdout.strip() == "Valid"
+                            )
         except (OSError, UnicodeError, SkillMagnetError):
             menu_contract_valid = False
-    package_registered = bool(status.get("installed"))
     usable_installed_state = bool(
         package_registered
         and identity_matches
         and com_identity_matches
         and manifest_contexts == expected_contexts
+        and identity_anchor_exists
+        and not deprecated_launcher_exists
         and command_target_exists
+        and command_target_signature_valid
+        and not self_signed_launcher_referenced
         and dll_exists
         and menu_manifest_exists
         and menu_contract_valid
@@ -486,10 +520,16 @@ def windows_modern_context_menu_status(
             "platform": "windows",
             "integration": "windows_11_modern_context_menu",
             "external_location": str(root),
+            "package_content_location": str(content_root),
             "package_registered": package_registered,
             "identity_matches": identity_matches,
             "com_identity_matches": com_identity_matches,
+            "identity_anchor_exists": identity_anchor_exists,
+            "deprecated_launcher_exists": deprecated_launcher_exists,
+            "command_target": str(command_target) if command_target else None,
             "command_target_exists": command_target_exists,
+            "command_target_signature_valid": command_target_signature_valid,
+            "self_signed_launcher_referenced": self_signed_launcher_referenced,
             "dll_exists": dll_exists,
             "menu_manifest_exists": menu_manifest_exists,
             "menu_contract_valid": menu_contract_valid,
@@ -536,11 +576,14 @@ def install_windows_modern_context_menu(
         if build_result.returncode != 0:
             detail = (build_result.stderr or build_result.stdout or "unknown build error").strip()
             raise SkillMagnetError(f"Windows modern context-menu build failed: {detail}")
-    required = (output / "SkillMagnetCommand.dll", output / "SkillMagnetLauncher.exe")
+    required = (output / "SkillMagnetCommand.dll", output / "SkillMagnetIdentity.exe")
     if not all(path.is_file() for path in required):
         raise SkillMagnetError("Windows modern context-menu build outputs are missing")
 
     root.mkdir(parents=True, exist_ok=True)
+    # Remove the 0.3.0 process adapter before registering the new contract.
+    # Smart App Control can block that self-signed executable with error 4551.
+    (root / "SkillMagnetLauncher.exe").unlink(missing_ok=True)
     shutil.copy2(required[0], root / required[0].name)
     shutil.copy2(required[1], root / required[1].name)
     shutil.copy2(native_root / "AppxManifest.xml", root / "AppxManifest.xml")
@@ -827,7 +870,10 @@ def install_windows_context_menus(
                 config, install_root=root, run=run, build=build
             )
         except SkillMagnetError as modern_error:
-            # A partial modern registration must not coexist with the fallback.
+            # A partial modern registration must not coexist with another
+            # entry. Do not fall back to a self-signed process adapter: Smart
+            # App Control can reject it even when Authenticode is locally
+            # trusted. The outer transaction restores the previous state.
             try:
                 uninstall_windows_modern_context_menu(
                     install_root=root,
@@ -837,27 +883,12 @@ def install_windows_context_menus(
             except SkillMagnetError as cleanup_error:
                 raise SkillMagnetError(
                     "Modern context menu failed and could not be removed; "
-                    "classic fallback was not registered: " + str(cleanup_error)
+                    "the previous state could not be restored: " + str(cleanup_error)
                 ) from modern_error
-            # Classic commands use the GUI-subsystem adapter too. Keep only
-            # that command target after the unusable package is removed, so
-            # fallback never regresses to a visible python.exe console.
-            launcher_source = _windows_modern_paths(root)[0] / "out" / "SkillMagnetLauncher.exe"
-            if not launcher_source.is_file():
-                raise SkillMagnetError(
-                    "Modern context menu failed and the consoleless classic launcher is missing"
-                ) from modern_error
-            root.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(launcher_source, root / launcher_source.name)
-            classic = {
-                **install_context_menu("windows", config, run=run),
-                "fallback_while_modern_unavailable": True,
-            }
-            modern = {
-                "installed": False,
-                "usable_installed_state": False,
-                "error": str(modern_error),
-            }
+            raise SkillMagnetError(
+                "Modern context menu failed; no policy-incompatible classic "
+                "fallback was registered: " + str(modern_error)
+            ) from modern_error
         else:
             # The modern root is canonical. Remove every classic/legacy root so
             # Explorer exposes only one visible Skill Magnet entry.

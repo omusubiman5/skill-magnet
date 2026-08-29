@@ -357,7 +357,7 @@ class ActivationEndToEndTest(unittest.TestCase):
             / "out"
         )
         native_output.mkdir(parents=True, exist_ok=True)
-        for binary in ("SkillMagnetCommand.dll", "SkillMagnetLauncher.exe"):
+        for binary in ("SkillMagnetCommand.dll", "SkillMagnetIdentity.exe"):
             path = native_output / binary
             if not path.exists():
                 path.write_bytes(b"unit-test-placeholder")
@@ -2573,14 +2573,10 @@ class ActivationEndToEndTest(unittest.TestCase):
         command = windows_leaf_command_argv(
             self.config_path, project, "bounded-pack", "bounded-answer", "codex"
         )
-        expected_launcher = (
-            Path(os.environ["LOCALAPPDATA"])
-            / "SkillMagnet"
-            / "ContextMenu"
-            / "SkillMagnetLauncher.exe"
+        self.assertEqual(command[0], str(Path(sys.executable)))
+        self.assertNotIn(
+            "skillmagnetlauncher.exe", (part.casefold() for part in command)
         )
-        self.assertEqual(command[0], str(expected_launcher))
-        self.assertEqual(command[1], str(Path(sys.executable)))
         self.assertEqual(
             command[command.index("--config") + 1],
             os.path.abspath(str(self.config_path)),
@@ -3019,13 +3015,19 @@ class ActivationEndToEndTest(unittest.TestCase):
             installed = install_windows_modern_context_menu(
                 self.config_path, install_root=root, run=fake_run, build=False
             )
-            status = windows_modern_context_menu_status(install_root=root, run=fake_run)
+            status = windows_modern_context_menu_status(
+                install_root=root, config=self.config_path, run=fake_run
+            )
             removed = uninstall_windows_modern_context_menu(install_root=root, run=fake_run)
         self.assertEqual(installed["contexts"], ["Directory", r"Directory\Background"])
         self.assertEqual(installed["legacy_certificate_thumbprints_removed"], ["A" * 40])
         self.assertTrue(status["dll_exists"])
         self.assertTrue(status["menu_manifest_exists"])
         self.assertTrue(status["command_target_exists"])
+        self.assertTrue(status["command_target_signature_valid"])
+        self.assertFalse(status["self_signed_launcher_referenced"])
+        self.assertFalse(status["deprecated_launcher_exists"])
+        self.assertTrue(status["identity_anchor_exists"])
         self.assertTrue(status["identity_matches"])
         self.assertTrue(status["com_identity_matches"])
         self.assertTrue(status["usable_installed_state"])
@@ -3057,7 +3059,7 @@ class ActivationEndToEndTest(unittest.TestCase):
             calls.append(args)
             if any(str(item).endswith("build.ps1") for item in args):
                 output.mkdir(exist_ok=True)
-                for name in ("SkillMagnetCommand.dll", "SkillMagnetLauncher.exe"):
+                for name in ("SkillMagnetCommand.dll", "SkillMagnetIdentity.exe"):
                     (output / name).touch()
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
             if any(str(item).endswith("build-package.ps1") for item in args):
@@ -3079,6 +3081,33 @@ class ActivationEndToEndTest(unittest.TestCase):
             call for call in calls if any(str(item).endswith("build.ps1") for item in call)
         )
         self.assertIn("-SkipContractTest", build_call)
+
+    def test_windows_modern_install_removes_deprecated_blocked_launcher(self) -> None:
+        root = self.root / "remove-blocked-launcher"
+        root.mkdir()
+        blocked = root / "SkillMagnetLauncher.exe"
+        blocked.write_bytes(b"deprecated self-signed adapter")
+
+        def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+            action = args[args.index("-Action") + 1]
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "installed": action != "uninstall",
+                        "name": "SkillMagnet.ContextMenu",
+                    }
+                ),
+                stderr="",
+            )
+
+        with mock.patch("skill_magnet.platforms.os.name", "nt"):
+            result = install_windows_modern_context_menu(
+                self.config_path, install_root=root, run=fake_run, build=False
+            )
+        self.assertTrue(result["usable_installed_state"])
+        self.assertFalse(blocked.exists())
+        self.assertFalse(result["deprecated_launcher_exists"])
 
     @unittest.skipUnless(sys.platform == "win32", "Windows certificate provider required")
     def test_windows_certificate_cleanup_resume_skips_missing_machine_certificate(self) -> None:
@@ -3334,18 +3363,21 @@ class ActivationEndToEndTest(unittest.TestCase):
             self.assertFalse(any(registry.values()))
 
             fail_next_install = True
-            fallback = install_windows_context_menus(
-                self.config_path, install_root=root, run=fake_run, build=False
-            )
-            self.assertFalse(fallback["modern"]["usable_installed_state"])
-            self.assertTrue(fallback["classic"]["fallback_while_modern_unavailable"])
-            self.assertFalse(package_installed)
+            with self.assertRaisesRegex(
+                Exception, "no policy-incompatible classic fallback"
+            ):
+                install_windows_context_menus(
+                    self.config_path, install_root=root, run=fake_run, build=False
+                )
+            # A failed update restores the immediately preceding usable modern
+            # state. It must not expose the blocked self-signed classic path.
+            self.assertTrue(package_installed)
             self.assertTrue(rollback_root.is_dir())
             self.assertFalse(update_root.exists())
-            self.assertTrue(
+            self.assertFalse(
                 registry[r"HKCU\Software\Classes\Directory\shell\SkillMagnetClassic"]
             )
-            self.assertTrue(
+            self.assertFalse(
                 registry[
                     r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnetClassic"
                 ]
@@ -3386,7 +3418,7 @@ class ActivationEndToEndTest(unittest.TestCase):
         context_index = leaf.command.index("context")
         with tempfile.TemporaryDirectory() as unrelated:
             result = subprocess.run(
-                (*leaf.command[1:context_index], "--help"),
+                (*leaf.command[:context_index], "--help"),
                 cwd=unrelated,
                 capture_output=True,
                 text=True,

@@ -1,5 +1,7 @@
 # Skill Magnet 0.3.0 release remediation implementation report
 
+> **Superseded / NO-GO:** この文書の0.3.0 GO判定はSmart App Control error 4551の実機反証により撤回しました。現行報告は[`smart-app-control-remediation-report-2026-08-29.md`](smart-app-control-remediation-report-2026-08-29.md)です。
+
 日付: 2026-08-29  
 対象: `C:\Projects\skill-magnet`  
 計画: [`release-remediation-implementation-plan-2026-08-29.md`](release-remediation-implementation-plan-2026-08-29.md)
