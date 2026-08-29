@@ -2,7 +2,7 @@
 
 ## 文書の位置づけ
 
-この文書は現行のExplorer統合だけを記録する正本です。旧「skillごとのleaf」方式の実験記録は現行仕様の証拠に使用しません。現行仕様は、ExplorerのDirectory/Backgroundごとに`PMO`という単一package leafを表示し、その新規Codex Desktopタスク内でINDEXと全9スキルを読み、依頼に必要な最小集合を選ぶものです。
+この文書は現行のExplorer統合だけを記録する正本です。旧「skillごとのleaf」方式の実験記録は現行仕様の証拠に使用しません。現行仕様は、ExplorerのDirectory/Backgroundごとに`Delivery Assurance`という単一package leafを表示し、その新規Codex Desktopタスク内でINDEXと全9スキルを読み、依頼に必要な最小集合を選ぶものです。
 
 ## 現在の集約結果
 
@@ -13,20 +13,20 @@
   "menu_leaf_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
-  "release_code_sha": "69d5029aaa2a4ae3338e664a7c4af524ae655f43",
-  "wheel_payload_sha256": "9dd17c9ec1e7b4fa97fcd74fd55b34c46e2fc2a698f590eabca4cf21c5f17d40",
-  "automated_status": "PASS",
-  "windows_explorer_field_status": "PASS_0.3.2_SMART_APP_CONTROL_REAL_UI_TO_CONFIRMATION",
-  "codex_desktop_result_status": "PASS_USER_CONFIRMED_NATURAL_LANGUAGE_RESULT"
+  "release_code_sha": "df8e15f72924166a99c360e2280c36f281eeaa79",
+  "wheel_payload_sha256": "99e507ef29b7125e682bb78056d45f5a6de4660e19a7ff78d4a77ecf3effbf16",
+  "automated_status": "PENDING_REMOTE_CI",
+  "windows_explorer_field_status": "PASS_INSTALLED_MENU_MANIFEST_DELIVERY_ASSURANCE_8F12AF5",
+  "codex_desktop_result_status": "NOT_RETESTED_AFTER_PACK_UPDATE"
 }
 explorer-results-ledger:end -->
 
 - 統合テスト: `python -m unittest discover -s tests -v` — 125 tests PASS
 - menu contract: 1 package leaf / selection kind `package` / pack内9 skills
 - 自動証拠: contract固定、INDEX/全SKILL materialization、source改変耐性、deep-link binding、CLI非起動、rollback、残留物回収
-- 実機証拠: Smart App Control有効Windows 11で0.3.2のfolder backgroundを右クリック→`Skill Magnet`→単一`PMO`→`Skill Magnet — 実行確認`を実操作した。検証時間帯のSkill Magnet関連Code Integrity 3033/3077は0件で、invoke logは`create_process_succeeded`を記録した。0.3.0の4551証拠は失敗履歴として保持し、現行PASSへ転用しない。
-- Desktop結果証拠: ユーザーが新規Codexタスクの自然文回答を確認した。回答はBEADSのMarkdown 2件へ具体的なrelease blockerを提示し、INDEXに従ってPMOパックのローカルread-only・途中承認なし・公式Webのみの境界を組み合わせ、対象外のsubagent/CI patch/認証設計を適用しなかったことを説明した。ファイル変更なしという依頼境界も維持した。
-- Desktop完了の扱い: 製品証拠の状態名は引き続きhandoffまでを表し、回答完了へ偽装しない。今回の自然文結果はユーザーによる別個の実機受入証拠として記録する。
+- 実機証拠: 更新wheelをWindowsへ再installし、modern context menuのstatusが`usable_installed_state: true`、`menu_contract_matches_config: true`を返した。実際のTSVはpack ID `codex-delivery-assurance`、表示名`Delivery Assurance`、固定commit `8f12af5ddfdd3b985f26d33dad09d6061d675342`を記録した。
+- Desktop結果証拠: pack更新後の新規Codex Desktop自然文回答は未再試験であり、以前の別名称・別固定commitの結果を転用しない。
+- Desktop完了の扱い: 製品証拠の状態名はhandoffまでを表し、回答完了へ偽装しない。
 
 ## リリースゲート
 
@@ -34,8 +34,8 @@ explorer-results-ledger:end -->
 
 Windows 0.3.2候補の最終受入では、次を新しい証拠として追記します。
 
-1. wheelからのnative build、MSIX署名・install、Directory/Backgroundの単一`PMO`表示。
+1. wheelからのnative build、MSIX署名・install、Directory/Backgroundの単一`Delivery Assurance`表示。
 2. package leafからCodex Desktop新規タスクを開き、materialized INDEX/全SKILLを読み、依頼に必要な部分集合だけを適用した自然文回答。
 3. update、rollback、uninstall後のAppx・証明書・ContextMenu/rollback残留ゼロ。CIでは旧自己署名trust 2世代のupgrade cleanupも含めて確認済み。
 
-macOS Finderはcommunity betaです。macOS runner上の実Quick Action install、`/usr/bin/automator`実行、通常の製品`context` adapter到達、uninstall、残留ゼロは最終artifact-input commit `69d5029…`と125 testsを含むrun `33252451350`で独立に確認済みです。Finderのメニュー表示そのものは人手UX受入であり、このWindows証拠を転用しません。
+macOS Finderはcommunity betaです。固定commit `df8e15f…`に対する現行CIが完了するまでは、旧runの成功を新しいDelivery Assurance snapshotの証拠へ転用しません。Finderのメニュー表示そのものは人手UX受入であり、このWindows証拠も転用しません。
