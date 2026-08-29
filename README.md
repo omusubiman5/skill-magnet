@@ -36,7 +36,7 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 
 ## 想定する利用手順
 
-再設計後のMVPは、次の流れを満たすものとして実装します。コマンド名と引数はまだ確定していません。
+現行MVPは、以下の確定済みCLIと右クリック統合でこの流れを実装しています。
 
 1. ユーザー所有GitHub保管庫から利用可能なパックと、その目的・版・承認状態を一覧する。
 2. 必要な時にユーザーが右クリックメニューで目的に合うスキルパックを一つ選び、画面でCodexまたはClaudeを明示選択する。
@@ -192,7 +192,7 @@ secret、API key、password、認証fileの内容は含めないでください�
 
 modernメニューは署名済みMSIX identity packageとExplorer用COM commandを登録します。初回または証明書が未登録のとき、Windows標準の`certutil.exe`を昇格起動し、`Skill Magnet Local`証明書をmachineの`TrustedPeople`へ登録します。cleanupではSkill Magnetが作成した証明書だけを削除します。
 
-installは単一transactionでrollback pointを作り、modernがusableならclassic rootを削除します。modern登録に失敗した場合は部分登録を除去し、rollback pointを復元してerrorで停止します。Explorer用COM DLLは、メニューmanifestに固定したAuthenticode-validなPythonを`CREATE_NO_WINDOW`で直接起動します。自己署名のprocess adapterは実行経路に置きません。sparse packageが要求する`SkillMagnetIdentity.exe`はidentity anchor専用で、メニュー選択時には実行されません。
+installは単一transactionでrollback pointを作り、modernがusableならclassic rootを削除します。modern登録に失敗した場合は部分登録を除去し、rollback pointを復元してerrorで停止します。Explorer用COM DLL、固定メニューmanifest、`SkillMagnetIdentity.exe`はすべてfull MSIXへ収容します。COM DLLはメニューmanifestに固定したAuthenticode-validなPythonを`CREATE_NO_WINDOW`で直接起動します。自己署名のprocess adapterは実行経路に置かず、`SkillMagnetIdentity.exe`はidentity anchor専用でメニュー選択時には実行されません。
 
 </details>
 

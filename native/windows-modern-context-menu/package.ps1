@@ -59,7 +59,9 @@ if ($Action -eq "install") {
             )
             if ($nonInteractiveCertificateTrust) {
                 foreach ($machinePath in $machinePaths) {
-                    Remove-Item -LiteralPath $machinePath -Force
+                    if (Test-Path -LiteralPath $machinePath) {
+                        Remove-Item -LiteralPath $machinePath -Force
+                    }
                 }
                 $cleanupExitCode = 0
             }
@@ -85,9 +87,10 @@ if ($Action -eq "install") {
                 throw "Legacy Skill Magnet machine certificate cleanup failed"
             }
             foreach ($thumbprint in $legacyThumbprints) {
-                Remove-Item -LiteralPath (
-                    "Cert:\CurrentUser\TrustedPeople\" + $thumbprint
-                ) -Force
+                $userPath = "Cert:\CurrentUser\TrustedPeople\" + $thumbprint
+                if (Test-Path -LiteralPath $userPath) {
+                    Remove-Item -LiteralPath $userPath -Force
+                }
             }
         }
     }

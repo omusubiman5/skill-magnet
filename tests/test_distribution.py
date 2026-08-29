@@ -165,6 +165,29 @@ print(json.dumps({
         self.assertIn(
             "Add-AppxPackage -Path $package -ForceApplicationShutdown", installer
         )
+        self.assertIn("if (Test-Path -LiteralPath $machinePath)", installer)
+        self.assertIn("if (Test-Path -LiteralPath $userPath)", installer)
+        command_source = (
+            ROOT / "native" / "windows-modern-context-menu" / "SkillMagnetCommand.cpp"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("\\SkillMagnet\\ContextMenu\\SkillMagnetMenu.tsv", command_source)
+
+    def test_windows_lifecycle_refuses_to_destroy_existing_installation(self) -> None:
+        lifecycle = (
+            ROOT / "tests" / "powershell" / "windows-release-lifecycle-tests.ps1"
+        ).read_text(encoding="utf-8")
+        self.assertIn('Get-AppxPackage -Name "SkillMagnet.ContextMenu"', lifecycle)
+        self.assertIn('"ContextMenu.rollback"', lifecycle)
+        self.assertIn("SKILL_MAGNET_ALLOW_DESTRUCTIVE_LIFECYCLE", lifecycle)
+        self.assertIn("Refusing to run the destructive release lifecycle", lifecycle)
+
+    def test_repository_root_has_no_native_build_residue(self) -> None:
+        residue = sorted(
+            path.name
+            for path in ROOT.iterdir()
+            if path.is_file() and path.suffix.casefold() in {".obj", ".lib", ".exp"}
+        )
+        self.assertEqual(residue, [])
 
 
 if __name__ == "__main__":

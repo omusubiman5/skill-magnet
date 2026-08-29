@@ -24,6 +24,38 @@ $installRoot = Join-Path $testBase "SkillMagnet\ContextMenu"
 $thumbprint = $null
 $legacyThumbprints = @()
 
+# The lifecycle test uses the production Appx identity.  Never let a local or
+# self-hosted run silently uninstall an existing user installation or erase its
+# rollback state.  An operator may only override this after explicitly taking
+# responsibility for preserving that installation.
+$preexistingState = @()
+if (Get-AppxPackage -Name "SkillMagnet.ContextMenu" -ErrorAction SilentlyContinue) {
+    $preexistingState += "Appx package"
+}
+$realProductParent = Join-Path $originalLocalAppData "SkillMagnet"
+foreach ($name in @("ContextMenu", "ContextMenu.rollback", "ContextMenu.rollback.update")) {
+    if (Test-Path -LiteralPath (Join-Path $realProductParent $name)) {
+        $preexistingState += $name
+    }
+}
+foreach ($registryRoot in @(
+    "HKCU:\Software\Classes\Directory\shell\SkillMagnetClassic",
+    "HKCU:\Software\Classes\Directory\Background\shell\SkillMagnetClassic",
+    "HKCU:\Software\Classes\Directory\shell\SkillMagnet",
+    "HKCU:\Software\Classes\Directory\Background\shell\SkillMagnet"
+)) {
+    if (Test-Path -LiteralPath $registryRoot) {
+        $preexistingState += $registryRoot
+    }
+}
+if ($preexistingState.Count -gt 0 -and
+    $env:SKILL_MAGNET_ALLOW_DESTRUCTIVE_LIFECYCLE -ne "1") {
+    throw ("Refusing to run the destructive release lifecycle over an existing " +
+        "Skill Magnet installation: " + ($preexistingState -join ", ") +
+        ". Use a clean Windows account/runner. The explicit override is reserved " +
+        "for operators who have independently backed up the installation.")
+}
+
 try {
     New-Item -ItemType Directory -Path $testBase | Out-Null
     $env:LOCALAPPDATA = $testBase

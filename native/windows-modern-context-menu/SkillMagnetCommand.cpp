@@ -124,21 +124,6 @@ static std::string ReadMenuManifest() {
     std::wstring path = ModuleDirectory() + L"\\SkillMagnetMenu.tsv";
     HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    // A sparse package gives the COM server package identity, so
-    // GetModuleFileNameW may report the virtual WindowsApps package path even
-    // though the mutable menu contract lives in the registered external
-    // location. Resolve that product-owned location explicitly as a fallback.
-    if (file == INVALID_HANDLE_VALUE) {
-        std::vector<wchar_t> local_app_data(32768);
-        const DWORD size = GetEnvironmentVariableW(
-            L"LOCALAPPDATA", local_app_data.data(), static_cast<DWORD>(local_app_data.size()));
-        if (size > 0 && size < local_app_data.size()) {
-            path.assign(local_app_data.data(), size);
-            path += L"\\SkillMagnet\\ContextMenu\\SkillMagnetMenu.tsv";
-            file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        }
-    }
     if (file == INVALID_HANDLE_VALUE) return {};
     LARGE_INTEGER length{};
     if (!GetFileSizeEx(file, &length) || length.QuadPart <= 0 || length.QuadPart > 8 * 1024 * 1024) {
