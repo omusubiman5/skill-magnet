@@ -25,13 +25,13 @@ launcherを外した初期0.3.1でも、外部locationの自己署名`SkillMagne
 | Gate | Result |
 |---|---|
 | native build / IExplorerCommand contract | PASS |
-| unit/integration | PASS: 122 tests、1 environment-dependent skip |
+| unit/integration | PASS: 124 tests、1 environment-dependent skip |
 | full MSIX status | PASS: `SkillMagnet.ContextMenu_0.3.2.0_x64`、package contentは`Program Files\\WindowsApps` |
 | Explorer real UI | PASS: 通常右クリック → `Skill Magnet` → `PMO` → `Skill Magnet — 実行確認` |
 | process launch | PASS: `create_process_succeeded`、PID 7868 |
 | Code Integrity after 0.3.2 invocation | PASS: Skill Magnet関連3033/3077は0件 |
-| candidate artifact-input commit | PASS: `136539e3f80b245dee5baac617a1d41708d39018` |
-| canonical wheel | PASS: physical SHA-256 `6517eeff49a1132eaf08d6927ec7dcb812a2b8930ce1a6e38464a3a994ec2507`、logical payload SHA-256 `8094ae4da399e0a97eb5c00241afc3818bf2c7ce16f17c87d10f4c1f42d34694` |
+| candidate artifact-input commit | PASS: `69d5029aaa2a4ae3338e664a7c4af524ae655f43` |
+| canonical wheel | PASS: physical SHA-256 `e86ad84ef4d82235db5358bae952f9668a72ee4f70a9c3d747058af06b38b32c`、logical payload SHA-256 `9dd17c9ec1e7b4fa97fcd74fd55b34c46e2fc2a698f590eabca4cf21c5f17d40` |
 | real OS lifecycle | PASS: install → update → rollback → uninstall |
 | lifecycle residue | PASS: Appx、owned registry、rollback point、external test rootは0 |
 
@@ -41,7 +41,7 @@ launcherを外した初期0.3.1でも、外部locationの自己署名`SkillMagne
 
 ## 未完了ゲート
 
-- candidateと同一SHAのWindows/macOS CI
-- 最終独立レビュー
+- artifact-input commit `69d5029…`を含む最終HEADのWindows/macOS CI
+- 修正後HEADに対する鬼レビュー再監査
 
 これらが完了するまで本報告は最終GOを宣言しない。

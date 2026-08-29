@@ -9,19 +9,19 @@
 <!-- explorer-results-ledger:start
 {
   "release_scope": "one-package-leaf",
-  "full_test_count": 122,
+  "full_test_count": 124,
   "menu_leaf_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
-  "release_code_sha": "136539e3f80b245dee5baac617a1d41708d39018",
-  "wheel_payload_sha256": "8094ae4da399e0a97eb5c00241afc3818bf2c7ce16f17c87d10f4c1f42d34694",
+  "release_code_sha": "69d5029aaa2a4ae3338e664a7c4af524ae655f43",
+  "wheel_payload_sha256": "9dd17c9ec1e7b4fa97fcd74fd55b34c46e2fc2a698f590eabca4cf21c5f17d40",
   "automated_status": "PASS",
   "windows_explorer_field_status": "PASS_0.3.2_SMART_APP_CONTROL_REAL_UI_TO_CONFIRMATION",
   "codex_desktop_result_status": "PASS_USER_CONFIRMED_NATURAL_LANGUAGE_RESULT"
 }
 explorer-results-ledger:end -->
 
-- 統合テスト: `python -m unittest discover -s tests -v` — 122 tests PASS
+- 統合テスト: `python -m unittest discover -s tests -v` — 124 tests PASS
 - menu contract: 1 package leaf / selection kind `package` / pack内9 skills
 - 自動証拠: contract固定、INDEX/全SKILL materialization、source改変耐性、deep-link binding、CLI非起動、rollback、残留物回収
 - 実機証拠: Smart App Control有効Windows 11で0.3.2のfolder backgroundを右クリック→`Skill Magnet`→単一`PMO`→`Skill Magnet — 実行確認`を実操作した。検証時間帯のSkill Magnet関連Code Integrity 3033/3077は0件で、invoke logは`create_process_succeeded`を記録した。0.3.0の4551証拠は失敗履歴として保持し、現行PASSへ転用しない。
