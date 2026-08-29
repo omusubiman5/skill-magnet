@@ -18,6 +18,15 @@ from pathlib import Path
 from .core import Config, Pack, SafetyError, SkillMagnetError, _is_link
 
 
+_PACKAGE_ROOT = Path(__file__).resolve().parent
+_SOURCE_ROOT = _PACKAGE_ROOT.parent
+
+
+def _absolute_path(path: Path) -> Path:
+    """Normalize without consulting a mocked os.name inside cross-platform tests."""
+    return type(path)(os.path.abspath(str(path)))
+
+
 @dataclass(frozen=True)
 class ContextMenuSpec:
     platform: str
@@ -73,20 +82,20 @@ class WindowsMenuLeaf:
 def _windows_launcher_path() -> Path:
     local_app_data = os.environ.get("LOCALAPPDATA")
     if not local_app_data:
-        raise SkillMagnetError("LOCALAPPDATA is required for Windows context-menu launch")
+        local_app_data = str(Path.home() / "AppData" / "Local")
     return Path(local_app_data) / "SkillMagnet" / "ContextMenu" / "SkillMagnetLauncher.exe"
 
 
 def _cli_prefix(config: Path, *, windows_launcher: bool = False) -> tuple[str, ...]:
     """Return a command that works from Explorer's unrelated working directory."""
-    source_root = Path(__file__).resolve().parents[1]
+    source_root = _SOURCE_ROOT
     bootstrap = (
         "import runpy,sys;"
         f"sys.path.insert(0,{str(source_root)!r});"
         "runpy.run_module('skill_magnet',run_name='__main__')"
     )
     executable = Path(sys.executable)
-    command = (str(executable), "-c", bootstrap, "--config", str(config.resolve()))
+    command = (str(executable), "-c", bootstrap, "--config", str(config.absolute()))
     if windows_launcher:
         return (str(_windows_launcher_path()), *command)
     return command
@@ -320,17 +329,17 @@ _TRANSPARENT_PNG = base64.b64decode(
 
 
 def _windows_modern_paths(install_root: Path | None = None) -> tuple[Path, Path, Path]:
-    packaged_native = Path(__file__).resolve().parent / "_native" / "windows-modern-context-menu"
+    packaged_native = _PACKAGE_ROOT / "_native" / "windows-modern-context-menu"
     source_native = (
-        Path(__file__).resolve().parents[2] / "native" / "windows-modern-context-menu"
+        _PACKAGE_ROOT.parents[1] / "native" / "windows-modern-context-menu"
     )
-    native_root = packaged_native if packaged_native.is_dir() else source_native
+    native_root = source_native if source_native.is_dir() else packaged_native
     if install_root is None:
         local_app_data = os.environ.get("LOCALAPPDATA")
         if not local_app_data:
             raise SkillMagnetError("LOCALAPPDATA is required for modern context-menu installation")
         install_root = Path(local_app_data) / "SkillMagnet" / "ContextMenu"
-    return native_root, install_root.resolve(), native_root / "package.ps1"
+    return native_root, _absolute_path(install_root), native_root / "package.ps1"
 
 
 def _powershell_executable() -> str:
@@ -604,7 +613,7 @@ def _windows_context_backup_root(install_root: Path) -> Path:
 
 
 def _windows_residue_candidates(install_root: Path) -> list[Path]:
-    parent = install_root.resolve().parent
+    parent = _absolute_path(install_root).parent
     prefix = re.escape(install_root.name + ".rollback")
     owned_name = re.compile(
         rf"^{prefix}\.(?:interrupted|recovered)-[0-9]{{8}}-[0-9]{{4,6}}$"
@@ -619,7 +628,7 @@ def _windows_residue_candidates(install_root: Path) -> list[Path]:
 
 
 def _validate_windows_residue(candidate: Path, parent: Path) -> dict[str, object]:
-    if not candidate.is_dir() or _is_link(candidate) or candidate.resolve().parent != parent:
+    if not candidate.is_dir() or _is_link(candidate) or _absolute_path(candidate).parent != parent:
         raise SafetyError(f"Unsafe Windows transaction residue: {candidate}")
     metadata_path = candidate / "backup.json"
     try:
@@ -649,7 +658,7 @@ def _recover_windows_certificate_ownership_from_residue(install_root: Path) -> b
         "created_machine_trusted_people",
     )
     recovered = False
-    parent = install_root.resolve().parent
+    parent = _absolute_path(install_root).parent
     for candidate in _windows_residue_candidates(install_root):
         _validate_windows_residue(candidate, parent)
         historical_path = candidate / "external" / "certificate-state.json"
@@ -674,7 +683,7 @@ def _recover_windows_certificate_ownership_from_residue(install_root: Path) -> b
 
 def _cleanup_windows_context_residue(install_root: Path) -> list[str]:
     """Remove only obsolete, self-identifying transaction backups."""
-    parent = install_root.resolve().parent
+    parent = _absolute_path(install_root).parent
     removed: list[str] = []
     for candidate in _windows_residue_candidates(install_root):
         _validate_windows_residue(candidate, parent)

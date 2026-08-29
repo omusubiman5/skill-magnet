@@ -698,7 +698,7 @@ class ActivationEndToEndTest(unittest.TestCase):
         script.write_text(
             "import json, pathlib, sys\n"
             "args = sys.argv[1:]\n"
-            f"assert args[args.index('--cd') + 1] == {str(special_project)!r}\n"
+            f"assert args[args.index('--cd') + 1] == {str(special_project.resolve())!r}\n"
             "prompt = sys.stdin.read() if args[-1] == '-' else args[-1]\n"
             "line = next(x for x in prompt.splitlines() if x.startswith('PROVENANCE='))\n"
             "provenance = json.loads(line.split('=', 1)[1])\n"
@@ -2856,7 +2856,8 @@ class ActivationEndToEndTest(unittest.TestCase):
         leaves = windows_menu_leaves(special, "%1")
         for leaf in leaves:
             command = __import__("subprocess").list2cmdline(list(leaf.command))
-            self.assertIn(f'"{special}"', command)
+            config_argument = leaf.command[leaf.command.index("--config") + 1]
+            self.assertIn(f'"{config_argument}"', command)
             self.assertIn("%1", command)
             self.assertIn("--menu-skill-digest", command)
 

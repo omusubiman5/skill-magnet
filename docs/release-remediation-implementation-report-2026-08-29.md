@@ -45,7 +45,7 @@ NO-GOレビューでコード修正対象となった、壊れたwheel、固定p
 
 | 検証 | 結果 |
 |---|---|
-| `python -m unittest discover -s tests -v` | PASS。116 tests / 142.677s、環境に`pythonw.exe`がない条件付き1 skip |
+| `python -m unittest discover -s tests -v` | PASS。116 tests / 155.515s、環境に`pythonw.exe`がない条件付き1 skip |
 | wheel隔離install | PASS。既定config、固定commit、9 skills、native scripts、1 package leafを確認 |
 | PowerShell certificate ownership test | PASS |
 | Windows native build | PASS。DLL/launcher生成・署名成功 |
