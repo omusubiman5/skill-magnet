@@ -26,3 +26,6 @@ jobs:
       - if: runner.os == 'Windows'
         shell: pwsh
         run: ./native/windows-modern-context-menu/build.ps1 -OutDir ./native/windows-modern-context-menu/out -SkipContractTest
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/powershell/windows-release-lifecycle-tests.ps1
