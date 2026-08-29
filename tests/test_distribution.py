@@ -181,6 +181,41 @@ print(json.dumps({
         self.assertIn("SKILL_MAGNET_ALLOW_DESTRUCTIVE_LIFECYCLE", lifecycle)
         self.assertIn("Refusing to run the destructive release lifecycle", lifecycle)
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows Appx preflight required")
+    def test_windows_lifecycle_preflight_fails_before_existing_state_is_changed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            product_root = Path(temporary) / "SkillMagnet" / "ContextMenu"
+            product_root.mkdir(parents=True)
+            marker = product_root / "preserve.marker"
+            marker.write_text("must survive preflight", encoding="utf-8")
+            environment = dict(os.environ)
+            environment["LOCALAPPDATA"] = temporary
+            environment.pop("SKILL_MAGNET_ALLOW_DESTRUCTIVE_LIFECYCLE", None)
+            result = subprocess.run(
+                [
+                    "pwsh.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(
+                        ROOT
+                        / "tests"
+                        / "powershell"
+                        / "windows-release-lifecycle-tests.ps1"
+                    ),
+                ],
+                env=environment,
+                capture_output=True,
+                text=True,
+            )
+            diagnostic = result.stderr + result.stdout
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Refusing to run the destructive release lifecycle", diagnostic)
+            self.assertIn("ContextMenu", diagnostic)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "must survive preflight")
+
     def test_repository_root_has_no_native_build_residue(self) -> None:
         residue = sorted(
             path.name

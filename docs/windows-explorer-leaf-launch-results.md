@@ -9,7 +9,7 @@
 <!-- explorer-results-ledger:start
 {
   "release_scope": "one-package-leaf",
-  "full_test_count": 124,
+  "full_test_count": 125,
   "menu_leaf_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
@@ -21,7 +21,7 @@
 }
 explorer-results-ledger:end -->
 
-- 統合テスト: `python -m unittest discover -s tests -v` — 124 tests PASS
+- 統合テスト: `python -m unittest discover -s tests -v` — 125 tests PASS
 - menu contract: 1 package leaf / selection kind `package` / pack内9 skills
 - 自動証拠: contract固定、INDEX/全SKILL materialization、source改変耐性、deep-link binding、CLI非起動、rollback、残留物回収
 - 実機証拠: Smart App Control有効Windows 11で0.3.2のfolder backgroundを右クリック→`Skill Magnet`→単一`PMO`→`Skill Magnet — 実行確認`を実操作した。検証時間帯のSkill Magnet関連Code Integrity 3033/3077は0件で、invoke logは`create_process_succeeded`を記録した。0.3.0の4551証拠は失敗履歴として保持し、現行PASSへ転用しない。
@@ -38,4 +38,4 @@ Windows 0.3.2候補の最終受入では、次を新しい証拠として追記�
 2. package leafからCodex Desktop新規タスクを開き、materialized INDEX/全SKILLを読み、依頼に必要な部分集合だけを適用した自然文回答。
 3. update、rollback、uninstall後のAppx・証明書・ContextMenu/rollback残留ゼロ。CIでは旧自己署名trust 2世代のupgrade cleanupも含めて確認済み。
 
-macOS Finderはcommunity betaです。macOS runner上の実Quick Action install、`/usr/bin/automator`実行、通常の製品`context` adapter到達、uninstall、残留ゼロはrelease code SHA `b4f68209…`のrun `33248318073`で独立に確認済みです。Finderのメニュー表示そのものは人手UX受入であり、このWindows証拠を転用しません。
+macOS Finderはcommunity betaです。macOS runner上の実Quick Action install、`/usr/bin/automator`実行、通常の製品`context` adapter到達、uninstall、残留ゼロは最終artifact-input commit `69d5029…`を含むrun `33251926434`で独立に確認済みです。Finderのメニュー表示そのものは人手UX受入であり、このWindows証拠を転用しません。

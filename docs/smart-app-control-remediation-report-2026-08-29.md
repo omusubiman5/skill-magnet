@@ -2,7 +2,7 @@
 
 ## 判定
 
-ローカル実装とWindows実機受入はPASS。candidate commitと同一SHAのremote Windows/macOS CI完了までは最終GOを保留する。
+ローカル自己署名版0.3.2候補はGO。Microsoft Store等の公開配布は正式publisher identityが別途必要であり、この判定に含めない。
 
 ## 原因
 
@@ -25,7 +25,7 @@ launcherを外した初期0.3.1でも、外部locationの自己署名`SkillMagne
 | Gate | Result |
 |---|---|
 | native build / IExplorerCommand contract | PASS |
-| unit/integration | PASS: 124 tests、1 environment-dependent skip |
+| unit/integration | PASS: 125 tests、1 environment-dependent skip |
 | full MSIX status | PASS: `SkillMagnet.ContextMenu_0.3.2.0_x64`、package contentは`Program Files\\WindowsApps` |
 | Explorer real UI | PASS: 通常右クリック → `Skill Magnet` → `PMO` → `Skill Magnet — 実行確認` |
 | process launch | PASS: `create_process_succeeded`、PID 7868 |
@@ -34,14 +34,14 @@ launcherを外した初期0.3.1でも、外部locationの自己署名`SkillMagne
 | canonical wheel | PASS: physical SHA-256 `e86ad84ef4d82235db5358bae952f9668a72ee4f70a9c3d747058af06b38b32c`、logical payload SHA-256 `9dd17c9ec1e7b4fa97fcd74fd55b34c46e2fc2a698f590eabca4cf21c5f17d40` |
 | real OS lifecycle | PASS: install → update → rollback → uninstall |
 | lifecycle residue | PASS: Appx、owned registry、rollback point、external test rootは0 |
+| remote CI | PASS: final artifact-input commitを含むrun `33251926434`でWindows/macOS green |
 
 ## 旧GO判定の訂正
 
 0.3.0をGOとした記録は、この実機反証により撤回する。package登録、menu表示、status、CI lifecycleは「Explorerがnative codeをSmart App Control下でloadし、commandを起動できる」ことを証明していなかった。今回から実機Code Integrity logと`create_process_succeeded`を必須証拠に追加した。
 
-## 未完了ゲート
+## 最終鬼レビュー
 
-- artifact-input commit `69d5029…`を含む最終HEADのWindows/macOS CI
-- 修正後HEADに対する鬼レビュー再監査
+初回鬼レビューの既存Appx破壊、実機未導入、root生成物、README/full MSIX矛盾、証拠不足を修正した。再監査で残った最終DLLのExplorer実操作も、21:21:19 JSTの確認画面表示、`create_process_succeeded`、関連Code Integrity 0件で解消した。lifecycle preflightはsource文字列検査に加え、既存rootとmarkerを作り、変更前に拒否してmarkerを保存するbehavior testを追加した。
 
-これらが完了するまで本報告は最終GOを宣言しない。
+P0/P1の未解決事項はない。

@@ -13,4 +13,4 @@
 
 Code Integrityは`Microsoft-Windows-CodeIntegrity/Operational`を対象に、実操作後の時刻からevent ID 3033/3077を照会し、messageに`SkillMagnet`、`SkillMagnetCommand.dll`、`SkillMagnetIdentity.exe`、`SkillMagnetLauncher.exe`を含む件数を数えた。0.3.2実操作の検証時間帯は0件だった。0.3.0のWindows error 4551は別の失敗履歴であり、PASS証拠へ転用していない。
 
-最終artifact-input commitからcanonical wheelを再構築・再導入した後にも、同じ操作と照会を再実行して結果を本書へ追記する。
+最終artifact-input commit `69d5029aaa2a4ae3338e664a7c4af524ae655f43`からcanonical wheelを再構築・再導入し、installed `SkillMagnetCommand.dll`のSHA-256が`b8f5975955c8ef6aa60ce02138248b45701615e11aac2282014bbfb61566a142`であることを確認した。2026-08-29 21:21:19 JSTに同じExplorer操作を再実行し、`Skill Magnet — 実行確認`を表示した。invoke logは`2026-08-29T12:21:19Z`の`invoke_enter`、`selection_succeeded`、`create_process_succeeded`（PID 24068）を記録した。同時刻以降の関連Code Integrity 3033/3077は0件だった。確認画面ではAI・依頼を入力せず、送信せずに終了し、PID 24068が残っていないことも確認した。
