@@ -15,7 +15,7 @@
   "pack_skill_count": 9,
   "release_code_sha": "df8e15f72924166a99c360e2280c36f281eeaa79",
   "wheel_payload_sha256": "de2be0d0415e398369ae1464f0b8759f401863ac3f07c56da0df95b4bbd52a86",
-  "automated_status": "PENDING_REMOTE_CI",
+  "automated_status": "PASS_RUN_33259524623",
   "windows_explorer_field_status": "PASS_INSTALLED_MENU_MANIFEST_DELIVERY_ASSURANCE_8F12AF5",
   "codex_desktop_result_status": "NOT_RETESTED_AFTER_PACK_UPDATE"
 }
@@ -38,4 +38,4 @@ Windows 0.3.2候補の最終受入では、次を新しい証拠として追記�
 2. package leafからCodex Desktop新規タスクを開き、materialized INDEX/全SKILLを読み、依頼に必要な部分集合だけを適用した自然文回答。
 3. update、rollback、uninstall後のAppx・証明書・ContextMenu/rollback残留ゼロ。CIでは旧自己署名trust 2世代のupgrade cleanupも含めて確認済み。
 
-macOS Finderはcommunity betaです。固定commit `df8e15f…`に対する現行CIが完了するまでは、旧runの成功を新しいDelivery Assurance snapshotの証拠へ転用しません。Finderのメニュー表示そのものは人手UX受入であり、このWindows証拠も転用しません。
+macOS Finderはcommunity betaです。固定artifact-input commit `df8e15f…`とcanonical wheel payload `de2be0d…`に対し、run `33259524623`で125 test、wheel gate、実Quick Action install、`/usr/bin/automator`実行、製品adapter到達、uninstall、残留ゼロがgreenです。Finderのメニュー表示そのものは人手UX受入であり、このWindows証拠を転用しません。
