@@ -1,0 +1,27 @@
+{
+  "acceptance_digests": {
+    "codex-sandbox-approval-boundary": "b4df1deeebf2a0cfa03e93c19a59a90457f39279c51bf56d3ecc5003592e386d"
+  },
+  "approved_at": "2026-08-22T18:15:11.6526999+09:00",
+  "approved_by": "user",
+  "attempt_id": "45457c097aec4561b9d30c5cb09cfe0c",
+  "commit_sha": "c7747bba0bc391316aa558b3b4e8dd412045d2dc",
+  "confirmed_at": "2026-08-28T17:03:11.116577+00:00",
+  "consumed_at": "2026-08-28T17:03:11.346507+00:00",
+  "contract_digest": "5da3cd0ae1bd043594633898c15ebc7a91ce3a79fe333435dbd622fe0f3c405f",
+  "contract_id": "596c957709ce45118c7aa7e13b42a223",
+  "expires_at": "2026-08-28T17:33:11.116577+00:00",
+  "instruction_digest": "e7a9def6a153946f6481412362ee7afaac99552ee7d7d9096b51a788887b0c05",
+  "nonce": "a78179de8a9b4018ba6be6c1eefe8d12",
+  "pack_id": "codex-pmo-skills",
+  "platform": "windows",
+  "project": "C:\\Projects\\skill-magnet",
+  "purpose": "このプロジェクトでCodexのサンドボックス承認境界を、日本語で具体的に3点まとめてください。",
+  "repository_url": "https://github.com/omusubiman5/codex-pmo-skills.git",
+  "runtime": "codex",
+  "selected_skill_id": "codex-sandbox-approval-boundary",
+  "selection_kind": "skill",
+  "skill_ids": [
+    "codex-sandbox-approval-boundary"
+  ]
+}

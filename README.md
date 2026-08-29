@@ -1,10 +1,10 @@
 # Skill Magnet
 
-Skill Magnetは、ユーザー自身のGitHub保管庫でスキルを保存・版管理し、仕事に必要なスキルパックだけを選んでCodexまたはClaude Codeに渡すためのローカルCLIです。
+Skill Magnetは、ユーザー自身のGitHub保管庫でスキルを保存・版管理し、仕事に必要なスキルパックを選んでCodex Desktop appまたはClaudeへ渡すローカルツールです。
 
 ## 現在の状態
 
-GitHub中心の手動activation経路を実装済みです。共通コア、期限付きlaunch contract、Codex task envelope、証拠検証、Explorer/Finderアダプターを備えています。登録中の実スキル保管庫9件にもskill固有 `acceptance.json` を追加し、固定commitとユーザー承認を記録しました。Windows上の実Codexによる実pack E2Eは `verified_applied`、GitHub ActionsのWindows/macOS契約テストは両方成功しています。macOS版はcommunity betaであり、実Finder上の手動操作確認は今後の検証項目です。
+GitHub中心の手動activation経路は、スキルパックを一つ選ぶUXです。通常右クリックの正規入口は `Skill Magnet` 一つで、対象パックを選び、確認画面でCodexまたはClaudeと依頼内容を明示します。Codexを選ぶと、CLI/TUIではなくCodex Desktop appの新規taskへ、INDEXで関係づけられたパック内の全スキルと依頼が渡されます。Desktop promptは、確認時のINDEX/SKILL.mdをcontract専用の期限付きmaterializationへ固定し、digestを束縛します。Codexには全ファイルの読了と、trigger/boundary・INDEX関係に基づく必要最小集合の選定を要求します。パック全件は利用候補であり、全件の強制適用ではありません。Desktop appがdeep linkを受理した時点の製品状態は `desktop_handoff_ready` であり、回答完了を意味しません。過去のCLI `verified_applied` / `verified_completed`やterminal画像はDesktop版の完成証拠には使用しません。macOS版はcommunity betaです。
 
 旧MVPの `sync` は `~/.agents/skills` と `~/.claude/skills` への常設コピーを前提とし、現在の製品ポリシーに適合しません。CLIでも既定無効です。本番 `sync` は実施していません。
 
@@ -39,41 +39,165 @@ GitHub中心の手動activation経路を実装済みです。共通コア、期�
 再設計後のMVPは、次の流れを満たすものとして実装します。コマンド名と引数はまだ確定していません。
 
 1. ユーザー所有GitHub保管庫から利用可能なパックと、その目的・版・承認状態を一覧する。
-2. 必要な時にユーザーがアプリで、目的に合うパック一つとCodexまたはClaude Codeを明示選択する。
+2. 必要な時にユーザーが右クリックメニューで目的に合うスキルパックを一つ選び、画面でCodexまたはClaudeを明示選択する。
 3. `dry-run` で取得元commit、対象、展開場所、期限、cleanup予定、競合を確認する。
-4. 選択したpack ID、GitHub URL、commit SHA、skill ID、instruction digestをタスクへ明示注入する。
-5. タスクへの送達、skillの読込識別、skill固有の結果への適用を別々に検証する。
-6. セッション終了後に一時展開物をcleanupし、残留ゼロを確認する。
+4. 選択したpack ID、GitHub URL、commit SHA、全skill ID、instruction digestをタスクへ明示注入する。
+5. CodexではDesktop appの新規taskを開く。選択スキル、依頼、contractの束縛をhandoff証拠へ残すが、Desktop側の回答を取得できない間は完了を自動判定しない。
+6. Desktop appで自然文回答を確認する。Claudeの検証経路は従来どおり別adapterが扱う。
 
 `dry-run` を通していない有効化は拒否する設計です。
 
-## MVPの起動UI
+## Windows 11 Quick Start
 
-WindowsではExplorer、macOSではFinderで対象projectを右クリックし、Skill Magnetのメニューを開きます。OS固有の見た目や登録方式は異なっても、操作の意味は共通です。Windows MVPはpack単位の静的カスケードとして `Skill Magnet → Pack: <id> (<N> skills) → Codex / Claude` を表示します。これは個別skill選択ではなく、表示されたpack内の全skillを一項目として選ぶ操作です。
+前提はWindows 11、Python 3.12以降、Visual Studio Build Tools（Desktop development with C++）、Windows 10/11 SDKです。以下はPowerShellで実行します。
 
-最初にPython 3.12以降の環境へSkill Magnetをinstallします。
+1. PowerShellを開き、Skill Magnetのrepository rootへ移動します。
+
+   ```powershell
+   git clone --recurse-submodules https://github.com/omusubiman5/skill-magnet.git
+   cd skill-magnet
+   ```
+
+2. このrepositoryのSkill MagnetをPythonへ登録します。
+
+   ```powershell
+   python -m pip wheel . --no-deps --wheel-dir .\dist
+   python -m pip install --force-reinstall .\dist\skill_magnet-0.3.0-py3-none-any.whl
+   ```
+
+3. Windowsの右クリックメニューを登録します。このcommandはrepository rootで、そのままcopy/pasteできます。
+
+   ```powershell
+   python -m skill_magnet install-context-menu --platform windows --confirm
+   ```
+
+4. Windowsの確認画面が出た場合は、次節の表と一致するときだけ「はい」を選びます。commandが完了すると、登録結果がJSONで表示されます。
+
+5. Explorerで対象folderそのもの、またはfolder内の何もない場所を通常右クリックします。`その他のオプションを表示`へ進まず、最初のメニューにある`Skill Magnet`から目的に合うskill packを一つ選びます。
+
+6. Skill Magnet画面でCodexまたはClaude、依頼内容を入力し、対象pack、含まれる全skill、用途を確認して実行します。CodexならDesktop appの新規taskが開きます。技術情報は既定で閉じた「詳細」にあります。
+
+メニューを登録しただけではskillやAIを自動実行しません。画面で依頼内容を入力して確認するまで処理は始まりません。
+
+### Windowsの確認画面が出たら
+
+画面には「このアプリがデバイスに変更を加えることを許可しますか？」に相当する文言が表示されます。これはWindows 11の通常右クリックメニューを登録するための確認です。初回導入、modernメニューの再登録・復旧、または削除時の後片付けで必要になる場合があります。Skill Magnetを右クリックから使うたびに出るものではありません。
+
+| 「はい」を押してよい | 「いいえ」を押して停止する |
+|---|---|
+| 直前に自分で、このREADMEのinstall、rollback、uninstall commandのいずれかを実行した | commandを実行していないのに突然表示された |
+| 表示された対象がWindowsの機能で、発行元がMicrosoft WindowsまたはMicrosoft Corporationとして確認できる | 発行元が不明、別会社、または表示内容がREADMEと異なる |
+| Skill Magnetの右クリックメニューを登録、復旧、削除しようとしている | 通常のskill実行中に毎回表示された |
+| Windowsのaccount policyに従う管理者確認である | Codex/Claudeのpassword、API key、支払い、browser loginを求められた |
+
+この確認はCodex/Claudeの認証、機密入力、外部送信、課金を許可するものではありません。想定外なら拒否し、繰り返し実行せず「トラブル報告に含める情報」を確認してください。
+
+### 正常に導入できた状態
+
+Explorerの通常右クリックに`Skill Magnet`が一つだけ表示されます。`その他のオプションを表示`側に同名のclassic入口が重複していてはいけません。
+
+repository rootで次のread-only commandを実行します。このcommandは状態を表示するだけで、登録を変更しません。
 
 ```powershell
-python -m pip install -e C:\Projects\skill-magnet
+python -m skill_magnet --config .\skill-magnet.json context-menu-status --platform windows
 ```
 
-1. コンテキストメニューからSkill Magnetを開く。
-2. `Pack: <id> (<N> skills)` を一つ明示選択する。
-3. 対象AIとしてCodexまたはClaudeを明示選択する。メニューで選んだ対象AIは確認画面で変更できない。
-4. pack ID、全skill ID、対象AI、GitHub URL、commit SHA、承認、利用目的、検証方法を確認する。
-5. ユーザーが起動を確定する。
-6. 共通CLIへ期限付きのlaunch contractを渡す。
+正常なmodern登録では、出力に少なくとも次の値が含まれます。
 
-メニュー表示だけではスキルを取得・配置・有効化しません。確認画面を完了するまで、共通コアは実行を拒否します。Explorer/Finderは薄いOSアダプターとし、保管庫検証、選択、証拠、fail-closed判定は共通コアに置きます。
-
-OSメニューを明示的に登録・解除するCLIは次の通りです。登録だけではpackを有効化しません。
-
-```powershell
-python -m skill_magnet --config C:\Projects\skill-magnet\skill-magnet.json install-context-menu --platform windows --confirm
-python -m skill_magnet --config C:\Projects\skill-magnet\skill-magnet.json uninstall-context-menu --platform windows --confirm
+```json
+{
+  "package_registered": true,
+  "manifest_contexts": [
+    "Directory",
+    "Directory\\Background"
+  ],
+  "usable_installed_state": true
+}
 ```
 
-packの追加・削除・版・含有skillを変更した後は、同じ `install-context-menu` を再実行して静的メニューを更新する必要があります。Windowsの標準installはclassicメニューとWindows 11の `IExplorerCommand` modernメニューを同一transactionで登録し、標準uninstallはそのrollback pointを復元します。古いメニューからの起動はcommitとskill集合のdigest不一致でfail-closedになります。Cancelまたはウィンドウcloseではcontract、evidence、stateを作成しません。
+確認するのは、statusの3項目が上記どおりであることと、Explorerの通常右クリックに入口が一つだけあることです。
+
+### 確認画面で「いいえ」を押した／登録に失敗した
+
+UACを拒否しても、作業対象projectのfile、skill内容、Codex/Claude設定を壊しません。登録処理は途中状態を成功扱いにせず、保存した導入前状態へ戻すか、modernが使えない場合はclassic fallbackだけへ切り替えます。modernとclassicを意図的に二重登録せず、自動でUACを承認したり勝手に再試行したりしません。
+
+次の順で再開します。
+
+1. repository rootでstatusを確認します。
+
+   ```powershell
+   python -m skill_magnet --config .\skill-magnet.json context-menu-status --platform windows
+   ```
+
+2. UACの表示内容が前節の「はい」を押してよい条件と一致するか確認します。
+
+3. 一致する場合だけ、同じinstall commandを一度だけ再実行します。
+
+   ```powershell
+   python -m skill_magnet --config .\skill-magnet.json install-context-menu --platform windows --confirm
+   ```
+
+4. もう一度失敗したら再試行を繰り返さず、statusとerrorを保存して報告します。
+
+### その他のオプションにしか表示されない
+
+`その他のオプションを表示`にだけ`Skill Magnet`がある場合、Windows 11 modernメニューを利用できず、classic fallbackが有効になっています。fallbackは故障時にも入口を一つに保つための代替経路で、modernと同時に表示する正規状態ではありません。
+
+まずstatusを実行し、`usable_installed_state`が`false`であることを確認します。次に、前節の手順どおり同じinstall commandを一度だけ実行してmodern登録を復旧します。復旧後は`usable_installed_state`が`true`になり、通常右クリック側だけに`Skill Magnet`が表示されます。
+
+通常右クリックと`その他のオプションを表示`の両方に`Skill Magnet`がある場合は不具合です。片方を手動で追加・削除せず、再試行を止めて報告してください。
+
+### アンインストールと元に戻す
+
+どちらもrepository rootで実行します。
+
+| 目的 | command |
+|---|---|
+| 直前の導入・更新を取り消し、保存済みの導入前状態へ戻す | `python -m skill_magnet --config .\skill-magnet.json rollback-context-menu --platform windows --confirm` |
+| Skill Magnetの登録を削除する意図を明示する | `python -m skill_magnet --config .\skill-magnet.json uninstall-context-menu --platform windows --confirm` |
+
+現行Windows実装では、uninstallも保存済みrollback pointを使って導入前状態へ戻るため、最終的な処理はrollbackと同じです。導入直後の復旧にはrollback、製品を使わない意思を示す場合はuninstallという名称を使い分けます。導入前からSkill Magnetの登録が存在した場合は、その保存済み状態が復元されます。
+
+削除時にWindowsの確認画面が出ることがあります。これは導入時にSkill Magnetが追加したWindowsの信頼情報を片付けるためです。前述の表と一致するときだけ承認します。完了後にstatusを実行し、導入前に登録がなかった環境では`package_registered`と`usable_installed_state`が`false`、Explorerに`Skill Magnet`がないことを確認します。
+
+### よくある質問
+
+**確認画面は毎回出ますか？** いいえ。初回導入、modern再登録・復旧、rollbackやuninstallの後片付けで必要な場合だけです。通常のskill実行で毎回出るなら拒否して報告してください。
+
+**CodexまたはClaudeの認証画面ですか？** いいえ。Windowsの右クリックメニュー登録に対する確認です。AIのpasswordやAPI keyを入力しません。
+
+**外部送信を許可する画面ですか？** いいえ。この確認だけで依頼内容やfileを外部へ送りません。
+
+**発行元が違う場合は？** 「いいえ」を選びます。別の実行fileや不明な発行元を承認しないでください。
+
+**CLI画面が残る場合は？** Skill Magnetの確認・結果・error画面が開いていれば先に閉じます。製品画面を閉じても新しいcmd/Terminalが残る場合は、他のterminalを終了せず、時刻とerrorを記録して報告してください。
+
+**二重に表示される場合は？** 正常ではありません。両方に入口があることを文章で記録し、必要ならメニュー部分だけを切り取った画像とstatus出力を添えてください。手動でregistryを編集しないでください。
+
+### トラブル報告に含める情報
+
+- `context-menu-status`の出力
+- 発生時刻とtimezone
+- 通常右クリック、または`その他のオプションを表示`のどちらを選んだか
+- 表示されたerror文を省略せず、そのまま文字で転記したもの
+- install、rollback、uninstallのどのcommandを直前に実行したか
+
+secret、API key、password、認証fileの内容は含めないでください。desktop全体や他applicationを含む画面全体も貼らず、必要ならSkill MagnetまたはUACの範囲だけを切り取ります。
+
+<details>
+<summary>運用者向け: Windows登録の内部詳細</summary>
+
+modernメニューは署名済みMSIX identity packageとExplorer用COM commandを登録します。初回または証明書が未登録のとき、Windows標準の`certutil.exe`を昇格起動し、`Skill Magnet Local`証明書をmachineの`TrustedPeople`へ登録します。cleanupではSkill Magnetが作成した証明書だけを削除します。
+
+installは単一transactionでrollback pointを作り、modernがusableならclassic rootを削除します。modern登録に失敗した場合は部分登録を除去してclassic fallbackだけを登録し、transaction自体が失敗した場合はrollback pointを復元します。`SkillMagnetLauncher.exe`とruntime childは`CREATE_NO_WINDOW`で起動し、通常実行でcmd/Terminalを作りません。
+
+</details>
+
+packの追加・削除・版・含有skillを変更した後は、同じinstall commandを一度だけ実行して静的メニューを更新します。古いメニューはcommitまたはskill集合の不一致でfail-closedになります。Skill Magnet画面のCancelまたはcloseではcontract、evidence、stateを作成しません。
+
+## macOS Quick Start
+
+macOSではFinder Quick Actionとして登録・解除します。
 
 ```bash
 python -m skill_magnet --config /path/to/skill-magnet.json install-context-menu --platform macos --confirm
@@ -83,21 +207,23 @@ python -m skill_magnet --config /path/to/skill-magnet.json uninstall-context-men
 実packを変更せず事前検証するには `activation-plan` を使います。
 
 ```powershell
-python -m skill_magnet --config C:\Projects\skill-magnet\skill-magnet.json activation-plan --platform windows --project C:\Projects\target --pack codex-pmo-skills --purpose "このタスクの目的"
+python -m skill_magnet activation-plan --platform windows --project C:\path\to\target --pack codex-pmo-skills --purpose "このタスクの目的"
 ```
 
 保管庫契約は [`docs/skill-repository-contract.md`](docs/skill-repository-contract.md) を参照してください。
 
-## ランタイム方式の現状
+## 実行先の現状
 
 - Claude Code: 一時プラグインを作成し、`claude --plugin-dir <temporary-plugin>` でそのセッションだけ読み込む案を第一候補とします。スキルは `/pack-name:skill-name` で明示呼び出しできます。
-- Codex: ローカルスキルの公式探索先は作業repository配下の `.agents/skills`、ユーザー領域の `$HOME/.agents/skills` などです。任意の一時directoryをセッション限定探索先にする公式CLIオプションは確認できていないため、ローカル一時配置を既定案にしません。
+- Codex: `codex://threads/new?path=...&prompt=...` を使い、Codex Desktop appの新規taskへhandoffします。`path`と`prompt`は別々にURL encodeし、日本語、改行、空白、`&`、`#`を保持します。Skill MagnetのCodex実行先として `codex exec`、`codex resume`、CLI/TUI、cmd、Windows Terminalは起動しません。
 
-Codexは選択pack/versionと検証済みinstructionを正式なタスク入力へ直接含めます。ただし、モデルへの送達やモデル自身の「読みました」という応答だけでは適用成功にしません。skill固有の機械判定可能な検査が通らなければ `not_guaranteed` としてfail-closedで停止します。詳細は [`docs/mvp-redesign.md`](docs/mvp-redesign.md) にあります。
+Codex Desktopのpromptには、選択pack ID、全skill ID、contract専用materialization内のINDEX/SKILL.mdの絶対pathとdigest、actual request、非デモ実行の指示、期待成果、contract/attemptを人が読める形で含めます。Codexには参照ファイルを全文読むよう要求し、内部JSONは利用者への回答形式にしません。deep linkをOSへ渡した事実は記録しますが、Desktop taskの結果を製品が機械取得できないため、その時点で `verified_completed` を作りません。詳細は [`docs/mvp-redesign.md`](docs/mvp-redesign.md) にあります。
+
+旧CLI verification adapterは回帰試験用コードとして残っていますが、Codex Desktop製品経路からは到達しません。global/user Codex configは変更しません。Desktop app自身の設定と認証はDesktop appが所有します。
 
 ## 成果物と完了条件
 
-成果物は、Skill Magnet本体と、そこから独立したユーザー所有のスキル保管庫です。MVPの目的は、保管庫の特定commitをユーザーが選択し、対象Codexがそのskillを実際に読み、結果へ適用した証拠まで取得することです。
+成果物は、Skill Magnet本体と、そこから独立したユーザー所有のスキル保管庫です。MVPの目的は、保管庫の固定commitから一つのpackageを選び、INDEXと全skillをCodex Desktop appの新規taskへ依頼と一体で渡し、タスク内で必要なskillだけを適用して回答を得ることです。
 
 この一連を両方の成果物を使ったend-to-end自動テストで合格した時だけ完成とします。ローカル配置、候補表示、旧syncテストの成功だけでは完成ではありません。
 
@@ -105,24 +231,16 @@ Codexは選択pack/versionと検証済みinstructionを正式なタスク入力�
 
 現段階のテストは二種類あります。
 
-- activation E2E: 独立Git保管庫、両OSの起動契約、task envelope、challenge nonce、読込識別、skill固有acceptance、fail-closedを実subprocess境界で検証します。
+- Desktop handoff E2E: 独立Git保管庫、期限付きcontract、選択skill、actual request、instruction/acceptance digest、deep-link encoding、`desktop_handoff_ready`とCLI非起動を検証します。
 - 製品ポリシーテスト: 規範的定義が必須制約を保持し、READMEと設計文書の表示が一致することを検証します。
 - 旧MVPテスト: 旧常設syncエンジンの安全性を回帰確認します。成功しても、再設計後MVPの完成を意味しません。
 
 ```powershell
-$env:PYTHONPATH = "C:\Projects\skill-magnet\src"
-python -m unittest discover -s C:\Projects\skill-magnet\tests -v
+python -m unittest discover -s tests -v
 ```
 
-再設計後MVPの完了条件は、別保管庫の特定commit選択、task envelopeへの明示注入、送達証拠、challenge nonceを含む読込証拠、skill固有の適用証拠、期限とcleanup、失敗・中断後の残留ゼロを含むend-to-end自動テストがすべて成功し、実ユーザーCodexとWindows実環境、macOS GitHub Actionsのcommunity-beta契約で確認されることです。Finder実機操作はcommunity betaの追加検証であり、確認前に保証しません。
+再設計後MVPの完了条件は、別保管庫の固定commitからの単一pack選択、全skillの読込とINDEXに基づく必要部分集合の適用、Desktop新規taskへの正確なprompt binding、CLI/terminal非起動、実Codex Desktop appでの自然文回答、Windows Explorerの実入口を確認することです。Desktopの回答を機械検証できない現状では、handoff後を自動的に `verified_completed` としません。Finder実機操作はcommunity betaの追加検証です。
 
 GitHub ActionsはWindowsとmacOSの両jobを必須の同一テストsuiteとして定義しています。片方だけの成功を完成扱いにしません。
 
-対象Codexそのものを通す明示的なruntime acceptanceは、書込み禁止sandboxの一時project・一時Git保管庫で実行します。これはモデル呼び出しを行うため、通常のunit test discoveryには暗黙に含めません。
-
-```powershell
-$env:PYTHONPATH = "C:\Projects\skill-magnet\src"
-python C:\Projects\skill-magnet\integration\real_codex_acceptance.py
-```
-
-2026-08-22にWindows上の実Codex CLI 0.148.0でこのruntime acceptanceを実行し、challenge nonce、commit、承認、instruction digestの読込識別とskill固有assertionが一致して `verified_applied` になりました。同日、登録中の実pack 9件（commit `c7747bba0bc391316aa558b3b4e8dd412045d2dc`）でも、全skill ID付きの適用規則と9件のskill固有assertionが一致して `verified_applied` になりました。GitHub Actions run `32565695277` ではWindows/macOSの両jobが成功しています。
+過去に実施したCodex CLI runtime acceptanceは、CLI adapter自体の回帰資料です。Codex Desktop appを実行先とする現製品の完成証拠には転用しません。

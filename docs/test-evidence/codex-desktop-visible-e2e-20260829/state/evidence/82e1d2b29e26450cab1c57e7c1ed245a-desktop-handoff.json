@@ -1,0 +1,24 @@
+{
+  "acceptance_digests": {
+    "codex-sandbox-approval-boundary": "b4df1deeebf2a0cfa03e93c19a59a90457f39279c51bf56d3ecc5003592e386d"
+  },
+  "actual_request_sha256": "6a7251459069b39f9f6904ec38d1007de917d2c6507838a0c2a2d85ed186c27d",
+  "attempt_id": "79870dabc4af45c0b4f5fb202d32904f",
+  "contract_id": "82e1d2b29e26450cab1c57e7c1ed245a",
+  "desktop_result_verification": "not_available",
+  "destination": "codex://threads/new",
+  "instruction_digest": "e7a9def6a153946f6481412362ee7afaac99552ee7d7d9096b51a788887b0c05",
+  "project": "C:\\Projects\\skill-magnet",
+  "prompt_sha256": "7693bc2e1bc7372d8608149501ade6a29321766388d890476d4cfeab644fa395",
+  "runtime": "codex",
+  "skill_ids": [
+    "codex-sandbox-approval-boundary"
+  ],
+  "status": "desktop_handoff_ready",
+  "terminal_event": {
+    "status": "desktop_handoff_ready",
+    "terminal": true
+  },
+  "terminal_event_id": "c12c1c05b30b45e0b169c835cc735985",
+  "verified_completed": false
+}

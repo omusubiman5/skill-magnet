@@ -1,0 +1,15 @@
+{
+  "source_attempt_id": "79dac29d52d34ae69457a21308c15954",
+  "source_contract_id": "eecaee60593642ce889b8a35caf180d2",
+  "reproduction_run_id": "0bca440be0544c04a712d11ad2a733b8",
+  "runtime": "codex-cli 0.148.0",
+  "exit_code": 1,
+  "failure_class": "invalid_output_schema",
+  "api_error_code": "invalid_json_schema",
+  "missing_required_property": "changes",
+  "stderr_sha256": "7d29744496dfdca37dc7116ea212b6e469d9e09622b44a67c4fbd90106bf969f",
+  "sanitized_summary": "Codex rejected the verification output schema because result.required did not include every declared result property.",
+  "source_session_timestamp": "2026-08-28T12:30:03.839Z",
+  "raw_stderr_retained": false,
+  "credential_material_retained": false
+}

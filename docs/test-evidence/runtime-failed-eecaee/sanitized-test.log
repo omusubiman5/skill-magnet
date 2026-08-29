@@ -1,0 +1,66 @@
+Skill Magnet runtime_failed eecaee sanitized test log
+Generated: 2026-08-28T21:40:47+09:00
+
+[source failure]
+contract=eecaee60593642ce889b8a35caf180d2
+attempt=79dac29d52d34ae69457a21308c15954
+skill=codex-sandbox-approval-boundary
+original_runtime_pid=13488
+runtime=codex-cli 0.148.0
+terminal_status=runtime_failed
+
+[real reproduction command]
+python tests\real_codex_runtime_smoke.py --config skill-magnet.json --source-contract C:\Users\HOMEA\.skill-magnet\launch-contracts\eecaee60593642ce889b8a35caf180d2.json --evidence-dir docs\test-evidence\runtime-failed-eecaee
+run_id=0bca440be0544c04a712d11ad2a733b8
+timestamp_utc=2026-08-28T12:29:57.293689+00:00
+exit_code=1
+failure_class=invalid_output_schema
+api_error_code=invalid_json_schema
+missing_required_property=changes
+stderr_sha256=7d29744496dfdca37dc7116ea212b6e469d9e09622b44a67c4fbd90106bf969f
+raw_stderr_retained=false
+
+[focused]
+python -m unittest -v tests.test_activation.ActivationEndToEndTest.test_codex_output_schema_requires_every_declared_property tests.test_activation.ActivationEndToEndTest.test_runtime_failures_show_one_error_and_never_verify tests.test_activation.ActivationEndToEndTest.test_codex_verification_uses_process_local_mcp_overrides tests.test_activation.ActivationEndToEndTest.test_same_actual_request_fixture_reaches_verified_completed
+result=PASS 4/4
+
+[full repository]
+python -m unittest discover -s tests -q
+result=PASS 105 tests; skipped=1; failures=0; errors=0
+duration_seconds=109.249
+
+[native contracts]
+native\windows-modern-context-menu\out\ContractTest.exe native\windows-modern-context-menu\out\SkillMagnetCommand.dll
+py -3.12 native\windows-modern-context-menu\contract_test.py native\windows-modern-context-menu\out\SkillMagnetCommand.dll
+result=PASS 2/2
+
+[consoleless and residual probes]
+python -m unittest -v tests.test_activation.ActivationEndToEndTest.test_windows_context_failure_returns_without_console_output tests.test_activation.ActivationEndToEndTest.test_windows_cmd_runtime_preserves_special_project_as_one_argv tests.test_e2e_guard.E2EResidualGuardTest.test_four_terminal_paths_reject_live_real_process_residuals
+result=PASS 3/3
+creation_flag=CREATE_NO_WINDOW
+
+[real Codex smoke after fix]
+python tests\real_codex_runtime_smoke.py --config skill-magnet.json --source-contract C:\Users\HOMEA\.skill-magnet\launch-contracts\eecaee60593642ce889b8a35caf180d2.json --evidence-dir docs\test-evidence\runtime-failed-eecaee
+run_id=d43b7b53b8b14f4c80cf13146180a260
+timestamp_utc=2026-08-28T12:31:25.581362+00:00
+runtime=codex-cli 0.148.0
+status=verified_completed
+actual_request_sha256=bb6954a3390b14c0f3a69d47a9de8c09061dd10f19130645766c50f7aa2c0e86
+runtime_pid=4464
+runtime_pid_terminated=true
+verification_session=ephemeral
+disabled_mcp=cloudflare-builds,cloudflare-observability,unreal-mcp
+
+[process residual]
+checked_pids=13488,7684,10040,4464
+live_checked_pids=0
+matching_product_owned_processes=0
+
+[installed readback]
+python -m skill_magnet --config .\skill-magnet.json context-menu-status --platform windows
+package_registered=true
+manifest_contexts=Directory,Directory\Background
+usable_installed_state=true
+bootstrap_source=C:\Projects\skill-magnet\src
+native_changed=false
+install_transaction_performed=false

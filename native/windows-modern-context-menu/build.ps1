@@ -14,14 +14,35 @@ Enter-VsDevShell -VsInstallPath $install -SkipAutomaticLocation -DevCmdArguments
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $common = @("/nologo", "/std:c++20", "/EHsc", "/W4", "/WX", "/DUNICODE", "/D_UNICODE")
-& cl @common "/LD" "$PSScriptRoot\SkillMagnetCommand.cpp" "/link" "/OUT:$OutDir\SkillMagnetCommand.dll" "/EXPORT:DllGetClassObject" "/EXPORT:DllCanUnloadNow" "ole32.lib" "user32.lib"
+& cl @common "/LD" "$PSScriptRoot\SkillMagnetCommand.cpp" "/link" "/OUT:$OutDir\SkillMagnetCommand.dll" "/EXPORT:DllGetClassObject" "/EXPORT:DllCanUnloadNow" "bcrypt.lib" "ole32.lib" "user32.lib"
 if ($LASTEXITCODE -ne 0) { throw "SkillMagnetCommand.dll build failed ($LASTEXITCODE)." }
 Copy-Item -Force "$PSScriptRoot\SkillMagnetMenu.tsv" "$OutDir\SkillMagnetMenu.tsv"
 & cl @common "$PSScriptRoot\ContractTest.cpp" "/link" "/OUT:$OutDir\ContractTest.exe" "ole32.lib"
 if ($LASTEXITCODE -ne 0) { throw "ContractTest.exe build failed ($LASTEXITCODE)." }
 & cl @common "$PSScriptRoot\SkillMagnetLauncher.cpp" "/link" "/SUBSYSTEM:WINDOWS" "/OUT:$OutDir\SkillMagnetLauncher.exe"
 if ($LASTEXITCODE -ne 0) { throw "SkillMagnetLauncher.exe build failed ($LASTEXITCODE)." }
+$sdk = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Directory |
+    Where-Object Name -Match '^10\.' | Sort-Object Name -Descending | Select-Object -First 1
+$signTool = if ($sdk) { Join-Path $sdk.FullName "x64\signtool.exe" } else { $null }
+$certificate = Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue |
+    Where-Object {
+        $_.Subject -eq "CN=Skill Magnet Local" -and $_.HasPrivateKey -and
+        (Test-Path -LiteralPath ("Cert:\LocalMachine\TrustedPeople\" + $_.Thumbprint))
+    } |
+    Select-Object -First 1
+if ($certificate -and $signTool -and (Test-Path -LiteralPath $signTool)) {
+    foreach ($binary in @("$OutDir\SkillMagnetCommand.dll", "$OutDir\SkillMagnetLauncher.exe")) {
+        & $signTool sign /fd SHA256 /s My /sha1 $certificate.Thumbprint $binary
+        if ($LASTEXITCODE -ne 0) { throw "Native binary signing failed ($LASTEXITCODE): $binary" }
+    }
+}
 if (-not $SkipContractTest) {
-    & "$OutDir\ContractTest.exe" "$OutDir\SkillMagnetCommand.dll"
-    if ($LASTEXITCODE -ne 0) { throw "Native COM contract test failed ($LASTEXITCODE)." }
+    try {
+        & "$OutDir\ContractTest.exe" "$OutDir\SkillMagnetCommand.dll"
+        if ($LASTEXITCODE -ne 0) { throw "Native COM contract test failed ($LASTEXITCODE)." }
+    }
+    catch [System.Management.Automation.ApplicationFailedException] {
+        & py -3.12 "$PSScriptRoot\contract_test.py" "$OutDir\SkillMagnetCommand.dll"
+        if ($LASTEXITCODE -ne 0) { throw "Native COM Python-host contract test failed ($LASTEXITCODE)." }
+    }
 }

@@ -5,11 +5,13 @@ __pycache__/
 build/
 dist/
 *.egg-info/
-
-
-# Beads / Dolt files (added by bd init)
-.dolt/
-*.db
-.beads-credential-key
-.beads/proxieddb/
-*.gate.lock*
+.e2e-state/
+native/windows-modern-context-menu/out/
+*.obj
+*.lib
+*.exp
+*.msix
+*.cer
+*.pfx
+.beads/*.db
+.beads/*.db-*

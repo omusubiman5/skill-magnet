@@ -1,0 +1,81 @@
+{
+  "attempt_id": "2f40b52feab84dd69651487d43c40bbb",
+  "commit_sha": "c7747bba0bc391316aa558b3b4e8dd412045d2dc",
+  "contract_id": "2d5cce267dd948fe880c43acaeab3390",
+  "interactive_handoff": {
+    "runtime": "codex",
+    "state": "test_suppressed",
+    "verification_session_resumed": false
+  },
+  "output": {
+    "evidence": {
+      "actual_request_sha256": "6a7251459069b39f9f6904ec38d1007de917d2c6507838a0c2a2d85ed186c27d",
+      "applied_rules": [
+        "codex-sandbox-approval-boundary: read・write・execute・networkを分離し、現在の実行条件（filesystemはread-only、approval policyはnever、networkはrestricted）に基づいて最小権限の境界を整理した。",
+        "codex-sandbox-approval-boundary: 無人実行では途中承認に依存せず、境界外の操作は昇格を試みず停止する方針を適用した。",
+        "codex-sandbox-approval-boundary: full accessは非隔離ホストで安全策とせず、必要な場合もDev ContainerまたはVMによる外側の隔離を前提とした。"
+      ],
+      "approved_at": "2026-08-22T18:15:11.6526999+09:00",
+      "approved_by": "user",
+      "challenge_nonce": "2dfa6e6cd4bd41389e65588bab8dca52",
+      "commit_sha": "c7747bba0bc391316aa558b3b4e8dd412045d2dc",
+      "completed_skill_ids": [
+        "codex-sandbox-approval-boundary"
+      ],
+      "instruction_digest": "e7a9def6a153946f6481412362ee7afaac99552ee7d7d9096b51a788887b0c05",
+      "pack_id": "codex-pmo-skills",
+      "repository_url": "https://github.com/omusubiman5/codex-pmo-skills.git",
+      "skill_execution_status": "completed",
+      "skill_ids": [
+        "codex-sandbox-approval-boundary"
+      ]
+    },
+    "result": {
+      "changes": [],
+      "sandbox_boundary": "read_only_no_midrun_approval",
+      "saved_paths": [],
+      "task_output": "1. ファイルシステム境界：この実行では C:\\Projects\\skill-magnet を含むファイルシステムが read-only です。プロジェクト内容の閲覧はできますが、作成・編集・削除は許可されません。\n2. 承認・実行境界：approval policy は never なので、サンドボックス外の操作が必要になっても途中で人へ昇格承認を求められません。書込みや許可外コマンドは自動的に広げず、失敗として停止します。network も restricted のため、外部通信を前提にできません。\n3. 権限を広げる場合の境界：変更作業が必要な別実行では、対象をこのワークスペースに限定した workspace-write と必要なコマンドだけを事前許可する構成が最小です。danger-full-access は非隔離ホストで使わず、必要ならDev ContainerまたはVMを外側の隔離境界とし、削除操作は明示した個別パスだけを対象にします。"
+    }
+  },
+  "pack_id": "codex-pmo-skills",
+  "skill_execution_completion_evidence": {
+    "actual_request_sha256": "6a7251459069b39f9f6904ec38d1007de917d2c6507838a0c2a2d85ed186c27d",
+    "completed_skill_ids": [
+      "codex-sandbox-approval-boundary"
+    ],
+    "skill_execution_status": "completed"
+  },
+  "skill_read_evidence": {
+    "approved_at": "2026-08-22T18:15:11.6526999+09:00",
+    "approved_by": "user",
+    "challenge_nonce": "2dfa6e6cd4bd41389e65588bab8dca52",
+    "commit_sha": "c7747bba0bc391316aa558b3b4e8dd412045d2dc",
+    "instruction_digest": "e7a9def6a153946f6481412362ee7afaac99552ee7d7d9096b51a788887b0c05",
+    "pack_id": "codex-pmo-skills",
+    "repository_url": "https://github.com/omusubiman5/codex-pmo-skills.git",
+    "skill_ids": [
+      "codex-sandbox-approval-boundary"
+    ]
+  },
+  "status": "verified_completed",
+  "task_delivery_evidence": {
+    "prompt_sha256": "2fb900a7da3387b329fda39f6c4178b36fc1acbc23ebfad3bef9c9270aed6794"
+  },
+  "terminal_event": {
+    "status": "verified_completed",
+    "terminal": true
+  },
+  "terminal_event_id": "4aa9e41f319148ae96bfe57b8b790752",
+  "user_result": {
+    "details": {
+      "contract_id": "2d5cce267dd948fe880c43acaeab3390",
+      "evidence_file": "C:\\Projects\\skill-magnet\\docs\\test-evidence\\real-codex-visible-e2e-20260829\\state\\evidence\\2d5cce267dd948fe880c43acaeab3390-verified.json",
+      "verification_status": "verified_completed"
+    },
+    "executed_skill": "サンドボックスと承認を定める",
+    "request": "このプロジェクトでCodexのサンドボックス承認境界を、日本語で具体的に3点まとめてください。",
+    "result": "1. ファイルシステム境界：この実行では C:\\Projects\\skill-magnet を含むファイルシステムが read-only です。プロジェクト内容の閲覧はできますが、作成・編集・削除は許可されません。\n2. 承認・実行境界：approval policy は never なので、サンドボックス外の操作が必要になっても途中で人へ昇格承認を求められません。書込みや許可外コマンドは自動的に広げず、失敗として停止します。network も restricted のため、外部通信を前提にできません。\n3. 権限を広げる場合の境界：変更作業が必要な別実行では、対象をこのワークスペースに限定した workspace-write と必要なコマンドだけを事前許可する構成が最小です。danger-full-access は非隔離ホストで使わず、必要ならDev ContainerまたはVMを外側の隔離境界とし、削除操作は明示した個別パスだけを対象にします。",
+    "saved_or_changed": "保存先/変更の申告なし（結果のみ）",
+    "title": "完了"
+  }
+}

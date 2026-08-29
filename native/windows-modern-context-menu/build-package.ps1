@@ -4,10 +4,23 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "certificate-state.ps1")
 Import-Module Microsoft.PowerShell.Security
 Import-Module PKI
 $subject = "CN=Skill Magnet Local"
 $statePath = Join-Path $ExternalLocation "certificate-state.json"
+$previousState = $null
+if (Test-Path -LiteralPath $statePath -PathType Leaf) {
+    try {
+        $candidateState = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+        if ($candidateState.thumbprint -match '^[0-9A-Fa-f]{40}$') {
+            $previousState = $candidateState
+        }
+    }
+    catch {
+        throw "Existing certificate ownership state is invalid; refusing to overwrite it."
+    }
+}
 $sdk = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Directory |
     Where-Object Name -Match '^10\.' | Sort-Object Name -Descending | Select-Object -First 1
 if (-not $sdk) { throw "Windows SDK tools are required." }
@@ -17,13 +30,20 @@ if (-not (Test-Path -LiteralPath $makeAppx) -or -not (Test-Path -LiteralPath $si
     throw "makeappx.exe and signtool.exe are required."
 }
 
-$certificate = Get-ChildItem Cert:\CurrentUser\My |
-    Where-Object { $_.Subject -eq $subject -and $_.HasPrivateKey } |
+$certificates = @(
+    Get-ChildItem Cert:\CurrentUser\My |
+        Where-Object { $_.Subject -eq $subject -and $_.HasPrivateKey }
+)
+# Reuse a certificate already trusted by the machine whenever possible. A new
+# thumbprint would force an unexpected UAC prompt during an otherwise routine
+# per-user menu update.
+$certificate = $certificates |
+    Where-Object {
+        Test-Path -LiteralPath ("Cert:\LocalMachine\TrustedPeople\" + $_.Thumbprint)
+    } |
     Select-Object -First 1
-$hasBasicConstraints = $certificate -and ($certificate.Extensions | Where-Object Oid -eq '2.5.29.19')
-if ($certificate -and -not $hasBasicConstraints) {
-    Remove-Item -LiteralPath ("Cert:\CurrentUser\My\" + $certificate.Thumbprint)
-    $certificate = $null
+if (-not $certificate) {
+    $certificate = $certificates | Select-Object -First 1
 }
 $createdMy = $false
 if (-not $certificate) {
@@ -51,18 +71,22 @@ try {
     $package = Join-Path $ExternalLocation "SkillMagnet.ContextMenu.msix"
     & $makeAppx pack /d $layout /p $package /nv /o
     if ($LASTEXITCODE -ne 0) { throw "makeappx failed ($LASTEXITCODE)." }
-    $passwordText = [guid]::NewGuid().ToString("N")
-    $password = ConvertTo-SecureString -String $passwordText -AsPlainText -Force
-    $pfx = Join-Path $temporary "SkillMagnet.pfx"
-    Export-PfxCertificate -Cert $certificate -FilePath $pfx -Password $password | Out-Null
-    & $signTool sign /fd SHA256 /f $pfx /p $passwordText $package
+    foreach ($binaryName in @("SkillMagnetCommand.dll", "SkillMagnetLauncher.exe")) {
+        $binary = Join-Path $ExternalLocation $binaryName
+        if (-not (Test-Path -LiteralPath $binary)) {
+            throw "Required native binary is missing: $binaryName"
+        }
+        & $signTool sign /fd SHA256 /s My /sha1 $certificate.Thumbprint $binary
+        if ($LASTEXITCODE -ne 0) { throw "signtool failed for $binaryName ($LASTEXITCODE)." }
+    }
+    & $signTool sign /fd SHA256 /s My /sha1 $certificate.Thumbprint $package
     if ($LASTEXITCODE -ne 0) { throw "signtool failed ($LASTEXITCODE)." }
-    [ordered]@{
-        thumbprint = $certificate.Thumbprint
-        created_my = $createdMy
-        created_trusted_people = $createdTrust
-        created_machine_trusted_people = $false
-    } | ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding UTF8
+    Merge-SkillMagnetCertificateState `
+        -PreviousState $previousState `
+        -Thumbprint $certificate.Thumbprint `
+        -CreatedMy $createdMy `
+        -CreatedTrustedPeople $createdTrust |
+        ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding UTF8
 }
 catch {
     Remove-Item -LiteralPath (Join-Path $ExternalLocation "SkillMagnet.cer") -ErrorAction SilentlyContinue

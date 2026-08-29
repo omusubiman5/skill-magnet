@@ -1,0 +1,25 @@
+{
+  "captured_at": "2026-08-28T17:07:29.414797+00:00",
+  "status": "verified_completed",
+  "contract_id": "2d5cce267dd948fe880c43acaeab3390",
+  "attempt_id": "2f40b52feab84dd69651487d43c40bbb",
+  "selected_skill_id": "codex-sandbox-approval-boundary",
+  "actual_request": "このプロジェクトでCodexのサンドボックス承認境界を、日本語で具体的に3点まとめてください。",
+  "actual_request_sha256": "6a7251459069b39f9f6904ec38d1007de917d2c6507838a0c2a2d85ed186c27d",
+  "instruction_digest": "e7a9def6a153946f6481412362ee7afaac99552ee7d7d9096b51a788887b0c05",
+  "acceptance_digest": "b4df1deeebf2a0cfa03e93c19a59a90457f39279c51bf56d3ecc5003592e386d",
+  "verified_evidence_path": "C:\\Projects\\skill-magnet\\docs\\test-evidence\\real-codex-visible-e2e-20260829\\state\\evidence\\2d5cce267dd948fe880c43acaeab3390-verified.json",
+  "task_output": "1. ファイルシステム境界：この実行では C:\\Projects\\skill-magnet を含むファイルシステムが read-only です。プロジェクト内容の閲覧はできますが、作成・編集・削除は許可されません。\n2. 承認・実行境界：approval policy は never なので、サンドボックス外の操作が必要になっても途中で人へ昇格承認を求められません。書込みや許可外コマンドは自動的に広げず、失敗として停止します。network も restricted のため、外部通信を前提にできません。\n3. 権限を広げる場合の境界：変更作業が必要な別実行では、対象をこのワークスペースに限定した workspace-write と必要なコマンドだけを事前許可する構成が最小です。danger-full-access は非隔離ホストで使わず、必要ならDev ContainerまたはVMを外側の隔離境界とし、削除操作は明示した個別パスだけを対象にします。",
+  "user_result": {
+    "title": "完了",
+    "executed_skill": "サンドボックスと承認を定める",
+    "request": "このプロジェクトでCodexのサンドボックス承認境界を、日本語で具体的に3点まとめてください。",
+    "result": "1. ファイルシステム境界：この実行では C:\\Projects\\skill-magnet を含むファイルシステムが read-only です。プロジェクト内容の閲覧はできますが、作成・編集・削除は許可されません。\n2. 承認・実行境界：approval policy は never なので、サンドボックス外の操作が必要になっても途中で人へ昇格承認を求められません。書込みや許可外コマンドは自動的に広げず、失敗として停止します。network も restricted のため、外部通信を前提にできません。\n3. 権限を広げる場合の境界：変更作業が必要な別実行では、対象をこのワークスペースに限定した workspace-write と必要なコマンドだけを事前許可する構成が最小です。danger-full-access は非隔離ホストで使わず、必要ならDev ContainerまたはVMを外側の隔離境界とし、削除操作は明示した個別パスだけを対象にします。",
+    "saved_or_changed": "保存先/変更の申告なし（結果のみ）",
+    "details": {
+      "verification_status": "verified_completed",
+      "contract_id": "2d5cce267dd948fe880c43acaeab3390",
+      "evidence_file": "C:\\Projects\\skill-magnet\\docs\\test-evidence\\real-codex-visible-e2e-20260829\\state\\evidence\\2d5cce267dd948fe880c43acaeab3390-verified.json"
+    }
+  }
+}

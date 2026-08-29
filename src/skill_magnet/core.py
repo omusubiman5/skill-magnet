@@ -11,10 +11,23 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+
+
+_HTML_U0020_REFERENCE = re.compile(r"&#(?:0*32|[xX]0*20);")
+
+
+def normalize_display_text(value: str) -> str:
+    """Render only numeric U+0020 references as spaces at display boundaries.
+
+    This intentionally is not a general HTML entity decoder. Values such as
+    ``&lt;`` remain literal, and callers retain the original value for contracts,
+    identifiers, hashes, and execution.
+    """
+    return _HTML_U0020_REFERENCE.sub(" ", value)
 
 
 class SkillMagnetError(RuntimeError):
@@ -49,6 +62,20 @@ def _expand_path(value: str, base: Path) -> Path:
     if not expanded.is_absolute():
         expanded = base / expanded
     return expanded.resolve()
+
+
+def _pack_source(value: str, base: Path) -> Path:
+    prefix = "package://"
+    if not value.startswith(prefix):
+        return _expand_path(value, base)
+    name = value[len(prefix) :]
+    if not SKILL_NAME.fullmatch(name):
+        raise SkillMagnetError(f"Invalid packaged source name: {value}")
+    packaged = Path(__file__).resolve().parent / "_packs" / name
+    if packaged.is_dir():
+        return packaged.resolve()
+    source_checkout = base / ".approved-snapshots" / name
+    return source_checkout.resolve()
 
 
 def _parse_github_repo(url: str) -> tuple[str, str]:
@@ -152,6 +179,17 @@ class Pack:
     purpose: str = ""
     menu_label: str = ""
     selection_kind: str = "package"
+    skill_metadata: dict[str, dict[str, str]] = field(default_factory=dict)
+
+    def skill_display_name(self, skill_id: str) -> str:
+        return normalize_display_text(
+            self.skill_metadata.get(skill_id, {}).get("display_name", skill_id)
+        )
+
+    def skill_purpose(self, skill_id: str) -> str:
+        return normalize_display_text(
+            self.skill_metadata.get(skill_id, {}).get("purpose", self.purpose)
+        )
 
 
 @dataclass(frozen=True)
@@ -211,17 +249,43 @@ class Config:
             for skill in skills:
                 if not SKILL_NAME.fullmatch(skill):
                     raise SkillMagnetError(f"Invalid skill name: {skill}")
+            raw_skill_metadata = raw.get("skill_metadata", {})
+            if not isinstance(raw_skill_metadata, dict):
+                raise SkillMagnetError(f"Pack {pack_id} skill_metadata must be an object")
+            unknown_metadata = set(raw_skill_metadata) - set(skills)
+            if unknown_metadata:
+                raise SkillMagnetError(
+                    f"Pack {pack_id} has metadata for unknown skills: "
+                    + ", ".join(sorted(unknown_metadata))
+                )
+            skill_metadata: dict[str, dict[str, str]] = {}
+            for skill, metadata in raw_skill_metadata.items():
+                if not isinstance(metadata, dict):
+                    raise SkillMagnetError(
+                        f"Skill metadata must be an object: {pack_id}/{skill}"
+                    )
+                display_name = str(metadata.get("display_name", "")).strip()
+                purpose = str(metadata.get("purpose", "")).strip()
+                if not display_name or not purpose:
+                    raise SkillMagnetError(
+                        f"Skill metadata requires display_name and purpose: {pack_id}/{skill}"
+                    )
+                skill_metadata[skill] = {
+                    "display_name": display_name,
+                    "purpose": purpose,
+                }
             self.packs[pack_id] = Pack(
                 pack_id=pack_id,
                 repo_url=str(raw.get("repo_url", "")),
                 expected_commit=str(raw.get("expected_commit", "")).lower(),
-                source=_expand_path(str(raw.get("source", "")), self.base),
+                source=_pack_source(str(raw.get("source", "")), self.base),
                 skills=skills,
                 approved_by=str(raw.get("approved_by", "")).strip(),
                 approved_at=str(raw.get("approved_at", "")).strip(),
                 purpose=str(raw.get("purpose", "")).strip(),
                 menu_label=str(raw.get("menu_label", pack_id)).strip(),
                 selection_kind=str(raw.get("selection_kind", "package")).strip(),
+                skill_metadata=skill_metadata,
             )
             if self.packs[pack_id].selection_kind not in {"package", "skill"}:
                 raise SkillMagnetError(
@@ -268,6 +332,9 @@ class Engine:
             )
         if not pack.source.is_dir():
             raise SkillMagnetError(f"Pack source does not exist: {pack.source}")
+        snapshot_path = pack.source / ".skill-magnet-snapshot.json"
+        if snapshot_path.is_file():
+            return self._validate_bundled_pack(pack, snapshot_path)
         root = Path(_run_git(pack.source, "rev-parse", "--show-toplevel")).resolve()
         if root != pack.source:
             raise SafetyError(f"Pack source must be the Git repository root: {pack.source}")
@@ -302,6 +369,45 @@ class Engine:
                 raise SkillMagnetError(f"Skill description is required: {skill_dir}")
             scan_skill_safety(skill_dir)
             hashes[skill] = hash_directory(skill_dir)
+        return commit, hashes
+
+    def _validate_bundled_pack(
+        self, pack: Pack, snapshot_path: Path
+    ) -> tuple[str, dict[str, str]]:
+        try:
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SafetyError(f"Cannot read bundled snapshot metadata: {exc}") from exc
+        if snapshot.get("version") != 1:
+            raise SafetyError("Unsupported bundled snapshot metadata")
+        expected_repo = _parse_github_repo(pack.repo_url)
+        actual_repo = _parse_github_repo(str(snapshot.get("repo_url", "")))
+        if actual_repo != expected_repo:
+            raise SafetyError("Bundled snapshot repository does not match configuration")
+        commit = str(snapshot.get("commit", "")).lower()
+        if commit != pack.expected_commit:
+            raise SafetyError("Bundled snapshot commit does not match expected_commit")
+        index = pack.source / "INDEX.md"
+        if not index.is_file() or hashlib.sha256(index.read_bytes()).hexdigest() != str(
+            snapshot.get("index_sha256", "")
+        ):
+            raise SafetyError("Bundled snapshot INDEX.md digest does not match")
+        recorded = snapshot.get("skills")
+        if not isinstance(recorded, dict) or set(recorded) != set(pack.skills):
+            raise SafetyError("Bundled snapshot skill set does not match configuration")
+        hashes: dict[str, str] = {}
+        for skill in pack.skills:
+            skill_dir = pack.source / skill
+            if not skill_dir.is_dir() or _is_link(skill_dir):
+                raise SafetyError(f"Invalid bundled skill directory: {skill_dir}")
+            metadata = _frontmatter(skill_dir / "SKILL.md")
+            if metadata.get("name") != skill or not metadata.get("description"):
+                raise SafetyError(f"Invalid bundled skill metadata: {skill_dir}")
+            scan_skill_safety(skill_dir)
+            actual_hash = hash_directory(skill_dir)
+            if actual_hash != recorded.get(skill):
+                raise SafetyError(f"Bundled skill digest does not match: {skill}")
+            hashes[skill] = actual_hash
         return commit, hashes
 
     def _load_state(self) -> dict[str, Any]:

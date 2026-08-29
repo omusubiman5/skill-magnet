@@ -1,0 +1,36 @@
+{
+  "timestamp_utc": "2026-08-29T00:34:57.684947+00:00",
+  "status": "desktop_handoff_ready",
+  "desktop_result_verification": "not_available",
+  "verified_completed": false,
+  "contract_id": "12eae975d23d461ca70d5dfedd2bf971",
+  "attempt_id": "ea7a27be14b14e95a39c99e49fdba899",
+  "skill_ids": [
+    "codex-auth-boundary-selection",
+    "codex-bounded-subagents",
+    "codex-ci-patch-handoff",
+    "codex-context-entry-routing",
+    "codex-egress-surface-governance",
+    "codex-exec-io-contract",
+    "codex-execution-mode-routing",
+    "codex-mcp-control-plane",
+    "codex-sandbox-approval-boundary"
+  ],
+  "project": "C:\\Projects\\skill-magnet",
+  "actual_request": "このプロジェクトのSkill Magnet実装を、INDEXで関係づけられたパック内全スキルを組み合わせて実行する要件に照らして監査し、不適合を修正して、検証結果を日本語で報告してください。",
+  "actual_request_sha256": "cbebdb234cf0a25684a6ab848ee6e8b1de9cde93ce3fc4ed5698a9ac2dccc715",
+  "prompt_sha256": "b9724976b189aaee9fcf63c127bfbcfbbb4de893d4c5e681c21177ef4d2d1aec",
+  "instruction_digest": "173ac0c356945337e1eaf05f52d5a3e005426da495775f757b52338b764d49e3",
+  "acceptance_digests": {
+    "codex-auth-boundary-selection": "a993d08c8dfd9e4739bd9e6150772e2c45a67c40778d0051a35ceecdad27d92d",
+    "codex-bounded-subagents": "da393eec33b11f8d32dfb5fc68b744847f996e69d29cc9921708272d7eea1e47",
+    "codex-ci-patch-handoff": "8b888999ad3cda87853e1f346a5386ac2adeca1230ab0cc00da70ab618e2a4b8",
+    "codex-context-entry-routing": "414b8020359e9524c99b6f33fcb90e97149fb8fff5ec936576acff0bd8ccdea6",
+    "codex-egress-surface-governance": "928ab2a7112a4e3620fe373e170d64b2dc9490afcfe0822d66687bd404c178db",
+    "codex-exec-io-contract": "4df5b00136f7456a67761f910cc93e31b57cf6b9fc7621b607dc2a3ac765862d",
+    "codex-execution-mode-routing": "f63c268df7677d9f051d47aec7476961e55694d50a7b738dbc02236cf838fea8",
+    "codex-mcp-control-plane": "4decbc6a5661eba06007372c0969a88c61afc15fa57f7471c11b63b6c8f1483e",
+    "codex-sandbox-approval-boundary": "b4df1deeebf2a0cfa03e93c19a59a90457f39279c51bf56d3ecc5003592e386d"
+  },
+  "destination": "codex://threads/new"
+}

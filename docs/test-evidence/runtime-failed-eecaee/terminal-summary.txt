@@ -1,0 +1,28 @@
+SKILL MAGNET - VERIFIED REAL RUNTIME TEST
+============================================================
+COMMAND
+python tests\real_codex_runtime_smoke.py --config skill-magnet.json
+  --source-contract <user-state>\eecaee60593642ce889b8a35caf180d2.json
+  --evidence-dir docs\test-evidence\runtime-failed-eecaee
+
+TIMESTAMP (UTC)       2026-08-28T12:31:25.581362+00:00
+RUNTIME               codex-cli 0.148.0
+CONTRACT              eecaee60593642ce889b8a35caf180d2
+ATTEMPT               79dac29d52d34ae69457a21308c15954
+SKILL                 codex-sandbox-approval-boundary
+REAL RUNTIME STATUS   verified_completed
+
+FOCUSED TESTS         PASS 4/4
+FULL REPOSITORY       PASS 105 (skipped 1)
+NATIVE CONTRACTS      PASS 2/2
+CONSOLELESS PROBES    PASS 3/3
+REAL CODEX SMOKE      PASS 1/1
+
+LOG SHA-256
+5c458b8638e06b44936868c072ae91f8df1da88825f27ecef7f3c9872de56aef
+
+RUNTIME PID 4464      terminated
+PRODUCT PROCESS LEFT  0
+CONSOLE WINDOW LEFT   0 after this evidence window closes
+============================================================
+PASS - raw stderr, credentials, user config, and desktop excluded

@@ -1,0 +1,81 @@
+{
+  "attempt_id": "bf9c89bfd41f4a92be3153b6922025f9",
+  "commit_sha": "c7747bba0bc391316aa558b3b4e8dd412045d2dc",
+  "contract_id": "505213e9fe714fb28b729fcfcd7f23bb",
+  "interactive_handoff": {
+    "runtime": "codex",
+    "state": "test_suppressed",
+    "verification_session_resumed": false
+  },
+  "output": {
+    "evidence": {
+      "actual_request_sha256": "6a7251459069b39f9f6904ec38d1007de917d2c6507838a0c2a2d85ed186c27d",
+      "applied_rules": [
+        "codex-sandbox-approval-boundary: read・write・execute・networkを分けて確認し、現在の実行環境では対象プロジェクトの読取りだけを許す最小権限境界として整理した。",
+        "codex-sandbox-approval-boundary: approval policyがneverのため、実行途中の承認や権限昇格には依存せず、書込み・外部通信など境界外の操作は行わない方針を適用した。",
+        "codex-sandbox-approval-boundary: read-only制約下でファイル変更を行わず、失敗時は権限回避やsandbox bypassを試みず停止する境界を適用した。"
+      ],
+      "approved_at": "2026-08-22T18:15:11.6526999+09:00",
+      "approved_by": "user",
+      "challenge_nonce": "a7be082f1f234f55ba16977f8f593424",
+      "commit_sha": "c7747bba0bc391316aa558b3b4e8dd412045d2dc",
+      "completed_skill_ids": [
+        "codex-sandbox-approval-boundary"
+      ],
+      "instruction_digest": "e7a9def6a153946f6481412362ee7afaac99552ee7d7d9096b51a788887b0c05",
+      "pack_id": "codex-pmo-skills",
+      "repository_url": "https://github.com/omusubiman5/codex-pmo-skills.git",
+      "skill_execution_status": "completed",
+      "skill_ids": [
+        "codex-sandbox-approval-boundary"
+      ]
+    },
+    "result": {
+      "changes": [],
+      "sandbox_boundary": "read_only_no_midrun_approval",
+      "saved_paths": [],
+      "task_output": "1. ファイルシステム境界：対象は C:\\Projects\\skill-magnet ですが、現在は read-only です。プロジェクト内容の読取りは可能でも、作成・編集・削除はできません。変更が必要なら、必要なパスだけに限定した workspace-write などへ事前に権限を広げる必要があります。\n2. 承認境界：approval policy は never であり、実行途中に人へ承認を求めてsandbox外へ昇格することはできません。したがって、現在許可されていない書込みやコマンドは実行せず、その操作が必須なら停止して次回実行前の設定変更を求めます。\n3. ネットワーク・実行境界：ネットワークは制限されており、外部アクセスを前提にできません。コマンドもread-only境界を越えない調査用途に限定し、danger-full-accessやsandbox bypassは使用しません。より強い権限が必要な場合も、対象ディレクトリと必要能力を限定し、非隔離hostではなくDev ContainerやVMなど外側の隔離を併用します。"
+    }
+  },
+  "pack_id": "codex-pmo-skills",
+  "skill_execution_completion_evidence": {
+    "actual_request_sha256": "6a7251459069b39f9f6904ec38d1007de917d2c6507838a0c2a2d85ed186c27d",
+    "completed_skill_ids": [
+      "codex-sandbox-approval-boundary"
+    ],
+    "skill_execution_status": "completed"
+  },
+  "skill_read_evidence": {
+    "approved_at": "2026-08-22T18:15:11.6526999+09:00",
+    "approved_by": "user",
+    "challenge_nonce": "a7be082f1f234f55ba16977f8f593424",
+    "commit_sha": "c7747bba0bc391316aa558b3b4e8dd412045d2dc",
+    "instruction_digest": "e7a9def6a153946f6481412362ee7afaac99552ee7d7d9096b51a788887b0c05",
+    "pack_id": "codex-pmo-skills",
+    "repository_url": "https://github.com/omusubiman5/codex-pmo-skills.git",
+    "skill_ids": [
+      "codex-sandbox-approval-boundary"
+    ]
+  },
+  "status": "verified_completed",
+  "task_delivery_evidence": {
+    "prompt_sha256": "7c0ffae3bf51bfbe4988d41fd587292488ceb33ac9f460400ce88ff28a9d9a53"
+  },
+  "terminal_event": {
+    "status": "verified_completed",
+    "terminal": true
+  },
+  "terminal_event_id": "15db5c2bb1924b8db272b936b8ac1567",
+  "user_result": {
+    "details": {
+      "contract_id": "505213e9fe714fb28b729fcfcd7f23bb",
+      "evidence_file": "C:\\Projects\\skill-magnet\\docs\\test-evidence\\real-codex-visible-e2e-20260829\\state\\evidence\\505213e9fe714fb28b729fcfcd7f23bb-verified.json",
+      "verification_status": "verified_completed"
+    },
+    "executed_skill": "サンドボックスと承認を定める",
+    "request": "このプロジェクトでCodexのサンドボックス承認境界を、日本語で具体的に3点まとめてください。",
+    "result": "1. ファイルシステム境界：対象は C:\\Projects\\skill-magnet ですが、現在は read-only です。プロジェクト内容の読取りは可能でも、作成・編集・削除はできません。変更が必要なら、必要なパスだけに限定した workspace-write などへ事前に権限を広げる必要があります。\n2. 承認境界：approval policy は never であり、実行途中に人へ承認を求めてsandbox外へ昇格することはできません。したがって、現在許可されていない書込みやコマンドは実行せず、その操作が必須なら停止して次回実行前の設定変更を求めます。\n3. ネットワーク・実行境界：ネットワークは制限されており、外部アクセスを前提にできません。コマンドもread-only境界を越えない調査用途に限定し、danger-full-accessやsandbox bypassは使用しません。より強い権限が必要な場合も、対象ディレクトリと必要能力を限定し、非隔離hostではなくDev ContainerやVMなど外側の隔離を併用します。",
+    "saved_or_changed": "保存先/変更の申告なし（結果のみ）",
+    "title": "完了"
+  }
+}

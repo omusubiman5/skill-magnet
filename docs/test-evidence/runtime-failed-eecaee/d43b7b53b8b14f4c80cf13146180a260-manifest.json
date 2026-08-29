@@ -1,0 +1,27 @@
+{
+  "actual_request_sha256": "bb6954a3390b14c0f3a69d47a9de8c09061dd10f19130645766c50f7aa2c0e86",
+  "console_creation_flag": "CREATE_NO_WINDOW",
+  "duration_seconds": 17.953,
+  "finished_at": "2026-08-28T12:31:43.524285+00:00",
+  "process_local_disabled_mcp_servers": [
+    "cloudflare-builds",
+    "cloudflare-observability",
+    "unreal-mcp"
+  ],
+  "prompt_sha256": "dbb850c04dea7e4e11c771d4869bd5cd8c44a774087dd5284180cb8bc436d1d3",
+  "run_id": "d43b7b53b8b14f4c80cf13146180a260",
+  "runtime": "codex-cli 0.148.0",
+  "runtime_failure_evidence": null,
+  "runtime_pid": 4464,
+  "runtime_pid_terminated": true,
+  "runtime_stderr_evidence": {
+    "stderr_present": true,
+    "stderr_sha256": "f4246a5b8a12597ac08cb68fdbb4dc36007a1d3bbb4a8a8c18d4c3d06276e9f9"
+  },
+  "skill_id": "codex-sandbox-approval-boundary",
+  "source_attempt_id": "79dac29d52d34ae69457a21308c15954",
+  "source_contract_id": "eecaee60593642ce889b8a35caf180d2",
+  "started_at": "2026-08-28T12:31:25.581362+00:00",
+  "status": "verified_completed",
+  "verified_contract_id": "eecaee60593642ce889b8a35caf180d2"
+}

@@ -80,12 +80,27 @@ class ProductPolicyTest(unittest.TestCase):
             {
                 "task_delivery_evidence",
                 "skill_read_evidence",
-                "skill_specific_application_evidence",
+                "skill_execution_completion_evidence",
             },
         )
         self.assertEqual(
             set(verification["placement_is_not_evidence_of"]),
             {"skill_read", "skill_application"},
+        )
+        self.assertEqual(
+            verification["completion_contract"],
+            {
+                "actual_request_field": "contract.purpose",
+                "pack_skill_ids_field": "evidence.skill_ids",
+                "applied_skill_ids_field": "evidence.completed_skill_ids",
+                "applied_skill_ids_must_be_nonempty_subset": True,
+                "completed_status_field": "evidence.skill_execution_status",
+                "required_completed_status": "completed",
+                "actual_request_sha256_field": "evidence.actual_request_sha256",
+                "task_output_field": "result.task_output",
+                "task_output_must_be_non_empty": True,
+                "skill_specific_acceptance_must_pass": True,
+            },
         )
         self.assertFalse(verification["self_report_alone_is_sufficient"])
         self.assertEqual(verification["missing_evidence_result"], "fail_closed")
@@ -108,6 +123,7 @@ class ProductPolicyTest(unittest.TestCase):
                 "skill_ids",
                 "instruction_digest",
                 "challenge_nonce",
+                "actual_request_sha256",
             },
         )
 

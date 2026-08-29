@@ -14,6 +14,16 @@ static const CLSID CLSID_SkillMagnetCommand = {
 
 int wmain(int argc, wchar_t** argv) {
     if (argc != 2) return 2;
+    wchar_t temporary_root[MAX_PATH]{};
+    if (!GetTempPathW(MAX_PATH, temporary_root)) return 8;
+    const std::wstring local_app_data =
+        std::wstring(temporary_root) + L"SkillMagnetContract-" +
+        std::to_wstring(GetCurrentProcessId());
+    if (!CreateDirectoryW(local_app_data.c_str(), nullptr) &&
+        GetLastError() != ERROR_ALREADY_EXISTS) return 9;
+    if (!SetEnvironmentVariableW(L"LOCALAPPDATA", local_app_data.c_str())) return 10;
+    const std::wstring invoke_log =
+        local_app_data + L"\\SkillMagnet\\ContextMenu\\invoke.log";
     HMODULE module = LoadLibraryW(argv[1]);
     if (!module) return 3;
     auto get_class = reinterpret_cast<GetClassObject>(GetProcAddress(module, "DllGetClassObject"));
@@ -33,7 +43,7 @@ int wmain(int argc, wchar_t** argv) {
     EXPCMDFLAGS flags{};
     GUID canonical{};
     const bool valid = SUCCEEDED(command->GetTitle(nullptr, &title)) &&
-        title && wcscmp(title, L"Package: Test Package") == 0 &&
+        title && wcscmp(title, L"Skill Magnet") == 0 &&
         SUCCEEDED(command->GetState(nullptr, FALSE, &state)) && state == ECS_ENABLED &&
         SUCCEEDED(command->GetFlags(&flags)) && (flags & ECF_HASSUBCOMMANDS) != 0 &&
         SUCCEEDED(command->GetCanonicalName(&canonical)) &&
@@ -60,14 +70,16 @@ int wmain(int argc, wchar_t** argv) {
         return titles;
     };
     const std::vector<std::wstring> expected_titles = {
-        L"Skill: test-skill | Codex",
-        L"Skill: test-skill | Claude",
+        L"Test pack",
     };
     const bool hierarchy = child_titles(command) == expected_titles;
+    const bool enumeration_is_silent =
+        GetFileAttributesW(invoke_log.c_str()) == INVALID_FILE_ATTRIBUTES;
     command->Release();
     const bool unloadable = can_unload() == S_OK;
     FreeLibrary(module);
-    if (!valid || !hierarchy || !unloadable) return 7;
+    RemoveDirectoryW(local_app_data.c_str());
+    if (!valid || !hierarchy || !enumeration_is_silent || !unloadable) return 7;
     std::wcout << L"SkillMagnet IExplorerCommand contract PASS\n";
     return 0;
 }

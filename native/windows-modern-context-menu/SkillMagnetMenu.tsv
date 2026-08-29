@@ -1,3 +1,2 @@
-skill-magnet-menu-v2
-test-pack	Test Package	package	test-skill	Codex	"C:\Windows\System32\cmd.exe" /d /c exit 0 __SKILL_MAGNET_PROJECT__
-test-pack	Test Package	package	test-skill	Claude	"C:\Windows\System32\cmd.exe" /d /c exit 1 __SKILL_MAGNET_PROJECT__
+skill-magnet-menu-v3
+test-pack	Skill Magnet	package	test-pack	Test pack	Complete test skill pack.	"C:\Windows\System32\cmd.exe" /d /c exit 0 __SKILL_MAGNET_PROJECT__

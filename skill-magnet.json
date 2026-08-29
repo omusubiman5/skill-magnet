@@ -11,10 +11,48 @@
       "selection_kind": "package",
       "repo_url": "https://github.com/omusubiman5/codex-pmo-skills.git",
       "expected_commit": "c7747bba0bc391316aa558b3b4e8dd412045d2dc",
-      "source": "C:/Projects/skill-magnet/.approved-snapshots/codex-pmo-skills-c7747bba",
+      "source": "package://codex-pmo-skills-c7747bba",
       "purpose": "Apply reviewed Codex execution, authorization, sandbox, MCP, CI, and context-routing controls.",
       "approved_by": "user",
       "approved_at": "2026-08-22T18:15:11.6526999+09:00",
+      "skill_metadata": {
+        "codex-auth-boundary-selection": {
+          "display_name": "認証境界を選ぶ",
+          "purpose": "認証情報を残さず、安全な認証境界を選びます。"
+        },
+        "codex-bounded-subagents": {
+          "display_name": "サブエージェントの範囲を定める",
+          "purpose": "サブエージェントへ渡す作業と権限の境界を定めます。"
+        },
+        "codex-ci-patch-handoff": {
+          "display_name": "CI修正を引き継ぐ",
+          "purpose": "CIで判明した問題と修正差分を安全に引き継ぎます。"
+        },
+        "codex-context-entry-routing": {
+          "display_name": "依頼の入口を振り分ける",
+          "purpose": "依頼内容に合うコンテキストと処理経路を選びます。"
+        },
+        "codex-egress-surface-governance": {
+          "display_name": "外部送信を管理する",
+          "purpose": "外部へ出る情報と操作の境界を確認します。"
+        },
+        "codex-exec-io-contract": {
+          "display_name": "実行の入出力を定める",
+          "purpose": "コマンド実行の入力、出力、失敗時の扱いを定めます。"
+        },
+        "codex-execution-mode-routing": {
+          "display_name": "実行方法を選ぶ",
+          "purpose": "依頼に合う対話・非対話の実行方法を選びます。"
+        },
+        "codex-mcp-control-plane": {
+          "display_name": "MCP接続を管理する",
+          "purpose": "利用するMCP接続と許可範囲を管理します。"
+        },
+        "codex-sandbox-approval-boundary": {
+          "display_name": "サンドボックスと承認を定める",
+          "purpose": "サンドボックス外の操作と承認が必要な境界を定めます。"
+        }
+      },
       "skills": [
         "codex-auth-boundary-selection",
         "codex-bounded-subagents",

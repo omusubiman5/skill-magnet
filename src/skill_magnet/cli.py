@@ -19,7 +19,20 @@ from .platforms import (
     rollback_windows_context_menus,
     windows_modern_context_menu_status,
 )
-from .ui import launch_context_leaf, show_context_error, show_context_selection
+from .ui import (
+    context_failure_message,
+    deliver_prepared_codex_handoff,
+    show_context_error,
+    show_context_result,
+    show_context_selection,
+)
+
+
+def _default_config_path() -> Path:
+    packaged = Path(__file__).resolve().parent / "skill-magnet.json"
+    if packaged.is_file():
+        return packaged
+    return Path(__file__).resolve().parents[2] / "skill-magnet.json"
 
 
 def exit_process(exit_code: int, *, executable: str | None = None) -> None:
@@ -31,12 +44,20 @@ def exit_process(exit_code: int, *, executable: str | None = None) -> None:
     raise SystemExit(exit_code)
 
 
+def _configure_console_streams() -> None:
+    """Keep diagnostics printable on legacy Windows code pages."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(errors="backslashreplace")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="skill-magnet")
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path("skill-magnet.json"),
+        default=_default_config_path(),
         help="Path to the Skill Magnet JSON configuration.",
     )
     parser.add_argument(
@@ -74,9 +95,8 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument(
                 "--confirm",
                 action="store_true",
-                help="Confirm the displayed target, version, purpose and verification plan.",
+                help="Confirm the displayed target, version, purpose and Desktop handoff.",
             )
-            command.add_argument("--codex-executable", default="codex")
     context = commands.add_parser("context")
     context.add_argument("--platform", required=True, choices=("windows", "macos"))
     context.add_argument("--project", required=True, type=Path)
@@ -101,7 +121,7 @@ def _parser() -> argparse.ArgumentParser:
     install.add_argument(
         "--modern",
         action="store_true",
-        help="Deprecated compatibility flag; Windows installs modern and classic menus together.",
+        help="Deprecated compatibility flag; Windows prefers modern and uses classic only as fallback.",
     )
     remove = commands.add_parser("uninstall-context-menu")
     remove.add_argument("--platform", required=True, choices=("windows", "macos"))
@@ -116,6 +136,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_console_streams()
     args = _parser().parse_args(argv)
     try:
         config = Config.load(args.config)
@@ -160,16 +181,14 @@ def main(argv: list[str] | None = None) -> int:
                 result = plan
             else:
                 contract = activation.confirm(plan, confirmed=args.confirm)
-                result = activation.execute(
-                    contract.contract_id, codex_executable=args.codex_executable
+                result = deliver_prepared_codex_handoff(
+                    activation, contract.contract_id
                 )
         elif args.command == "context":
             activation = ActivationEngine(config, args.state_dir)
             if args.platform == "windows":
                 required = (
                     args.pack,
-                    args.skill,
-                    args.runtime,
                     args.menu_commit,
                     args.menu_skill_digest,
                     args.menu_instruction_digest,
@@ -177,41 +196,79 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 if any(value is None for value in required):
                     raise SkillMagnetError(
-                        "Windows context leaf requires pack, skill, runtime, commit and digests"
+                        "Windows context leaf requires pack, commit and digests"
                     )
-                result = launch_context_leaf(
-                    activation,
-                    platform=args.platform,
-                    project=args.project,
-                    pack_id=args.pack,
-                    skill_id=args.skill,
-                    runtime=args.runtime,
-                    menu_commit=args.menu_commit,
-                    menu_skill_digest=args.menu_skill_digest,
-                    menu_instruction_digest=args.menu_instruction_digest,
-                    menu_acceptance_digest=args.menu_acceptance_digest,
-                    destination="web",
-                    error_ui=show_context_error,
-                )
-                if result.get("status") in {"verified_applied", "web_prompt_ready"}:
+                try:
+                    contract = show_context_selection(
+                        activation,
+                        platform=args.platform,
+                        project=args.project,
+                        pack_id=args.pack,
+                        skill_id=args.skill,
+                        runtime=args.runtime,
+                        menu_commit=args.menu_commit,
+                        menu_skill_digest=args.menu_skill_digest,
+                        menu_instruction_digest=args.menu_instruction_digest,
+                        menu_acceptance_digest=args.menu_acceptance_digest,
+                    )
+                except SkillMagnetError as exc:
+                    show_context_error(context_failure_message(exc))
+                    raise
+                if contract is None:
+                    return 0
+                try:
+                    if contract.runtime == "codex":
+                        result = deliver_prepared_codex_handoff(
+                            activation, contract.contract_id
+                        )
+                    else:
+                        result = activation.execute(
+                            contract.contract_id, interactive_handoff=True
+                        )
+                except SkillMagnetError as exc:
+                    show_context_error(context_failure_message(exc))
+                    raise
+                if result.get("status") == "verified_completed":
+                    show_context_result(result)
+                    return 0
+                if result.get("status") == "desktop_handoff_ready":
                     return 0
             else:
-                contract = show_context_selection(
-                    activation,
-                    platform=args.platform,
-                    project=args.project,
-                    pack_id=args.pack,
-                    skill_id=args.skill,
-                    runtime=args.runtime,
-                    menu_commit=args.menu_commit,
-                    menu_skill_digest=args.menu_skill_digest,
-                    menu_instruction_digest=args.menu_instruction_digest,
-                    menu_acceptance_digest=args.menu_acceptance_digest,
-                )
+                try:
+                    contract = show_context_selection(
+                        activation,
+                        platform=args.platform,
+                        project=args.project,
+                        pack_id=args.pack,
+                        skill_id=args.skill,
+                        runtime=args.runtime,
+                        menu_commit=args.menu_commit,
+                        menu_skill_digest=args.menu_skill_digest,
+                        menu_instruction_digest=args.menu_instruction_digest,
+                        menu_acceptance_digest=args.menu_acceptance_digest,
+                    )
+                except SkillMagnetError as exc:
+                    show_context_error(context_failure_message(exc))
+                    raise
                 if contract is None:
-                    result = {"status": "cancelled"}
-                else:
-                    result = activation.execute(contract.contract_id)
+                    return 0
+                try:
+                    if contract.runtime == "codex":
+                        result = deliver_prepared_codex_handoff(
+                            activation, contract.contract_id
+                        )
+                    else:
+                        result = activation.execute(
+                            contract.contract_id, interactive_handoff=True
+                        )
+                except SkillMagnetError as exc:
+                    show_context_error(context_failure_message(exc))
+                    raise
+                if result.get("status") == "verified_completed":
+                    show_context_result(result)
+                    return 0
+                if result.get("status") == "desktop_handoff_ready":
+                    return 0
         elif args.command == "context-menu-spec":
             result = context_menu_spec(args.platform, args.config).as_dict()
         elif args.command == "render-context-menu":
@@ -235,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "context-menu-status":
             if args.platform != "windows":
                 raise SkillMagnetError("Modern context-menu status is available on Windows")
-            result = windows_modern_context_menu_status()
+            result = windows_modern_context_menu_status(config=args.config)
         else:
             if not args.confirm:
                 raise SkillMagnetError("Context-menu rollback requires --confirm")
@@ -243,10 +300,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0
     except SkillMagnetError as exc:
-        if args.command == "context" and args.platform == "windows":
-            # The Explorer leaf already displayed the one permitted error UI.
-            # pythonw has no reliable stderr sink; writing to it can retain the
-            # windowless process instead of returning to the hard-exit boundary.
+        if args.command == "context":
+            # The OS context leaf already displayed the one permitted result UI.
+            # Do not expose runtime diagnostics or structured JSON on stderr.
             return 2
         print(f"error: {exc}", file=sys.stderr)
         return 2
