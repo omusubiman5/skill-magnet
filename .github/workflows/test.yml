@@ -51,7 +51,7 @@ jobs:
           }
           print "SKILL_MAGNET_WHEEL=${wheel[1]}" >> "${GITHUB_ENV}"
       - name: Preserve standalone wheel candidate
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: standalone-wheel-${{ runner.os }}
           path: ${{ runner.temp }}/skill-magnet-wheel/*.whl
