@@ -3461,7 +3461,9 @@ class ActivationEndToEndTest(unittest.TestCase):
         workflow = services / "Skill Magnet.workflow" / "Contents" / "document.wflow"
         self.assertTrue(result["installed"])
         self.assertTrue(workflow.is_file())
-        self.assertIn(b"com.apple.RunShellScript", workflow.read_bytes())
+        workflow_bytes = workflow.read_bytes()
+        self.assertIn(b"com.apple.RunShellScript", workflow_bytes)
+        self.assertIn(b"SKILL_MAGNET_FINDER_E2E_PROBE", workflow_bytes)
         removed = uninstall_context_menu("macos", services_dir=services)
         self.assertTrue(removed["removed"])
         self.assertFalse(workflow.parent.parent.exists())

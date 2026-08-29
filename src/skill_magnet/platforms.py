@@ -1060,7 +1060,17 @@ def install_context_menu(
     temporary_root = Path(tempfile.mkdtemp(prefix=".skill-magnet-workflow-", dir=base))
     workflow = temporary_root / "Contents"
     workflow.mkdir()
-    shell_command = subprocess_command(spec.command).replace('"$SELECTED_PATH"', '"$1"')
+    # The probe is inert unless a release CI runner explicitly supplies its
+    # output path. It lets CI execute the real Finder/Automator workflow and
+    # prove that Finder's selected path reaches the adapter without opening an
+    # interactive AI task.
+    probe_command = (
+        'if [[ -n "${SKILL_MAGNET_FINDER_E2E_PROBE:-}" ]]; then '
+        'printf "%s" "$1" > "$SKILL_MAGNET_FINDER_E2E_PROBE"; exit 0; fi\n'
+    )
+    shell_command = probe_command + subprocess_command(spec.command).replace(
+        '"$SELECTED_PATH"', '"$1"'
+    )
     document = {
         "AMApplicationBuild": "SkillMagnet",
         "AMApplicationVersion": "1",

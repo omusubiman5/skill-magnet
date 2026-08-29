@@ -29,3 +29,6 @@ jobs:
       - if: runner.os == 'Windows'
         shell: pwsh
         run: ./tests/powershell/windows-release-lifecycle-tests.ps1
+      - if: runner.os == 'macOS'
+        shell: zsh {0}
+        run: zsh ./tests/macos/finder-release-lifecycle-tests.sh
