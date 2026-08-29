@@ -1,0 +1,29 @@
+{
+  "attempt_id": "ac3f9eb617a940618756f2b82d1400fc",
+  "commit_sha": "c7747bba0bc391316aa558b3b4e8dd412045d2dc",
+  "contract_id": "38027076d32f4416b3d97876ba837f8c",
+  "output_schema_evidence": {
+    "sha256": "313020b64e442a60e6cbff9e63dd9049afc22ec320918a5b38a4f3055fc9281e",
+    "version": 1
+  },
+  "pack_id": "codex-pmo-skills",
+  "reason": "runtime_failed",
+  "runtime_failure_evidence": {
+    "exit_code": 1,
+    "failure_class": "runtime_error",
+    "stderr_present": true,
+    "stderr_sha256": "d2f1b1cf4c5124cb17d898d0e1ea4700f747c08fbff8777c7b6df85b3c9fc4a0",
+    "stderr_summary": "Codex exited before returning verified output.",
+    "stdout_present": false,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "status": "runtime_failed",
+  "task_delivery_evidence": {
+    "prompt_sha256": "6ca3562dcf558d60798c5427e46e128a12a6c905942a74e284c3c66a51595d75"
+  },
+  "terminal_event": {
+    "status": "runtime_failed",
+    "terminal": true
+  },
+  "terminal_event_id": "6750ccb62ec547dea95e965a116c9c8f"
+}

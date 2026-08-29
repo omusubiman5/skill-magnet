@@ -2,255 +2,168 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import subprocess
 import sys
-import unittest
+import hashlib
+import zipfile
 from pathlib import Path
-from typing import Mapping
-
 
 LEDGER_START = "<!-- explorer-results-ledger:start"
 LEDGER_END = "explorer-results-ledger:end -->"
-BLOCKER_START = "<!-- explorer-blocker-readback:start"
-BLOCKER_END = "explorer-blocker-readback:end -->"
-MATRIX_ROW = re.compile(
-    r"^\| `(?P<id>SM-INT-\d{3})` \|.*?\| `(?P<status>[^`]+)` \|",
-    re.MULTILINE,
-)
-AGGREGATE_TEST_COUNT = re.compile(
-    r"^- 統合テスト: .*?— (?P<count>\d+) tests PASS$", re.MULTILINE
-)
-SUMMARY_COUNT = re.compile(
-    r"統合テスト: `[^`]+` — (?P<count>\d+) tests PASS"
-)
 
 
 def parse_ledger(text: str) -> dict[str, object]:
-    start = text.find(LEDGER_START)
-    end = text.find(LEDGER_END)
+    start, end = text.find(LEDGER_START), text.find(LEDGER_END)
     if start < 0 or end < 0 or end <= start:
         raise ValueError("results ledger markers are missing or out of order")
-    payload = text[start + len(LEDGER_START) : end].strip()
-    return json.loads(payload)
+    return json.loads(text[start + len(LEDGER_START) : end].strip())
 
 
-def parse_blocker_readback(text: str) -> dict[str, object]:
-    start = text.find(BLOCKER_START)
-    end = text.find(BLOCKER_END)
-    if start < 0 or end < 0 or end <= start:
-        raise ValueError("blocked residual readback markers are missing or out of order")
-    return json.loads(text[start + len(BLOCKER_START) : end].strip())
-
-
-def parse_detailed_matrix(text: str) -> dict[str, str]:
-    rows = {match["id"]: match["status"] for match in MATRIX_ROW.finditer(text)}
-    if not rows:
-        raise ValueError("detailed Explorer matrix has no SM-INT rows")
-    return rows
-
-
-def validate_consistency(
-    text: str,
-    *,
-    observed_test_count: int,
-    bead_statuses: Mapping[str, str],
-    bead_metadata: Mapping[str, Mapping[str, object]] | None = None,
-    observed_blocked_residual: Mapping[str, object] | None = None,
-) -> list[str]:
+def validate_consistency(text: str, *, observed_test_count: int,
+                         observed_leaf_count: int,
+                         observed_selection_kinds: list[str],
+                         observed_pack_skill_count: int) -> list[str]:
     ledger = parse_ledger(text)
     errors: list[str] = []
-    summary = SUMMARY_COUNT.search(text)
-    summary_count = int(summary["count"]) if summary else None
-    if summary_count != observed_test_count:
-        errors.append(
-            "summary test count mismatch: "
-            f"summary={summary_count!r}, observed={observed_test_count}"
-        )
-    if ledger.get("full_test_count") != observed_test_count:
-        errors.append(
-            "full_test_count mismatch: "
-            f"ledger={ledger.get('full_test_count')!r}, observed={observed_test_count}"
-        )
-    aggregate_match = AGGREGATE_TEST_COUNT.search(text)
-    if aggregate_match is None:
-        errors.append("human-readable aggregate test count is missing")
-    elif int(aggregate_match["count"]) != ledger.get("full_test_count"):
-        errors.append(
-            "aggregate test count mismatch: "
-            f"summary={aggregate_match['count']}, ledger={ledger.get('full_test_count')!r}"
-        )
-
-    expected_matrix = ledger.get("explorer_matrix")
-    detailed_matrix = parse_detailed_matrix(text)
-    if expected_matrix != detailed_matrix:
-        errors.append(
-            "Explorer matrix mismatch: "
-            f"ledger={expected_matrix!r}, detailed={detailed_matrix!r}"
-        )
-
-    expected_beads = ledger.get("beads")
-    if not isinstance(expected_beads, dict):
-        errors.append("ledger beads field must be an object")
-    else:
-        for issue_id, expected_status in expected_beads.items():
-            actual_status = bead_statuses.get(issue_id)
-            if actual_status != expected_status:
-                errors.append(
-                    f"Beads mismatch for {issue_id}: "
-                    f"ledger={expected_status!r}, canonical={actual_status!r}"
-                )
-    expected_metadata = ledger.get("bead_metadata", {})
-    actual_metadata = bead_metadata or {}
-    if not isinstance(expected_metadata, dict):
-        errors.append("ledger bead_metadata field must be an object")
-    else:
-        for issue_id, expected in expected_metadata.items():
-            actual = actual_metadata.get(issue_id, {})
-            if not isinstance(expected, dict):
-                errors.append(f"ledger bead_metadata for {issue_id} must be an object")
-                continue
-            for key, value in expected.items():
-                if actual.get(key) != value:
-                    errors.append(
-                        f"Beads metadata mismatch for {issue_id}.{key}: "
-                        f"ledger={value!r}, canonical={actual.get(key)!r}"
-                    )
-    expected_residual = ledger.get("blocked_residual")
-    detailed_residual = parse_blocker_readback(text)
-    if expected_residual != detailed_residual:
-        errors.append("blocked residual detail disagrees with ledger")
-    if observed_blocked_residual is not None and expected_residual != dict(observed_blocked_residual):
-        errors.append(
-            "blocked residual OS mismatch: "
-            f"ledger={expected_residual!r}, observed={dict(observed_blocked_residual)!r}"
-        )
-    canonical_67 = bead_statuses.get("sm-62a.6.7")
-    if canonical_67 != "blocked" and re.search(
-        r"blocked\s+`?\.6\.7`?|blocked\s+sm-62a\.6\.7", text, re.IGNORECASE
+    expected = {"full_test_count": observed_test_count,
+                "menu_leaf_count": observed_leaf_count,
+                "selection_kinds": observed_selection_kinds,
+                "pack_skill_count": observed_pack_skill_count}
+    for key, actual in expected.items():
+        if ledger.get(key) != actual:
+            errors.append(f"{key} mismatch: ledger={ledger.get(key)!r}, observed={actual!r}")
+    summary = re.search(r"統合テスト: .*?— (\d+) tests PASS", text)
+    if summary is None or int(summary.group(1)) != observed_test_count:
+        errors.append("human-readable test count mismatch")
+    if ledger.get("release_scope") != "one-package-leaf":
+        errors.append("release_scope must be one-package-leaf")
+    if not re.fullmatch(r"[0-9a-f]{40}", str(ledger.get("release_code_sha", ""))):
+        errors.append("release_code_sha must be a lowercase 40-hex commit")
+    if not re.fullmatch(
+        r"[0-9a-f]{64}", str(ledger.get("wheel_payload_sha256", ""))
     ):
-        errors.append("stale prose says sm-62a.6.7 is blocked")
-    if canonical_67 != "in_progress" and re.search(
-        r"in_progress\s+`?\.6\.7`?|in_progress\s+sm-62a\.6\.7|"
-        r"`?\.6\.7`?\s*(?:は)?in_progress|sm-62a\.6\.7\s*(?:は)?in_progress",
-        text,
-        re.IGNORECASE,
-    ):
-        errors.append("stale prose says sm-62a.6.7 is in_progress")
-    if bead_statuses.get("sm-62a.7") == "closed" and re.search(
-        r"(?:`?\.7`?|sm-62a\.7)\s*(?:は)?未実行", text
-    ):
-        errors.append("stale prose says closed sm-62a.7 is unexecuted")
-    if isinstance(expected_residual, dict) and expected_residual.get("target_dir") is False:
-        if "target一件保持" in text or re.search(
-            r"復元対象[^\n]{0,80}一件だけを(?:意図的に)?保持", text
-        ):
-            errors.append("stale prose says a target directory is retained")
+        errors.append("wheel_payload_sha256 must be a lowercase 64-hex digest")
+    stale = (r"18\s*(?:個別|immediate)\s*(?:leaf|leaves)",
+             r"固定9\s*skills\s*[×x]\s*(?:Codex|Claude)",
+             r"保管庫の固定commitから個別skillを選び")
+    if any(re.search(pattern, text, re.IGNORECASE) for pattern in stale):
+        errors.append("stale individual-skill menu claim remains")
     return errors
 
 
-def read_beads(issue_ids: list[str]) -> tuple[dict[str, str], dict[str, dict[str, object]]]:
-    statuses: dict[str, str] = {}
-    metadata: dict[str, dict[str, object]] = {}
-    for issue_id in issue_ids:
-        completed = subprocess.run(
-            ["bd", "--readonly", "show", issue_id, "--json"],
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-        )
-        payload = json.loads(completed.stdout)
-        if not isinstance(payload, list) or len(payload) != 1:
-            raise RuntimeError(f"unexpected bd show response for {issue_id}")
-        statuses[issue_id] = str(payload[0]["status"])
-        metadata[issue_id] = dict(payload[0].get("metadata") or {})
-    return statuses, metadata
+def wheel_payload_sha256(wheel: Path) -> str:
+    """Hash logical wheel payload, excluding RECORD and normalizing text EOLs."""
+    digest = hashlib.sha256()
+    with zipfile.ZipFile(wheel) as archive:
+        for name in sorted(archive.namelist()):
+            if name.endswith("/") or name.endswith(".dist-info/RECORD"):
+                continue
+            content = archive.read(name)
+            if b"\0" not in content:
+                try:
+                    content.decode("utf-8")
+                except UnicodeDecodeError:
+                    pass
+                else:
+                    content = content.replace(b"\r\n", b"\n")
+            digest.update(name.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(content)
+            digest.update(b"\0")
+    return digest.hexdigest()
 
 
-def read_blocked_residual(repository: Path, thumbprint: str) -> dict[str, object]:
-    if os.name != "nt":
-        return {}
-    script = (
-        "$ErrorActionPreference='Stop';$t=$env:SKILL_MAGNET_GATE_THUMBPRINT;"
-        "$target=$env:SKILL_MAGNET_GATE_TARGET;"
-        "function Count-Cert($name,$location,$thumb){$s=[Security.Cryptography.X509Certificates.X509Store]::new($name,$location);"
-        "$s.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly);try{return @($s.Certificates|Where-Object Thumbprint -eq $thumb).Count}finally{$s.Close()}};"
-        "$d='Registry::HKEY_CURRENT_USER\\Software\\Classes\\Directory\\shell\\SkillMagnet';"
-        "$b='Registry::HKEY_CURRENT_USER\\Software\\Classes\\Directory\\Background\\shell\\SkillMagnet';"
-        "[ordered]@{thumbprint=$t;current_user_my=(Count-Cert 'My' 'CurrentUser' $t);"
-        "current_user_trusted_people=(Count-Cert 'TrustedPeople' 'CurrentUser' $t);"
-        "local_machine_trusted_people=(Count-Cert 'TrustedPeople' 'LocalMachine' $t);"
-        "directory_classic_keys=(1+@(Get-ChildItem -LiteralPath $d -Recurse).Count);"
-        "background_classic_keys=(1+@(Get-ChildItem -LiteralPath $b -Recurse).Count);"
-        "context_menu_dir=[bool](Test-Path -LiteralPath ($env:LOCALAPPDATA+'\\SkillMagnet\\ContextMenu'));"
-        "rollback_dir=[bool](Test-Path -LiteralPath ($env:LOCALAPPDATA+'\\SkillMagnet\\ContextMenu.rollback'));"
-        "appx_count=@(Get-AppxPackage -Name 'SkillMagnet.ContextMenu').Count;"
-        "target_dir=[bool](Test-Path -LiteralPath $target)}"
-        "|ConvertTo-Json -Compress"
+def validate_release_provenance(
+    repository: Path, ledger: dict[str, object], wheel: Path | None
+) -> list[str]:
+    errors: list[str] = []
+    release_sha = str(ledger.get("release_code_sha", ""))
+    if not re.fullmatch(r"[0-9a-f]{40}", release_sha):
+        return errors
+    commit = subprocess.run(
+        ["git", "cat-file", "-e", f"{release_sha}^{{commit}}"],
+        cwd=repository,
+        capture_output=True,
     )
-    completed = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-        check=False,
+    if commit.returncode != 0:
+        errors.append("release_code_sha does not identify a repository commit")
+        return errors
+    artifact_inputs = [
+        "src",
+        "native",
+        "setup.py",
+        "pyproject.toml",
+        "skill-magnet.json",
+        ".approved-snapshots",
+    ]
+    changed = subprocess.run(
+        ["git", "diff", "--name-only", f"{release_sha}..HEAD", "--", *artifact_inputs],
+        cwd=repository,
+        check=True,
         capture_output=True,
         text=True,
-        encoding="utf-8",
-        env={
-            **os.environ,
-            "SKILL_MAGNET_GATE_THUMBPRINT": thumbprint,
-            "SKILL_MAGNET_GATE_TARGET": str(
-                repository / ".e2e-target" / "Modern 空白 & 日本語 (test)"
-            ),
-        },
-    )
-    if completed.returncode:
-        raise RuntimeError(f"blocked residual readback failed: {completed.stderr.strip()}")
-    return json.loads(completed.stdout)
+    ).stdout.strip()
+    if changed:
+        errors.append("artifact inputs changed after release_code_sha: " + changed)
+    worktree_changed = subprocess.run(
+        ["git", "diff", "--name-only", "HEAD", "--", *artifact_inputs],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if worktree_changed:
+        errors.append("uncommitted artifact inputs remain: " + worktree_changed)
+    if wheel is not None:
+        actual = wheel_payload_sha256(wheel)
+        if actual != ledger.get("wheel_payload_sha256"):
+            errors.append(
+                "wheel_payload_sha256 mismatch: "
+                f"ledger={ledger.get('wheel_payload_sha256')!r}, observed={actual!r}"
+            )
+    return errors
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Fail when Explorer result aggregates diverge from details or Beads."
-    )
+    parser = argparse.ArgumentParser(description="Validate current Explorer release evidence.")
     parser.add_argument("results", type=Path)
     parser.add_argument("--observed-test-count", type=int)
+    parser.add_argument("--wheel", type=Path)
     args = parser.parse_args(argv)
-
-    text = args.results.read_text(encoding="utf-8")
-    ledger = parse_ledger(text)
-    expected_beads = ledger.get("beads")
-    if not isinstance(expected_beads, dict):
-        raise SystemExit("ledger beads field must be an object")
     repository = args.results.resolve().parents[1]
-    observed_test_count = args.observed_test_count
-    if observed_test_count is None:
-        sys.path.insert(0, str(repository))
-        previous_directory = Path.cwd()
-        try:
-            os.chdir(repository)
-            suite = unittest.defaultTestLoader.discover("tests")
-        finally:
-            os.chdir(previous_directory)
-        observed_test_count = suite.countTestCases()
-    statuses, metadata = read_beads(list(expected_beads))
-    blocker = ledger.get("blocked_residual")
-    if not isinstance(blocker, dict) or not isinstance(blocker.get("thumbprint"), str):
-        raise SystemExit("ledger blocked_residual/thumbprint is required")
+    sys.path.insert(0, str(repository / "src"))
+    from skill_magnet.core import Config
+    from skill_magnet.platforms import windows_menu_leaves
+    config_path = repository / "skill-magnet.json"
+    config = Config.load(config_path)
+    leaves = windows_menu_leaves(config_path, "%1")
+    count = args.observed_test_count
+    if count is None:
+        counted = subprocess.run(
+            [sys.executable, "-c", "import unittest; print(unittest.defaultTestLoader.discover('tests').countTestCases())"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        count = int(counted.stdout.strip())
+    results_text = args.results.read_text(encoding="utf-8")
     errors = validate_consistency(
-        text,
-        observed_test_count=observed_test_count,
-        bead_statuses=statuses,
-        bead_metadata=metadata,
-        observed_blocked_residual=read_blocked_residual(repository, blocker["thumbprint"]),
+        results_text, observed_test_count=count,
+        observed_leaf_count=len(leaves),
+        observed_selection_kinds=sorted(
+            {config.packs[leaf.pack_id].selection_kind for leaf in leaves}
+        ),
+        observed_pack_skill_count=len(leaves[0].skill_ids) if leaves else 0)
+    errors.extend(
+        validate_release_provenance(repository, parse_ledger(results_text), args.wheel)
     )
+    for error in errors:
+        print(f"ERROR: {error}")
     if errors:
-        for error in errors:
-            print(f"ERROR: {error}")
         return 1
-    print(
-        "PASS: results aggregate, detailed Explorer matrix, and canonical Beads agree"
-    )
+    print("PASS: current Explorer evidence matches product configuration and test suite")
     return 0
 
 

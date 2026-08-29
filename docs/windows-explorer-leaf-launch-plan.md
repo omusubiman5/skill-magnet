@@ -1,4 +1,6 @@
-# Windows Explorer leaf即時起動 UX 改訂計画
+# Windows Explorer leaf即時起動 UX 改訂計画（アーカイブ）
+
+> この文書は旧「個別skill leaf」方式の履歴資料です。現行0.3.0の実装計画・正本ではありません。現行計画は[`release-remediation-implementation-plan-2026-08-29.md`](release-remediation-implementation-plan-2026-08-29.md)、現行結果は[`windows-explorer-leaf-launch-results.md`](windows-explorer-leaf-launch-results.md)を参照してください。
 
 ## 文書の位置づけと追跡
 

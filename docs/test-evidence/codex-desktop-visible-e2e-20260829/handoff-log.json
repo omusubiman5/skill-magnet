@@ -1,0 +1,16 @@
+{
+  "timestamp_utc": "2026-08-28T23:40:22.215900+00:00",
+  "status": "desktop_handoff_ready",
+  "desktop_result_verification": "not_available",
+  "verified_completed": false,
+  "contract_id": "82e1d2b29e26450cab1c57e7c1ed245a",
+  "attempt_id": "79870dabc4af45c0b4f5fb202d32904f",
+  "skill_id": "codex-sandbox-approval-boundary",
+  "project": "C:\\Projects\\skill-magnet",
+  "actual_request": "このプロジェクトでCodexのサンドボックス承認境界を、日本語で具体的に3点まとめてください。",
+  "actual_request_sha256": "6a7251459069b39f9f6904ec38d1007de917d2c6507838a0c2a2d85ed186c27d",
+  "prompt_sha256": "7693bc2e1bc7372d8608149501ade6a29321766388d890476d4cfeab644fa395",
+  "instruction_digest": "e7a9def6a153946f6481412362ee7afaac99552ee7d7d9096b51a788887b0c05",
+  "acceptance_digest": "b4df1deeebf2a0cfa03e93c19a59a90457f39279c51bf56d3ecc5003592e386d",
+  "destination": "codex://threads/new"
+}

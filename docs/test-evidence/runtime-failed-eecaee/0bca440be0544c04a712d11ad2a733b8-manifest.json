@@ -1,0 +1,29 @@
+{
+  "actual_request_sha256": "bb6954a3390b14c0f3a69d47a9de8c09061dd10f19130645766c50f7aa2c0e86",
+  "console_creation_flag": "CREATE_NO_WINDOW",
+  "duration_seconds": 6.922,
+  "finished_at": "2026-08-28T12:30:04.223876+00:00",
+  "process_local_disabled_mcp_servers": [
+    "cloudflare-builds",
+    "cloudflare-observability",
+    "unreal-mcp"
+  ],
+  "prompt_sha256": "c0a584c549911835241523b2b8b22f092ff492c6eef336a07db244629940f244",
+  "run_id": "0bca440be0544c04a712d11ad2a733b8",
+  "runtime": "codex-cli 0.148.0",
+  "runtime_failure_evidence": {
+    "exit_code": 1,
+    "failure_class": "network",
+    "stderr_present": true,
+    "stderr_sha256": "7d29744496dfdca37dc7116ea212b6e469d9e09622b44a67c4fbd90106bf969f",
+    "stderr_summary": "Codex could not complete its network request."
+  },
+  "runtime_pid": 10040,
+  "runtime_pid_terminated": true,
+  "skill_id": "codex-sandbox-approval-boundary",
+  "source_attempt_id": "79dac29d52d34ae69457a21308c15954",
+  "source_contract_id": "eecaee60593642ce889b8a35caf180d2",
+  "started_at": "2026-08-28T12:29:57.293689+00:00",
+  "status": "runtime_failed",
+  "verified_contract_id": null
+}

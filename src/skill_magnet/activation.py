@@ -3,21 +3,56 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
+import stat
 import tempfile
-import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from .core import Config, Engine, Pack, SafetyError, SkillMagnetError
+from .core import Config, Engine, Pack, SafetyError, SkillMagnetError, _is_link, hash_directory
+
+
+CODEX_PROCESS_CONFIG_OVERRIDES = (
+    "mcp_servers.cloudflare-builds.enabled=false",
+    "mcp_servers.cloudflare-observability.enabled=false",
+    "mcp_servers.unreal-mcp.enabled=false",
+)
+
+
+def codex_process_config_args() -> list[str]:
+    """Return official per-process Codex config overrides for verification runs."""
+    return [
+        item
+        for override in CODEX_PROCESS_CONFIG_OVERRIDES
+        for item in ("-c", override)
+    ]
+
+
+def _windows_hidden_process_kwargs() -> dict[str, Any]:
+    """Suppress a console for a product-owned runtime without hiding Tk windows."""
+    if os.name != "nt":
+        return {}
+    return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
 
 
 class _LaunchFailed(SafetyError):
     """The verified runtime process could not be started."""
+
+
+class _RuntimeFailed(SafetyError):
+    """The verified runtime started but exited before producing an envelope."""
+
+    def __init__(self, *, exit_code: int, stderr: str, stdout: str = "") -> None:
+        self.diagnostic = _runtime_failure_diagnostic(exit_code, stderr, stdout)
+        super().__init__(
+            "Runtime exited before producing verified output; "
+            "skill use is not guaranteed"
+        )
 
 
 class _OutputFailed(SafetyError):
@@ -34,6 +69,62 @@ class _CleanupFailed(SafetyError):
     def __init__(self, paths: tuple[Path, ...]) -> None:
         self.paths = paths
         super().__init__("Temporary activation artifact cleanup failed")
+
+
+def _runtime_failure_diagnostic(
+    exit_code: int, stderr: str, stdout: str = ""
+) -> dict[str, Any]:
+    """Return an allow-listed runtime diagnostic without persisting raw stderr."""
+    normalized = f"{stderr}\n{stdout}".lower()
+    if "invalid_json_schema" in normalized or "invalid schema for response_format" in normalized:
+        failure_class = "invalid_output_schema"
+        summary = "Codex rejected the verification output schema."
+    elif "invalid transport" in normalized or "mcp_servers." in normalized:
+        failure_class = "config_parse"
+        summary = "Codex configuration could not be parsed."
+    elif (
+        "unexpected argument" in normalized
+        or "unrecognized option" in normalized
+        or "usage:" in normalized
+    ):
+        failure_class = "cli_usage"
+        summary = "Codex rejected the runtime command line."
+    elif any(
+        marker in normalized
+        for marker in ("unauthorized", "authentication", "not logged in", "401")
+    ):
+        failure_class = "authentication"
+        summary = "Codex authentication failed."
+    elif any(
+        marker in normalized
+        for marker in ("rate limit", "rate_limit", "too many requests", "429")
+    ):
+        failure_class = "rate_limit"
+        summary = "Codex rate limit prevented the run."
+    elif any(
+        marker in normalized
+        for marker in (
+            "connection refused",
+            "connection reset",
+            "dns",
+            "network",
+            "timed out",
+        )
+    ):
+        failure_class = "network"
+        summary = "Codex could not complete its network request."
+    else:
+        failure_class = "runtime_error"
+        summary = "Codex exited before returning verified output."
+    return {
+        "exit_code": exit_code,
+        "failure_class": failure_class,
+        "stderr_present": bool(stderr),
+        "stderr_sha256": hashlib.sha256(stderr.encode("utf-8")).hexdigest(),
+        "stderr_summary": summary,
+        "stdout_present": bool(stdout),
+        "stdout_sha256": hashlib.sha256(stdout.encode("utf-8")).hexdigest(),
+    }
 
 
 def _utc_now() -> datetime:
@@ -66,6 +157,8 @@ class LaunchContract:
     selection_kind: str
     selected_skill_id: str | None
     skill_ids: tuple[str, ...]
+    skill_hashes: dict[str, str]
+    index_digest: str | None
     instruction_digest: str
     acceptance_digests: dict[str, str]
     confirmed_at: str
@@ -99,7 +192,102 @@ class ActivationEngine:
         self.evidence_dir = self.state_dir / "evidence"
         self.events_dir = self.state_dir / "events"
         self.process_dir = self.state_dir / "process-markers"
+        self.materialization_dir = self.state_dir / "desktop-materializations"
         self.now = now
+
+    @staticmethod
+    def _make_tree_writable(root: Path) -> None:
+        if not root.exists():
+            return
+        for path in root.rglob("*"):
+            if path.is_file():
+                path.chmod(stat.S_IREAD | stat.S_IWRITE)
+
+    def _cleanup_expired_materializations(self) -> list[str]:
+        removed: list[str] = []
+        if not self.materialization_dir.is_dir():
+            return removed
+        for root in sorted(self.materialization_dir.iterdir()):
+            if (
+                root.is_dir()
+                and not _is_link(root)
+                and re.fullmatch(r"[0-9a-f]{32}-[a-z0-9_]+", root.name)
+            ):
+                self._make_tree_writable(root)
+                shutil.rmtree(root)
+                removed.append(root.name)
+                continue
+            if not root.is_dir() or not re.fullmatch(r"[0-9a-f]{32}", root.name):
+                raise SafetyError("Unexpected Desktop materialization entry")
+            manifest_path = root / "materialization.json"
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                expires_at = datetime.fromisoformat(str(manifest["expires_at"]))
+            except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
+                raise SafetyError("Invalid Desktop materialization metadata") from exc
+            if self.now() >= expires_at:
+                self._make_tree_writable(root)
+                shutil.rmtree(root)
+                removed.append(root.name)
+        return removed
+
+    def _materialize_desktop_pack(
+        self,
+        contract: LaunchContract,
+        pack: Pack,
+        expected_hashes: dict[str, str],
+        expected_index_digest: str | None,
+    ) -> tuple[Pack, dict[str, Any]]:
+        self._cleanup_expired_materializations()
+        self.materialization_dir.mkdir(parents=True, exist_ok=True)
+        final = self.materialization_dir / contract.contract_id
+        if final.exists():
+            raise SafetyError("Desktop materialization already exists")
+        temporary = Path(
+            tempfile.mkdtemp(
+                prefix=f"{contract.contract_id}-", dir=self.materialization_dir
+            )
+        )
+        try:
+            index_source = pack.source / "INDEX.md"
+            index_digest = None
+            if index_source.is_file():
+                shutil.copy2(index_source, temporary / "INDEX.md")
+                index_digest = hashlib.sha256(
+                    (temporary / "INDEX.md").read_bytes()
+                ).hexdigest()
+            if index_digest != expected_index_digest:
+                raise SafetyError("Pack INDEX changed during Desktop materialization")
+            copied_hashes: dict[str, str] = {}
+            for skill_id in contract.skill_ids:
+                shutil.copytree(pack.source / skill_id, temporary / skill_id)
+                copied_hash = hash_directory(temporary / skill_id)
+                if copied_hash != expected_hashes[skill_id]:
+                    raise SafetyError(
+                        f"Pack changed during Desktop materialization: {skill_id}"
+                    )
+                copied_hashes[skill_id] = copied_hash
+            manifest = {
+                "version": 1,
+                "contract_id": contract.contract_id,
+                "commit_sha": contract.commit_sha,
+                "expires_at": contract.expires_at,
+                "index_sha256": index_digest,
+                "skill_hashes": copied_hashes,
+            }
+            (temporary / "materialization.json").write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            for path in temporary.rglob("*"):
+                if path.is_file():
+                    path.chmod(stat.S_IREAD)
+            os.replace(temporary, final)
+        except Exception:
+            self._make_tree_writable(temporary)
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise
+        return replace(pack, source=final), {**manifest, "path": str(final)}
 
     def _write_terminal_lifecycle(
         self,
@@ -108,13 +296,14 @@ class ActivationEngine:
         contract_id: str,
         status: str,
         terminal_event_id: str | None = None,
+        terminal: bool = True,
     ) -> dict[str, Any]:
         event = {
             "attempt_id": attempt_id,
             "contract_id": contract_id,
             "terminal_event_id": terminal_event_id or uuid.uuid4().hex,
             "status": status,
-            "terminal": True,
+            "terminal": terminal,
         }
         self.events_dir.mkdir(parents=True, exist_ok=True)
         fd, temporary = tempfile.mkstemp(
@@ -137,6 +326,7 @@ class ActivationEngine:
 
     def recover_interrupted_attempts(self) -> list[str]:
         """Finalize abandoned runtime attempts exactly once on a new public entry."""
+        self._cleanup_expired_materializations()
         recovered: list[str] = []
         if not self.process_dir.is_dir():
             return recovered
@@ -223,7 +413,9 @@ class ActivationEngine:
         if failures:
             raise _CleanupFailed(tuple(failures))
 
-    def _validated_pack(self, pack_id: str) -> tuple[Pack, str, dict[str, str]]:
+    def _validated_pack(
+        self, pack_id: str
+    ) -> tuple[Pack, str, dict[str, str], str | None]:
         pack = self.engine._pack(pack_id)
         commit, hashes = self.engine._validate_pack(pack)
         if not pack.purpose:
@@ -238,7 +430,13 @@ class ActivationEngine:
             raise SafetyError(f"Pack {pack_id} approval timestamp requires a timezone")
         if approved_at > self.now():
             raise SafetyError(f"Pack {pack_id} approval timestamp is in the future")
-        return pack, commit, hashes
+        index = pack.source / "INDEX.md"
+        index_digest = (
+            hashlib.sha256(index.read_bytes()).hexdigest()
+            if index.is_file()
+            else None
+        )
+        return pack, commit, hashes, index_digest
 
     @staticmethod
     def _acceptance_path(pack: Pack, skill: str) -> Path:
@@ -246,6 +444,13 @@ class ActivationEngine:
 
     @staticmethod
     def approved_blob_digest(pack: Pack, skill: str, filename: str) -> str:
+        if (pack.source / ".skill-magnet-snapshot.json").is_file():
+            path = pack.source / skill / filename
+            if not path.is_file():
+                raise SafetyError(
+                    f"Cannot read approved skill artifact: {skill}/{filename}"
+                )
+            return hashlib.sha256(path.read_bytes()).hexdigest()
         result = subprocess.run(
             [
                 "git",
@@ -325,7 +530,7 @@ class ActivationEngine:
         project = project.resolve()
         if not project.is_dir():
             raise SkillMagnetError(f"Project directory does not exist: {project}")
-        pack, commit, hashes = self._validated_pack(pack_id)
+        pack, commit, hashes, index_digest = self._validated_pack(pack_id)
         if skill_id is not None and skill_id not in pack.skills:
             raise SkillMagnetError(f"Unknown skill for pack {pack_id}: {skill_id}")
         selected_skills = (skill_id,) if skill_id is not None else pack.skills
@@ -353,6 +558,7 @@ class ActivationEngine:
             "selected_skill_id": skill_id,
             "skill_ids": list(selected_skills),
             "skill_hashes": {skill: hashes[skill] for skill in selected_skills},
+            "index_digest": index_digest,
             "instruction_digest": instruction_digest,
             "acceptance_digests": {
                 skill: self.approved_blob_digest(pack, skill, "acceptance.json")
@@ -373,6 +579,66 @@ class ActivationEngine:
             parts.append(f"<skill id={json.dumps(skill)}>\n{content}\n</skill>")
         return "\n\n".join(parts)
 
+    @staticmethod
+    def _pack_index(pack: Pack, selection_kind: str) -> str:
+        """Return the reviewed composition map for complete-package execution."""
+        if selection_kind != "pack":
+            return ""
+        path = pack.source / "INDEX.md"
+        if not path.is_file():
+            return ""
+        return path.read_text(encoding="utf-8-sig")
+
+    @staticmethod
+    def _pack_relations(pack: Pack) -> dict[str, set[tuple[str, str]]]:
+        """Parse enforceable depends-on/contrasts-with edges from INDEX Mermaid."""
+        path = pack.source / "INDEX.md"
+        if not path.is_file():
+            return {"depends-on": set(), "contrasts-with": set()}
+        content = path.read_text(encoding="utf-8-sig")
+        aliases: dict[str, str] = {}
+
+        def resolve(short_id: str) -> str | None:
+            if short_id in pack.skills:
+                return short_id
+            matches = [skill for skill in pack.skills if skill.endswith(short_id)]
+            return matches[0] if len(matches) == 1 else None
+
+        for alias, short_id in re.findall(r'(\w+)\["([^"]+)"\]', content):
+            resolved = resolve(short_id)
+            if resolved is not None:
+                aliases[alias] = resolved
+        relations = {"depends-on": set(), "contrasts-with": set()}
+        edge_pattern = re.compile(
+            r"^\s*(\w+)(?:\[\"[^\"]+\"\])?\s+[-.=]+>\|([^|]+)\|\s+"
+            r"(\w+)(?:\[\"[^\"]+\"\])?",
+            re.MULTILINE,
+        )
+        for source_alias, relation, target_alias in edge_pattern.findall(content):
+            relation = relation.strip()
+            source = aliases.get(source_alias)
+            target = aliases.get(target_alias)
+            if relation in relations and source is not None and target is not None:
+                relations[relation].add((source, target))
+        return relations
+
+    @classmethod
+    def _verify_pack_relations(
+        cls, pack: Pack, completed_skill_ids: list[str]
+    ) -> None:
+        applied = set(completed_skill_ids)
+        relations = cls._pack_relations(pack)
+        for source, dependency in relations["depends-on"]:
+            if source in applied and dependency not in applied:
+                raise _AcceptanceFailed(
+                    f"Applied skill dependency is missing: {source} depends-on {dependency}"
+                )
+        for left, right in relations["contrasts-with"]:
+            if left in applied and right in applied:
+                raise _AcceptanceFailed(
+                    f"Contrasting skills cannot both be applied: {left}, {right}"
+                )
+
     def confirm(self, plan: dict[str, Any], *, confirmed: bool) -> LaunchContract:
         if not confirmed:
             raise SafetyError("Launch requires explicit user confirmation")
@@ -389,6 +655,8 @@ class ActivationEngine:
             "selection_kind",
             "selected_skill_id",
             "skill_ids",
+            "skill_hashes",
+            "index_digest",
             "instruction_digest",
             "acceptance_digests",
             "ttl_minutes",
@@ -427,6 +695,8 @@ class ActivationEngine:
             "selection_kind": plan["selection_kind"],
             "selected_skill_id": plan["selected_skill_id"],
             "skill_ids": tuple(plan["skill_ids"]),
+            "skill_hashes": dict(plan["skill_hashes"]),
+            "index_digest": plan["index_digest"],
             "instruction_digest": plan["instruction_digest"],
             "acceptance_digests": dict(plan["acceptance_digests"]),
             "confirmed_at": confirmed_at.isoformat(),
@@ -477,19 +747,190 @@ class ActivationEngine:
             "skill_ids": list(contract.skill_ids),
             "instruction_digest": contract.instruction_digest,
             "challenge_nonce": contract.nonce,
+            "actual_request_sha256": hashlib.sha256(
+                contract.purpose.encode("utf-8")
+            ).hexdigest(),
         }
+        actual_request_sha256 = hashlib.sha256(
+            contract.purpose.encode("utf-8")
+        ).hexdigest()
+        pack_index = self._pack_index(pack, contract.selection_kind)
+        index_section = (
+            f"\n\n<pack-index>\n{pack_index}\n</pack-index>" if pack_index else ""
+        )
         return (
             "Skill Magnet verified task envelope.\n"
             f"PROVENANCE={json.dumps(provenance, ensure_ascii=False, sort_keys=True)}\n"
             f"PURPOSE={contract.purpose}\n"
             f"TARGET_PROJECT={contract.project}\n"
-            "Read every supplied skill instruction and apply it to the user purpose. "
+            "The PURPOSE field is the user's actual request. Complete that request, "
+            "not a demonstration or readiness exercise. Read every supplied skill "
+            "instruction and the pack INDEX, then select the smallest applicable skill "
+            "set from each skill's triggers and boundaries. Close depends-on relations; "
+            "add composes-with skills only when the request needs them; do not combine "
+            "contrasts-with skills. Put the concrete user-facing "
+            "deliverable in result.task_output. "
+            "If files were saved or project content changed, report user-facing relative "
+            "paths in result.saved_paths and short descriptions in result.changes. "
+            "Always return both arrays; use [] when there are no saved paths or changes. "
+            "Only after the actual request is complete, set "
+            "evidence.skill_execution_status to completed, copy only the skill IDs "
+            "actually applied to evidence.completed_skill_ids, and set "
+            f"evidence.actual_request_sha256 to {actual_request_sha256}. "
             "In evidence.applied_rules, include at least one concrete applied rule for "
-            "each selected skill and begin that rule with the exact skill ID followed "
+            "each applied skill and begin that rule with the exact skill ID followed "
             "by a colon. "
             "Return only the JSON evidence envelope requested by the output schema.\n\n"
             f"{self._instructions(pack, contract.skill_ids)}"
+            f"{index_section}"
         )
+
+    def _desktop_task_prompt(self, contract: LaunchContract, pack: Pack) -> str:
+        """Build the human-readable Codex Desktop task bound to one contract."""
+        actual_request_sha256 = hashlib.sha256(
+            contract.purpose.encode("utf-8")
+        ).hexdigest()
+        acceptance_lines: list[str] = []
+        for skill_id, check in self._load_acceptance(pack, contract.skill_ids).items():
+            for assertion in check["assertions"]:
+                acceptance_lines.append(
+                    f"- {skill_id}: {assertion['path']} = "
+                    f"{json.dumps(assertion['equals'], ensure_ascii=False)}"
+                )
+        instruction_refs = [
+            "- "
+            + skill_id
+            + ": "
+            + str((pack.source / skill_id / "SKILL.md").resolve())
+            + " (SHA-256: "
+            + hashlib.sha256(
+                (pack.source / skill_id / "SKILL.md").read_bytes()
+            ).hexdigest()
+            + ")"
+            for skill_id in contract.skill_ids
+        ]
+        index_path = (pack.source / "INDEX.md").resolve()
+        index_section = ""
+        if contract.selection_kind == "pack" and index_path.is_file():
+            index_digest = hashlib.sha256(index_path.read_bytes()).hexdigest()
+            index_section = (
+                "\nパックINDEX（最初に全文を読む）:\n"
+                f"{index_path} (SHA-256: {index_digest})\n"
+            )
+        skill_label = (
+            f"適用スキルID: {', '.join(contract.skill_ids)}\n"
+            if contract.selection_kind == "skill"
+            else f"パック収録スキルID: {', '.join(contract.skill_ids)}\n"
+        )
+        return (
+            "Skill Magnetからの実行依頼です。\n"
+            "これはデモ、準備確認、実行可否の説明ではありません。選択したパックの"
+            "全スキルを読み、INDEXの関係と各スキルのtrigger/boundaryから必要最小限の"
+            "集合を選んで、実際の依頼をこの新規タスクで完了してください。depends-onは"
+            "依存先を含め、composes-withは必要な場合だけ加え、contrasts-withは同時採用"
+            "しないでください。各スキルを個別の回答生成依頼として扱わないでください。\n\n"
+            f"対象プロジェクト: {contract.project}\n"
+            f"選択パックID: {contract.pack_id}\n"
+            f"{skill_label}"
+            f"Skill Magnet contract ID: {contract.contract_id}\n"
+            f"Skill Magnet attempt ID: {contract.attempt_id}\n"
+            f"依頼SHA-256: {actual_request_sha256}\n"
+            f"指示SHA-256: {contract.instruction_digest}\n"
+            "\n実際の依頼:\n"
+            f"{contract.purpose}\n"
+            "\n期待する成果:\n"
+            "上記依頼へ直接答える具体的な自然文の最終回答を返してください。"
+            "内部の契約JSONや検証用JSONを回答として表示しないでください。\n"
+            "\n受入条件候補（実際に適用したスキルの条件だけが必須）:\n"
+            f"{'\n'.join(acceptance_lines)}\n"
+            f"{index_section}"
+            "\n選択スキルの検証済み指示ファイル:\n"
+            f"{'\n'.join(instruction_refs)}\n"
+            "上記INDEXと全SKILL.mdをツールで省略せず読み終えてから、INDEXの関係と"
+            "各スキルのtrigger/boundaryに従って必要なものだけを実際の依頼へ適用して"
+            "ください。適用しなかったスキルの受入固定値を成果へ追加しないでください。"
+        )
+
+    def prepare_codex_desktop_handoff(self, contract_id: str) -> dict[str, Any]:
+        """Consume one Codex contract and prepare a new Desktop app task.
+
+        Shell acceptance is not task completion.  The returned state therefore
+        never claims that the Desktop task or its answer was machine-verified.
+        """
+        self.recover_interrupted_attempts()
+        contract = self._read_contract(contract_id)
+        if contract.runtime != "codex":
+            raise _LaunchFailed("Codex Desktop handoff requires the Codex runtime")
+        pack, commit, hashes, index_digest = self._validated_pack(contract.pack_id)
+        if commit != contract.commit_sha or pack.repo_url != contract.repository_url:
+            raise SafetyError("Pack provenance changed after confirmation")
+        if (
+            {skill: hashes[skill] for skill in contract.skill_ids}
+            != contract.skill_hashes
+            or index_digest != contract.index_digest
+        ):
+            raise SafetyError("Pack content changed after confirmation")
+        materialized_pack, materialization = self._materialize_desktop_pack(
+            contract, pack, contract.skill_hashes, contract.index_digest
+        )
+        prompt = self._desktop_task_prompt(contract, materialized_pack)
+        prompt_digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        self._consume(contract)
+        return {
+            "status": "desktop_handoff_prepared",
+            "runtime": "codex",
+            "destination": "codex://threads/new",
+            "contract_id": contract.contract_id,
+            "attempt_id": contract.attempt_id,
+            "project": contract.project,
+            "skill_ids": list(contract.skill_ids),
+            "actual_request_sha256": hashlib.sha256(
+                contract.purpose.encode("utf-8")
+            ).hexdigest(),
+            "instruction_digest": contract.instruction_digest,
+            "skill_hashes": dict(contract.skill_hashes),
+            "index_digest": contract.index_digest,
+            "acceptance_digests": dict(contract.acceptance_digests),
+            "prompt": prompt,
+            "prompt_sha256": prompt_digest,
+            "materialization": materialization,
+        }
+
+    def record_codex_desktop_handoff(
+        self, prepared: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Persist shell-accepted handoff evidence without inventing completion."""
+        if prepared.get("status") != "desktop_handoff_prepared":
+            raise SafetyError("Invalid Codex Desktop handoff state")
+        contract_id = str(prepared["contract_id"])
+        attempt_id = str(prepared["attempt_id"])
+        terminal_event = self._write_terminal_lifecycle(
+            attempt_id=attempt_id,
+            contract_id=contract_id,
+            status="desktop_handoff_ready",
+            terminal=False,
+        )
+        evidence = {
+            key: value
+            for key, value in prepared.items()
+            if key not in {"prompt", "status"}
+        }
+        evidence.update(
+            {
+                "status": "desktop_handoff_ready",
+                "terminal_event_id": terminal_event["terminal_event_id"],
+                "terminal_event": {
+                    "status": "desktop_handoff_ready",
+                    "terminal": False,
+                },
+                "desktop_result_verification": "not_available",
+                "verified_completed": False,
+            }
+        )
+        self.engine._write_json_atomic(
+            self.evidence_dir / f"{contract_id}-desktop-handoff.json", evidence
+        )
+        return evidence
 
     def prepare_web_handoff(self, contract_id: str) -> dict[str, Any]:
         """Consume one verified selection and return its single Web Claude prompt.
@@ -504,7 +945,7 @@ class ActivationEngine:
             raise _LaunchFailed(
                 "Web Codex has no supported authenticated prompt input on this account"
             )
-        pack, commit, _ = self._validated_pack(contract.pack_id)
+        pack, commit, _, _ = self._validated_pack(contract.pack_id)
         if commit != contract.commit_sha or pack.repo_url != contract.repository_url:
             raise SafetyError("Pack provenance changed after confirmation")
         prompt = self._task_envelope(contract, pack)
@@ -541,6 +982,12 @@ class ActivationEngine:
             value_type = "integer"
         elif isinstance(value, float):
             value_type = "number"
+        elif isinstance(value, list):
+            return {
+                "type": "array",
+                "items": {"type": "string"},
+                "const": value,
+            }
         else:
             value_type = "string"
         return {"type": value_type, "const": value}
@@ -549,16 +996,37 @@ class ActivationEngine:
     def _output_schema(
         contract: LaunchContract, checks: dict[str, dict[str, Any]]
     ) -> dict[str, Any]:
-        result_properties: dict[str, Any] = {}
+        result_properties: dict[str, Any] = {
+            "task_output": {"type": "string", "minLength": 1},
+            "saved_paths": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+            },
+            "changes": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+            },
+        }
+        # Codex response_format uses strict JSON Schema: every declared property
+        # must also be required. Empty saved_paths/changes arrays represent no change.
+        required_result_fields = list(result_properties)
+        package_selection = contract.selection_kind == "pack"
         for check in checks.values():
             for assertion in check["assertions"]:
                 field = assertion["path"].split(".", 1)[1]
                 expected = assertion["equals"]
                 previous = result_properties.get(field)
-                rule = ActivationEngine._const_schema(expected)
+                const_rule = ActivationEngine._const_schema(expected)
+                rule = (
+                    {"anyOf": [const_rule, {"type": "null"}]}
+                    if package_selection
+                    else const_rule
+                )
                 if previous is not None and previous != rule:
                     raise SafetyError(f"Conflicting acceptance assertions: result.{field}")
                 result_properties[field] = rule
+                if field not in required_result_fields:
+                    required_result_fields.append(field)
         provenance_properties = {
             "pack_id": ActivationEngine._const_schema(contract.pack_id),
             "repository_url": ActivationEngine._const_schema(contract.repository_url),
@@ -580,6 +1048,18 @@ class ActivationEngine:
                 "items": {"type": "string"},
                 "minItems": 1,
             },
+            "completed_skill_ids": {
+                "type": "array",
+                "items": {"type": "string", "enum": list(contract.skill_ids)},
+                "minItems": 1,
+                "maxItems": (
+                    len(contract.skill_ids) if package_selection else 1
+                ),
+            },
+            "skill_execution_status": {"type": "string", "const": "completed"},
+            "actual_request_sha256": ActivationEngine._const_schema(
+                hashlib.sha256(contract.purpose.encode("utf-8")).hexdigest()
+            ),
         }
         return {
             "type": "object",
@@ -593,7 +1073,7 @@ class ActivationEngine:
                 },
                 "result": {
                     "type": "object",
-                    "required": list(result_properties),
+                    "required": required_result_fields,
                     "properties": result_properties,
                     "additionalProperties": False,
                 },
@@ -611,7 +1091,7 @@ class ActivationEngine:
         evidence = output.get("evidence")
         if not isinstance(evidence, dict):
             raise _OutputFailed("Codex output is missing evidence")
-        expected = {
+        read_evidence = {
             "pack_id": contract.pack_id,
             "repository_url": contract.repository_url,
             "commit_sha": contract.commit_sha,
@@ -621,7 +1101,7 @@ class ActivationEngine:
             "instruction_digest": contract.instruction_digest,
             "challenge_nonce": contract.nonce,
         }
-        for key, value in expected.items():
+        for key, value in read_evidence.items():
             if evidence.get(key) != value:
                 raise _OutputFailed(f"Skill read evidence mismatch: {key}")
         applied_rules = evidence.get("applied_rules")
@@ -629,257 +1109,110 @@ class ActivationEngine:
             raise _OutputFailed("Applied-rules evidence is required")
         if any(not isinstance(item, str) for item in applied_rules):
             raise _OutputFailed("Applied-rules evidence must contain only strings")
-        for skill in contract.skill_ids:
-            if not any(skill in item for item in applied_rules):
+        completed_skill_ids = evidence.get("completed_skill_ids")
+        if (
+            not isinstance(completed_skill_ids, list)
+            or not completed_skill_ids
+            or len(completed_skill_ids) != len(set(completed_skill_ids))
+            or any(skill not in contract.skill_ids for skill in completed_skill_ids)
+        ):
+            raise _AcceptanceFailed("Completed skill IDs are not a valid applied subset")
+        expected_order = [
+            skill for skill in contract.skill_ids if skill in completed_skill_ids
+        ]
+        if completed_skill_ids != expected_order:
+            raise _AcceptanceFailed("Completed skill IDs must follow pack order")
+        if contract.selection_kind == "skill" and completed_skill_ids != list(
+            contract.skill_ids
+        ):
+            raise _AcceptanceFailed("Completed skill IDs do not match the selection")
+        if contract.selection_kind == "pack":
+            self._verify_pack_relations(
+                self.config.packs[contract.pack_id], completed_skill_ids
+            )
+        for skill in completed_skill_ids:
+            if not any(item.startswith(f"{skill}:") for item in applied_rules):
                 raise _AcceptanceFailed(
                     f"Applied-rules evidence does not identify selected skill: {skill}"
                 )
+        result = output.get("result")
+        if not isinstance(result, dict) or not isinstance(result.get("task_output"), str):
+            raise _OutputFailed("Actual-request deliverable is missing: result.task_output")
+        if not result["task_output"].strip():
+            raise _OutputFailed("Actual-request deliverable is empty: result.task_output")
+        if evidence.get("skill_execution_status") != "completed":
+            raise _AcceptanceFailed("Skill execution did not report completion")
+        actual_request_sha256 = hashlib.sha256(
+            contract.purpose.encode("utf-8")
+        ).hexdigest()
+        if evidence.get("actual_request_sha256") != actual_request_sha256:
+            raise _AcceptanceFailed("Completed skill evidence targets a different request")
         for skill, check in checks.items():
             for assertion in check["assertions"]:
                 try:
                     actual = self._value_at(output, assertion["path"])
                 except SafetyError as exc:
                     raise _AcceptanceFailed(str(exc)) from exc
-                if actual != assertion["equals"]:
+                if skill in completed_skill_ids and actual != assertion["equals"]:
                     raise _AcceptanceFailed(
                         f"Skill-specific acceptance failed for {skill}: "
                         f"{assertion['path']}"
                     )
+                if skill not in completed_skill_ids and actual is not None:
+                    raise _AcceptanceFailed(
+                        f"Unapplied skill claimed an acceptance value: {skill}"
+                    )
         return {
-            "status": "verified_applied",
+            "status": "verified_completed",
             "contract_id": contract.contract_id,
             "pack_id": contract.pack_id,
             "commit_sha": contract.commit_sha,
             "task_delivery_evidence": {"prompt_sha256": prompt_digest},
-            "skill_read_evidence": expected,
-            "skill_specific_application_evidence": {
-                skill: _digest(check) for skill, check in checks.items()
+            "skill_read_evidence": read_evidence,
+            "skill_execution_completion_evidence": {
+                "completed_skill_ids": completed_skill_ids,
+                "skill_execution_status": "completed",
+                "actual_request_sha256": actual_request_sha256,
             },
             "output": output,
         }
 
-    @staticmethod
-    def _session_id(runtime: str, stdout: str, response: object) -> str:
-        """Read the persisted session identity emitted by the real runtime."""
-        if runtime == "codex":
-            for line in stdout.splitlines():
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if event.get("type") == "thread.started" and isinstance(
-                    event.get("thread_id"), str
-                ):
-                    return str(event["thread_id"])
-        elif isinstance(response, dict) and isinstance(response.get("session_id"), str):
-            return str(response["session_id"])
-        raise _OutputFailed(f"{runtime.title()} returned no resumable session identity")
-
-    @staticmethod
-    def _codex_interactive_executable(wrapper: str) -> str | None:
-        """Prefer the native Codex executable so the recorded PID is the app PID."""
-        wrapper_path = Path(wrapper)
-        package_root = wrapper_path.parent / "node_modules" / "@openai" / "codex"
-        matches = sorted(
-            package_root.glob(
-                "node_modules/@openai/codex-win32-*/vendor/*/bin/codex.exe"
-            )
-        )
-        return str(matches[0]) if matches else shutil.which("codex.exe")
-
-    @staticmethod
-    def _windows_handoff_processes(session_id: str) -> list[dict[str, Any]]:
-        """Read only processes whose argv proves ownership by this handoff session."""
-        script = (
-            "$needle=$env:SKILL_MAGNET_HANDOFF_SESSION;"
-            "$rows=Get-CimInstance Win32_Process|Where-Object{"
-            "$_.Name -in @('codex.exe','claude.exe','cmd.exe','pythonw.exe') -and "
-            "$_.CommandLine -like ('*'+$needle+'*')}|"
-            "Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine;"
-            "@($rows)|ConvertTo-Json -Compress"
-        )
-        completed = subprocess.run(
-            ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env={**os.environ, "SKILL_MAGNET_HANDOFF_SESSION": session_id},
-        )
-        if completed.returncode != 0 or not completed.stdout.strip():
-            return []
-        try:
-            value = json.loads(completed.stdout)
-        except json.JSONDecodeError:
-            return []
-        if isinstance(value, dict):
-            value = [value]
-        return [row for row in value if isinstance(row, dict)] if isinstance(value, list) else []
-
-    @classmethod
-    def _terminate_failed_handoff(
-        cls,
-        terminal_process: subprocess.Popen[Any],
-        session_id: str,
-        *,
-        owned_runtime_pids: tuple[int, ...] = (),
-    ) -> None:
-        """Terminate/wait only the failed attempt launcher and proven runtime trees."""
-        owned = set(owned_runtime_pids)
-        owned.update(
-            row["ProcessId"]
-            for row in cls._windows_handoff_processes(session_id)
-            if isinstance(row.get("ProcessId"), int)
-        )
-        if terminal_process.poll() is None:
-            terminal_process.terminate()
-            try:
-                terminal_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                terminal_process.kill()
-                terminal_process.wait(timeout=5)
-        for process_id in sorted(owned):
-            subprocess.run(
-                ["taskkill.exe", "/PID", str(process_id), "/T", "/F"],
-                capture_output=True,
-                check=False,
-            )
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            residual = cls._windows_handoff_processes(session_id)
-            live_owned = []
-            for process_id in owned:
-                query = subprocess.run(
-                    [
-                        "powershell.exe",
-                        "-NoLogo",
-                        "-NoProfile",
-                        "-NonInteractive",
-                        "-Command",
-                        f"if(Get-Process -Id {process_id} -ErrorAction SilentlyContinue){{exit 1}}",
-                    ],
-                    capture_output=True,
-                    check=False,
-                )
-                if query.returncode != 0:
-                    live_owned.append(process_id)
-            if not residual and not live_owned:
-                return
-            time.sleep(0.1)
-        raise _CleanupFailed(())
-
-    def _launch_interactive_session(
+    def _user_result(
         self,
         contract: LaunchContract,
-        *,
-        runtime: str,
-        session_id: str,
-        resolved_executable: str,
+        pack: Pack,
+        output: dict[str, Any],
     ) -> dict[str, Any]:
-        """Open the verified session in the selected real interactive runtime."""
-        if os.name != "nt":
-            raise _LaunchFailed(
-                "A verified user-visible runtime handoff is not implemented on this platform"
-            )
-        if runtime == "codex":
-            native = self._codex_interactive_executable(resolved_executable)
-            if native:
-                target_command = [
-                    native,
-                    "--cd",
-                    contract.project,
-                    "--no-alt-screen",
-                    "resume",
-                    session_id,
-                ]
-            else:
-                target_command = [
-                    os.environ.get("COMSPEC", "cmd.exe"),
-                    "/d",
-                    "/k",
-                    resolved_executable,
-                    "--cd",
-                    contract.project,
-                    "--no-alt-screen",
-                    "resume",
-                    session_id,
-                ]
-        else:
-            target_command = [resolved_executable, "--resume", session_id]
-        terminal = shutil.which("wt.exe")
-        if not terminal:
-            raise _LaunchFailed("Windows Terminal is required for a visible runtime handoff")
-        command = [
-            terminal,
-            "-w",
-            "new",
-            "new-tab",
-            "--title",
-            f"Skill Magnet — {runtime.title()}",
-            "--startingDirectory",
-            contract.project,
-            *target_command,
+        """Build a Japanese result surface without exposing verification JSON."""
+        result = output["result"]
+        completed_skill_ids = output.get("evidence", {}).get("completed_skill_ids", [])
+        skill_names = [
+            pack.skill_display_name(skill) for skill in completed_skill_ids
         ]
-        try:
-            terminal_process = subprocess.Popen(
-                command,
-                cwd=contract.project,
-            )
-        except OSError as exc:
-            raise _LaunchFailed(
-                f"{runtime.title()} interactive application could not be started: {exc}"
-            ) from exc
-        process_name = Path(target_command[0]).name
-        probe = (
-            "$OutputEncoding=[Console]::OutputEncoding=[Text.UTF8Encoding]::new();"
-            "& { param($needle,$name) "
-            "$p=Get-CimInstance Win32_Process|Where-Object{"
-            "$_.Name -eq $name -and $_.CommandLine -like ('*'+$needle+'*')"
-            "}|Select-Object -First 1 ProcessId,ExecutablePath,CommandLine;"
-            "if($p){$p|ConvertTo-Json -Compress} }"
-        )
-        deadline = time.monotonic() + 10
-        record: dict[str, Any] | None = None
-        while time.monotonic() < deadline:
-            query = subprocess.run(
-                [
-                    "powershell.exe",
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-Command",
-                    probe,
-                    session_id,
-                    process_name,
-                ],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-            if query.returncode == 0 and query.stdout.strip():
-                try:
-                    value = json.loads(query.stdout)
-                except json.JSONDecodeError:
-                    value = None
-                if isinstance(value, dict) and isinstance(value.get("ProcessId"), int):
-                    record = {
-                        "runtime": runtime,
-                        "session_id": session_id,
-                        "pid": value["ProcessId"],
-                        "executable": value.get("ExecutablePath") or target_command[0],
-                        "command_line": value.get("CommandLine"),
-                        "command": target_command,
-                        "state": "interactive_ready",
-                        "terminal_launcher_pid": terminal_process.pid,
-                    }
-                    break
-            time.sleep(0.2)
-        if record is None:
-            self._terminate_failed_handoff(terminal_process, session_id)
-            raise _LaunchFailed(
-                f"{runtime.title()} interactive application did not report a live PID"
-            )
-        return record
+        saved_paths = result.get("saved_paths", [])
+        changes = result.get("changes", [])
+        for field_name, values in (("saved_paths", saved_paths), ("changes", changes)):
+            if not isinstance(values, list) or any(
+                not isinstance(value, str) or not value.strip() for value in values
+            ):
+                raise _OutputFailed(
+                    f"User-facing result field is invalid: result.{field_name}"
+                )
+        change_lines = [*(f"保存先: {path}" for path in saved_paths)]
+        change_lines.extend(f"変更: {change}" for change in changes)
+        if not change_lines:
+            change_lines.append("保存先/変更の申告なし（結果のみ）")
+        return {
+            "title": "完了",
+            "executed_skill": "、".join(skill_names),
+            "request": contract.purpose,
+            "result": result["task_output"],
+            "saved_or_changed": "\n".join(change_lines),
+            "details": {
+                "verification_status": "verified_completed",
+                "contract_id": contract.contract_id,
+            },
+        }
 
     def execute(
         self,
@@ -891,7 +1224,7 @@ class ActivationEngine:
     ) -> dict[str, Any]:
         self.recover_interrupted_attempts()
         contract = self._read_contract(contract_id)
-        pack, commit, _ = self._validated_pack(contract.pack_id)
+        pack, commit, _, _ = self._validated_pack(contract.pack_id)
         if commit != contract.commit_sha or pack.repo_url != contract.repository_url:
             raise SafetyError("Pack provenance changed after confirmation")
         checks = self._load_acceptance(pack, contract.skill_ids)
@@ -944,10 +1277,11 @@ class ActivationEngine:
                 executable = [resolved]
         if contract.runtime == "codex":
             runtime_args = [
+                *codex_process_config_args(),
                 "--ask-for-approval",
                 "never",
                 "exec",
-                "--ignore-user-config",
+                "--ephemeral",
                 "--ignore-rules",
                 "--json",
                 "--sandbox",
@@ -991,6 +1325,7 @@ class ActivationEngine:
                     text=True,
                     encoding="utf-8",
                     errors="replace",
+                    **_windows_hidden_process_kwargs(),
                 )
             except OSError as exc:
                 raise _LaunchFailed(
@@ -998,8 +1333,10 @@ class ActivationEngine:
                 ) from exc
             event_path.write_text(result.stdout, encoding="utf-8")
             if result.returncode != 0:
-                raise _OutputFailed(
-                    f"{contract.runtime.title()} execution failed; skill use is not guaranteed"
+                raise _RuntimeFailed(
+                    exit_code=result.returncode,
+                    stderr=result.stderr,
+                    stdout=result.stdout,
                 )
             try:
                 if contract.runtime == "codex":
@@ -1018,50 +1355,31 @@ class ActivationEngine:
                     f"{contract.runtime.title()} returned no valid evidence envelope"
                 ) from exc
             verified = self._verify(contract, output, checks, prompt_digest)
-            default_runtime_executable = (
-                runtime_executable is None
-                and (
-                    (contract.runtime == "codex" and codex_executable == "codex")
-                    or contract.runtime == "claude"
-                )
-            )
-            should_handoff = (
-                interactive_handoff
-                and default_runtime_executable
-                and isinstance(result, subprocess.CompletedProcess)
-            )
-            if should_handoff:
-                session_id = self._session_id(
-                    contract.runtime, result.stdout, response
-                )
-                verified["interactive_handoff"] = self._launch_interactive_session(
-                    contract,
-                    runtime=contract.runtime,
-                    session_id=session_id,
-                    resolved_executable=resolved_executable,
-                )
-            else:
-                verified["interactive_handoff"] = {
-                    "runtime": contract.runtime,
-                    "state": "test_suppressed",
-                }
+            verified["user_result"] = self._user_result(contract, pack, output)
+            verified["interactive_handoff"] = {
+                "runtime": contract.runtime,
+                "state": (
+                    "result_surface_ready" if interactive_handoff else "test_suppressed"
+                ),
+                "verification_session_resumed": False,
+            }
             self._cleanup_temporary_artifacts(
                 (schema_path, output_path, event_path, process_marker_path)
             )
             terminal_event = self._write_terminal_lifecycle(
                 attempt_id=contract.attempt_id,
                 contract_id=contract.contract_id,
-                status="verified_applied",
+                status="verified_completed",
             )
             verified["attempt_id"] = contract.attempt_id
             verified["terminal_event_id"] = terminal_event["terminal_event_id"]
             verified["terminal_event"] = {
-                "status": "verified_applied",
+                "status": "verified_completed",
                 "terminal": True,
             }
-            self.engine._write_json_atomic(
-                self.evidence_dir / f"{contract.contract_id}-verified.json", verified
-            )
+            verified_path = self.evidence_dir / f"{contract.contract_id}-verified.json"
+            verified["user_result"]["details"]["evidence_file"] = str(verified_path)
+            self.engine._write_json_atomic(verified_path, verified)
             return verified
         except Exception as exc:
             failure_path = (
@@ -1076,6 +1394,8 @@ class ActivationEngine:
                     exc = cleanup_exc
             if isinstance(exc, _LaunchFailed):
                 status = "launch_failed"
+            elif isinstance(exc, _RuntimeFailed):
+                status = "runtime_failed"
             elif isinstance(exc, _AcceptanceFailed):
                 status = "acceptance_failed"
             elif isinstance(exc, _CleanupFailed):
@@ -1106,6 +1426,8 @@ class ActivationEngine:
                 failure["unresolved_artifacts"] = [
                     {"name": path.name} for path in exc.paths
                 ]
+            if isinstance(exc, _RuntimeFailed):
+                failure["runtime_failure_evidence"] = exc.diagnostic
             self.engine._write_json_atomic(
                 self.evidence_dir / f"{contract.contract_id}-not-guaranteed.json",
                 failure,

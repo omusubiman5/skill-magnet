@@ -1,0 +1,50 @@
+Skill Magnet real Codex visible E2E — sanitized evidence
+Run date: 2026-08-29 JST
+
+[binding]
+status=verified_completed
+contract_id=2d5cce267dd948fe880c43acaeab3390
+attempt_id=2f40b52feab84dd69651487d43c40bbb
+selected_skill_id=codex-sandbox-approval-boundary
+actual_request=このプロジェクトでCodexのサンドボックス承認境界を、日本語で具体的に3点まとめてください。
+actual_request_sha256=6a7251459069b39f9f6904ec38d1007de917d2c6507838a0c2a2d85ed186c27d
+instruction_digest=e7a9def6a153946f6481412362ee7afaac99552ee7d7d9096b51a788887b0c05
+acceptance_digest=b4df1deeebf2a0cfa03e93c19a59a90457f39279c51bf56d3ecc5003592e386d
+
+[real runtime]
+runtime=codex-cli 0.148.0
+codex_executable=C:\Users\HOMEA\AppData\Roaming\npm\node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe
+codex_pid=25844
+codex_exit_code=0
+started_at=2026-08-29T02:07:04.845670+09:00
+finished_at=2026-08-29T02:07:29.335958+09:00
+argv=codex.exe -c mcp_servers.cloudflare-builds.enabled=false -c mcp_servers.cloudflare-observability.enabled=false -c mcp_servers.unreal-mcp.enabled=false --ask-for-approval never exec --ephemeral --ignore-rules --json --sandbox read-only --cd C:\Projects\skill-magnet --output-schema <contract-schema.json> --output-last-message <contract-output.json> -
+
+[actual Codex final answer — full text]
+1. ファイルシステム境界：この実行では C:\Projects\skill-magnet を含むファイルシステムが read-only です。プロジェクト内容の閲覧はできますが、作成・編集・削除は許可されません。
+2. 承認・実行境界：approval policy は never なので、サンドボックス外の操作が必要になっても途中で人へ昇格承認を求められません。書込みや許可外コマンドは自動的に広げず、失敗として停止します。network も restricted のため、外部通信を前提にできません。
+3. 権限を広げる場合の境界：変更作業が必要な別実行では、対象をこのワークスペースに限定した workspace-write と必要なコマンドだけを事前許可する構成が最小です。danger-full-access は非隔離ホストで使わず、必要ならDev ContainerまたはVMを外側の隔離境界とし、削除操作は明示した個別パスだけを対象にします。
+
+[screenshots]
+A=専用実Codex実行window。runtime、PID、argv、依頼、skill、実回答全文を表示。
+A_capture=2026-08-29T02:07:53.0514019+09:00
+A_window_title=C:\WINDOWS\system32\cmd.exe
+A_window_pid=26980
+B=Skill Magnet利用者向け日本語完了画面。実回答をscrollable result欄へ表示。
+B_capture=2026-08-29T02:08:23.0172450+09:00
+B_window_title=Skill Magnet — 完了
+B_window_pid=9424
+
+[verification]
+focused=PASS 4/4
+full_repository=PASS 105; skipped 1; failures 0; errors 0
+native_contracts=PASS 2/2
+consoleless_residual_probes=PASS 3/3
+git_diff_check=PASS
+checked_pids=25844,26980,9424
+live_checked_pids=0
+matching_product_owned_processes=0
+global_config_sha256_before=c1e5c92a3eb925e93ea509e1f60e68959ee96e2e7f828143386107debb9d791d
+global_config_sha256_after=c1e5c92a3eb925e93ea509e1f60e68959ee96e2e7f828143386107debb9d791d
+raw_credentials_retained=false
+raw_user_config_retained=false

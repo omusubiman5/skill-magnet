@@ -1,0 +1,81 @@
+{
+  "attempt_id": "df8fda31003f444eb8b76b5f9f0f7abe",
+  "commit_sha": "c7747bba0bc391316aa558b3b4e8dd412045d2dc",
+  "contract_id": "ee1981f6d2ec48e98f0194b77ee77111",
+  "interactive_handoff": {
+    "runtime": "codex",
+    "state": "test_suppressed",
+    "verification_session_resumed": false
+  },
+  "output": {
+    "evidence": {
+      "actual_request_sha256": "6a7251459069b39f9f6904ec38d1007de917d2c6507838a0c2a2d85ed186c27d",
+      "applied_rules": [
+        "codex-sandbox-approval-boundary: read・write・execute・networkを分離して評価し、現在のread-only、承認不可、network制限を独立した境界として整理した。",
+        "codex-sandbox-approval-boundary: 無人実行では途中承認に依存せず、権限不足やsandbox障害が発生した操作は昇格せず停止する境界を適用した。",
+        "codex-sandbox-approval-boundary: 最小権限を維持し、書込みが必要な場合も対象をC:\\Projects\\skill-magnet配下へ限定したworkspace-writeを別途事前承認する方針とした。"
+      ],
+      "approved_at": "2026-08-22T18:15:11.6526999+09:00",
+      "approved_by": "user",
+      "challenge_nonce": "4d6de8819df4439f90eaab92c9816214",
+      "commit_sha": "c7747bba0bc391316aa558b3b4e8dd412045d2dc",
+      "completed_skill_ids": [
+        "codex-sandbox-approval-boundary"
+      ],
+      "instruction_digest": "e7a9def6a153946f6481412362ee7afaac99552ee7d7d9096b51a788887b0c05",
+      "pack_id": "codex-pmo-skills",
+      "repository_url": "https://github.com/omusubiman5/codex-pmo-skills.git",
+      "skill_execution_status": "completed",
+      "skill_ids": [
+        "codex-sandbox-approval-boundary"
+      ]
+    },
+    "result": {
+      "changes": [],
+      "sandbox_boundary": "read_only_no_midrun_approval",
+      "saved_paths": [],
+      "task_output": "1. ファイル境界：現在はread-onlyです。C:\\Projects\\skill-magnetを含むファイルを読めますが、作成・編集・削除はできません。変更作業が必要になった場合は、対象をこのプロジェクト配下に限定したworkspace-writeを事前に許可するのが最小権限です。\n2. コマンドと承認境界：approval policyはneverであり、実行途中の権限昇格や人への承認要求はできません。sandbox内で許された非変更系コマンドだけが実行対象となり、権限不足やsandbox障害が起きた操作は昇格せず停止します。\n3. ネットワーク境界：ネットワークアクセスは制限されています。外部通信はファイル権限やコマンド承認とは別の技術境界であり、必要になっても自動的には解放されません。許可する場合は用途と接続先を限定して事前設計し、全面的なfull accessやdanger-full-accessは外側のContainer／VM隔離なしで使用しません。"
+    }
+  },
+  "pack_id": "codex-pmo-skills",
+  "skill_execution_completion_evidence": {
+    "actual_request_sha256": "6a7251459069b39f9f6904ec38d1007de917d2c6507838a0c2a2d85ed186c27d",
+    "completed_skill_ids": [
+      "codex-sandbox-approval-boundary"
+    ],
+    "skill_execution_status": "completed"
+  },
+  "skill_read_evidence": {
+    "approved_at": "2026-08-22T18:15:11.6526999+09:00",
+    "approved_by": "user",
+    "challenge_nonce": "4d6de8819df4439f90eaab92c9816214",
+    "commit_sha": "c7747bba0bc391316aa558b3b4e8dd412045d2dc",
+    "instruction_digest": "e7a9def6a153946f6481412362ee7afaac99552ee7d7d9096b51a788887b0c05",
+    "pack_id": "codex-pmo-skills",
+    "repository_url": "https://github.com/omusubiman5/codex-pmo-skills.git",
+    "skill_ids": [
+      "codex-sandbox-approval-boundary"
+    ]
+  },
+  "status": "verified_completed",
+  "task_delivery_evidence": {
+    "prompt_sha256": "a8f54f411117032046907289f2b2b149e4ffcf6563ceedb7c7ac7e0e4a343ca0"
+  },
+  "terminal_event": {
+    "status": "verified_completed",
+    "terminal": true
+  },
+  "terminal_event_id": "63b1d70cd9034d83aa176159d89723c5",
+  "user_result": {
+    "details": {
+      "contract_id": "ee1981f6d2ec48e98f0194b77ee77111",
+      "evidence_file": "C:\\Projects\\skill-magnet\\docs\\test-evidence\\real-codex-visible-e2e-20260829\\state\\evidence\\ee1981f6d2ec48e98f0194b77ee77111-verified.json",
+      "verification_status": "verified_completed"
+    },
+    "executed_skill": "サンドボックスと承認を定める",
+    "request": "このプロジェクトでCodexのサンドボックス承認境界を、日本語で具体的に3点まとめてください。",
+    "result": "1. ファイル境界：現在はread-onlyです。C:\\Projects\\skill-magnetを含むファイルを読めますが、作成・編集・削除はできません。変更作業が必要になった場合は、対象をこのプロジェクト配下に限定したworkspace-writeを事前に許可するのが最小権限です。\n2. コマンドと承認境界：approval policyはneverであり、実行途中の権限昇格や人への承認要求はできません。sandbox内で許された非変更系コマンドだけが実行対象となり、権限不足やsandbox障害が起きた操作は昇格せず停止します。\n3. ネットワーク境界：ネットワークアクセスは制限されています。外部通信はファイル権限やコマンド承認とは別の技術境界であり、必要になっても自動的には解放されません。許可する場合は用途と接続先を限定して事前設計し、全面的なfull accessやdanger-full-accessは外側のContainer／VM隔離なしで使用しません。",
+    "saved_or_changed": "保存先/変更の申告なし（結果のみ）",
+    "title": "完了"
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "generated_at": "2026-08-28T21:43:00+09:00",
+  "source_contract_id": "eecaee60593642ce889b8a35caf180d2",
+  "source_attempt_id": "79dac29d52d34ae69457a21308c15954",
+  "runtime": "codex-cli 0.148.0",
+  "reproduction": {
+    "run_id": "0bca440be0544c04a712d11ad2a733b8",
+    "status": "runtime_failed",
+    "exit_code": 1,
+    "failure_class": "invalid_output_schema",
+    "manifest_sha256": "ab6959565afcf4acc72f1a85b573cdc288cb057304c10fceec2eb18d8dd3df2a",
+    "diagnostic_sha256": "f99f11069cb1c034a76c45f1ea32e0d071a45e83ef48217f88d53d75d1279ffe"
+  },
+  "successful_real_smoke": {
+    "run_id": "d43b7b53b8b14f4c80cf13146180a260",
+    "status": "verified_completed",
+    "manifest_sha256": "d8a58dea365915d80c44df77eba45a731b50e002503530d974d762a67ca81241",
+    "runtime_pid": 4464,
+    "runtime_pid_terminated": true
+  },
+  "tests": {
+    "focused_pass": 4,
+    "full_pass": 105,
+    "full_skipped": 1,
+    "native_contract_pass": 2,
+    "consoleless_probe_pass": 3,
+    "real_codex_smoke_pass": 1
+  },
+  "sanitized_log": {
+    "path": "sanitized-test.log",
+    "sha256": "5c458b8638e06b44936868c072ae91f8df1da88825f27ecef7f3c9872de56aef"
+  },
+  "screenshot": {
+    "repository_path": "verified-completed-terminal.png",
+    "user_copy": "C:\\Users\\HOMEA\\Documents\\Codex\\2026-08-28\\skill-magnet-pm\\outputs\\skill-magnet-verified-completed-2026-08-28.png",
+    "sha256": "a952ff91356b628916abfad2d93ea77710515952f3a20322864b1acf2ab55d84",
+    "capture_scope": "dedicated terminal window rectangle only",
+    "visually_verified": true
+  },
+  "residual": {
+    "checked_runtime_pids": [13488, 7684, 10040, 4464],
+    "live_checked_pids": 0,
+    "matching_product_owned_processes": 0,
+    "dedicated_capture_terminal_residual": 0
+  },
+  "raw_stderr_retained": false,
+  "credential_material_retained": false
+}

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import io
+import os
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -17,7 +20,16 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from skill_magnet.activation import ActivationEngine
+from skill_magnet.activation import (
+    CODEX_PROCESS_CONFIG_OVERRIDES,
+    ActivationEngine,
+    _AcceptanceFailed,
+    _LaunchFailed,
+    _OutputFailed,
+    _RuntimeFailed,
+    _runtime_failure_diagnostic,
+    codex_process_config_args,
+)
 from skill_magnet.cli import exit_process, main as cli_main
 from skill_magnet.core import Config, SafetyError, SkillMagnetError
 from skill_magnet.platforms import (
@@ -28,6 +40,7 @@ from skill_magnet.platforms import (
     render_registration,
     uninstall_context_menu,
     uninstall_windows_modern_context_menu,
+    uninstall_windows_context_menus,
     windows_modern_context_menu_status,
     windows_background_registry_entries,
     windows_command,
@@ -38,10 +51,20 @@ from skill_magnet.platforms import (
     rollback_windows_context_menus,
 )
 from skill_magnet.ui import (
+    codex_desktop_deep_link,
     confirm_context_selection,
     context_error_message,
+    context_failure_message,
+    context_failure_surface,
+    context_result_surface,
     context_selection_details,
+    context_ui_confirmation,
+    context_ui_request_error,
+    context_ui_text,
     launch_context_leaf,
+    deliver_codex_desktop_prompt,
+    deliver_web_claude_prompt,
+    web_claude_prefill_url,
 )
 from tests.e2e_guard import E2ECycleTeardown, assert_e2e_clean
 
@@ -70,7 +93,6 @@ class ActivationEndToEndTest(unittest.TestCase):
             for item in windows_menu_leaves(self.config_path, "%V")
             if item.pack_id == "bounded-pack"
             and item.skill_id == "bounded-answer"
-            and item.runtime == "claude"
         )
         command = list(leaf.command)
         if Path(command[0]).name.casefold() != "pythonw.exe":
@@ -151,7 +173,6 @@ class ActivationEndToEndTest(unittest.TestCase):
             for item in windows_menu_leaves(self.config_path, "%V")
             if item.pack_id == "bounded-pack"
             and item.skill_id == "bounded-answer"
-            and item.runtime == "claude"
         )
         stdout = io.StringIO()
         stderr = io.StringIO()
@@ -176,7 +197,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                     "--skill",
                     leaf.skill_id,
                     "--runtime",
-                    leaf.runtime,
+                    "claude",
                     "--menu-commit",
                     "0" * 40,
                     "--menu-skill-digest",
@@ -189,21 +210,22 @@ class ActivationEndToEndTest(unittest.TestCase):
             )
         self.assertEqual(exit_code, 2)
         error_ui.assert_called_once()
+        failure_message = error_ui.call_args.args[0]
+        self.assertIn("原因", failure_message)
+        self.assertIn("未実行・未確認の範囲", failure_message)
+        self.assertIn("次の操作", failure_message)
+        self.assertNotIn("stale_menu_commit", failure_message)
+        self.assertNotIn("Pack version changed", failure_message)
         self.assertEqual(stdout.getvalue(), "")
         self.assertEqual(stderr.getvalue(), "")
 
     def test_common_teardown_covers_real_terminal_outcome_paths(self) -> None:
         target_root = self.root / ".e2e-target"
-        leaves = {
-            runtime: next(
-                item
-                for item in windows_menu_leaves(self.config_path, "%V")
-                if item.pack_id == "bounded-pack"
-                and item.skill_id == "bounded-answer"
-                and item.runtime == runtime
-            )
-            for runtime in ("codex", "claude")
-        }
+        leaf = next(
+            item
+            for item in windows_menu_leaves(self.config_path, "%V")
+            if item.pack_id == "bounded-pack" and item.skill_id == "bounded-answer"
+        )
 
         def command_line(leaf: object, project: Path, state: Path) -> str:
             command = list(leaf.command)
@@ -220,13 +242,13 @@ class ActivationEndToEndTest(unittest.TestCase):
                 teardown.own_target(project)
                 state = self.root / f"teardown-{outcome}"
                 engine = ActivationEngine(self.config, state)
-                leaf = leaves["claude" if outcome == "rejected" else "codex"]
+                selected_runtime = "claude" if outcome == "rejected" else "codex"
                 arguments = {
                     "platform": "windows",
                     "project": project,
                     "pack_id": leaf.pack_id,
                     "skill_id": leaf.skill_id,
-                    "runtime": leaf.runtime,
+                    "runtime": selected_runtime,
                     "menu_commit": self.commit,
                     "menu_skill_digest": leaf.skill_ids_digest,
                     "menu_instruction_digest": leaf.instruction_digest,
@@ -235,10 +257,21 @@ class ActivationEndToEndTest(unittest.TestCase):
                 if outcome == "rejected":
                     arguments["menu_commit"] = "0" * 40
                 if outcome == "success":
-                    result = launch_context_leaf(
-                        engine, **arguments, codex_executable=self.fake_codex
+                    contract = engine.confirm(
+                        engine.plan(
+                            platform="windows",
+                            project=project,
+                            pack_id=leaf.pack_id,
+                            runtime="codex",
+                            purpose="common teardown success",
+                            skill_id=leaf.skill_id,
+                        ),
+                        confirmed=True,
                     )
-                    self.assertEqual(result["status"], "verified_applied")
+                    result = engine.execute(
+                        contract.contract_id, codex_executable=self.fake_codex
+                    )
+                    self.assertEqual(result["status"], "verified_completed")
                 elif outcome == "rejected":
                     with self.assertRaises(Exception):
                         launch_context_leaf(
@@ -248,14 +281,34 @@ class ActivationEndToEndTest(unittest.TestCase):
                             error_ui=lambda _message: None,
                         )
                 elif outcome == "failure":
+                    contract = engine.confirm(
+                        engine.plan(
+                            platform="windows",
+                            project=project,
+                            pack_id=leaf.pack_id,
+                            runtime="codex",
+                            purpose="common teardown failure",
+                            skill_id=leaf.skill_id,
+                        ),
+                        confirmed=True,
+                    )
                     with self.assertRaises(Exception):
-                        launch_context_leaf(
-                            engine,
-                            **arguments,
+                        engine.execute(
+                            contract.contract_id,
                             codex_executable=str(self.root / "missing-codex.exe"),
-                            error_ui=lambda _message: None,
                         )
                 else:
+                    contract = engine.confirm(
+                        engine.plan(
+                            platform="windows",
+                            project=project,
+                            pack_id=leaf.pack_id,
+                            runtime="codex",
+                            purpose="common teardown interruption",
+                            skill_id=leaf.skill_id,
+                        ),
+                        confirmed=True,
+                    )
                     original_run = subprocess.run
 
                     def interrupt_codex(*args: object, **kwargs: object) -> object:
@@ -269,9 +322,8 @@ class ActivationEndToEndTest(unittest.TestCase):
                         side_effect=interrupt_codex,
                     ):
                         with self.assertRaises(KeyboardInterrupt):
-                            launch_context_leaf(
-                                engine,
-                                **arguments,
+                            engine.execute(
+                                contract.contract_id,
                                 codex_executable=self.fake_codex,
                             )
                     recovered = ActivationEngine(self.config, state)
@@ -296,6 +348,19 @@ class ActivationEndToEndTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
+        self.previous_local_app_data = os.environ.get("LOCALAPPDATA")
+        os.environ.setdefault("LOCALAPPDATA", str(self.root / "local-app-data"))
+        native_output = (
+            Path(__file__).resolve().parents[1]
+            / "native"
+            / "windows-modern-context-menu"
+            / "out"
+        )
+        native_output.mkdir(parents=True, exist_ok=True)
+        for binary in ("SkillMagnetCommand.dll", "SkillMagnetIdentity.exe"):
+            path = native_output / binary
+            if not path.exists():
+                path.write_bytes(b"unit-test-placeholder")
         self.repo = self.root / "separate-user-skill-repository"
         skill = self.repo / "bounded-answer"
         skill.mkdir(parents=True)
@@ -334,6 +399,15 @@ class ActivationEndToEndTest(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        (self.repo / "INDEX.md").write_text(
+            "# Test pack\n\n"
+            "```mermaid\n"
+            "graph LR\n"
+            "UNUSED[\"unused-skill\"] -->|depends-on| BOUNDED[\"bounded-answer\"]\n"
+            "BOUNDED -.->|contrasts-with| UNUSED\n"
+            "```\n",
+            encoding="utf-8",
+        )
         git(self.repo, "init", "-b", "main")
         git(self.repo, "config", "user.name", "Skill Magnet Test")
         git(self.repo, "config", "user.email", "skill-magnet@example.invalid")
@@ -364,6 +438,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                     "packs": [
                         {
                             "id": "bounded-pack",
+                            "selection_kind": "skill",
                             "repo_url": "https://github.com/my-owner/separate-skill-repo.git",
                             "expected_commit": self.commit,
                             "source": str(self.repo),
@@ -374,6 +449,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                         },
                         {
                             "id": "unused-pack",
+                            "selection_kind": "skill",
                             "repo_url": "https://github.com/my-owner/separate-skill-repo.git",
                             "expected_commit": self.commit,
                             "source": str(self.repo),
@@ -391,6 +467,10 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.fake_codex = self._fake_codex()
 
     def tearDown(self) -> None:
+        if self.previous_local_app_data is None:
+            os.environ.pop("LOCALAPPDATA", None)
+        else:
+            os.environ["LOCALAPPDATA"] = self.previous_local_app_data
         self.temporary.cleanup()
 
     def _fake_codex(self) -> tuple[str, ...]:
@@ -401,11 +481,12 @@ class ActivationEndToEndTest(unittest.TestCase):
             "prompt = sys.stdin.read() if args[-1] == '-' else args[-1]\n"
             "assert 'UNUSED_SENTINEL' not in prompt\n"
             "line = next(x for x in prompt.splitlines() if x.startswith('PROVENANCE='))\n"
+            "purpose = next(x for x in prompt.splitlines() if x.startswith('PURPOSE=')).split('=', 1)[1]\n"
             "provenance = json.loads(line.split('=', 1)[1])\n"
             "output_path = pathlib.Path(args[args.index('--output-last-message') + 1])\n"
-            "output = {'evidence': {**provenance, 'applied_rules': "
+            "output = {'evidence': {**provenance, 'completed_skill_ids': provenance['skill_ids'], 'skill_execution_status': 'completed', 'applied_rules': "
             "['bounded-answer:result.decision=bounded']}, "
-            "'result': {'decision': 'bounded'}}\n"
+            "'result': {'task_output': purpose, 'decision': 'bounded'}}\n"
             "output_path.write_text(json.dumps(output), encoding='utf-8')\n"
             "print(json.dumps({'type': 'task.completed'}))\n",
             encoding="utf-8",
@@ -434,10 +515,14 @@ class ActivationEndToEndTest(unittest.TestCase):
                 result = engine.execute(
                     contract.contract_id, codex_executable=self.fake_codex
                 )
-                self.assertEqual(result["status"], "verified_applied")
+                self.assertEqual(result["status"], "verified_completed")
                 self.assertEqual(result["commit_sha"], self.commit)
                 self.assertEqual(
                     result["output"]["result"]["decision"], "bounded"
+                )
+                self.assertEqual(
+                    result["output"]["result"]["task_output"],
+                    "Make a bounded decision",
                 )
                 with self.assertRaises(SafetyError):
                     engine.execute(contract.contract_id, codex_executable=self.fake_codex)
@@ -446,7 +531,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                 )
                 self.assertEqual(
                     result["terminal_event"],
-                    {"status": "verified_applied", "terminal": True},
+                    {"status": "verified_completed", "terminal": True},
                 )
                 self.assertFalse(
                     (
@@ -465,14 +550,13 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertFalse((self.root / "must-not-install-codex").exists())
         self.assertFalse((self.root / "must-not-install-claude").exists())
 
-    def test_web_claude_leaf_delivers_one_skill_and_target_prompt_without_cli(self) -> None:
+    def test_web_claude_leaf_unit_contract_hands_one_prompt_to_delivery_adapter(self) -> None:
         engine = ActivationEngine(self.config, self.state)
         leaf = next(
             item
             for item in windows_menu_leaves(self.config_path, "%1")
             if item.pack_id == "bounded-pack"
             and item.skill_id == "bounded-answer"
-            and item.runtime == "claude"
         )
         delivered: list[tuple[str, str]] = []
         pack = self.config.packs[leaf.pack_id]
@@ -485,7 +569,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                 project=self.project,
                 pack_id=leaf.pack_id,
                 skill_id=leaf.skill_id,
-                runtime=leaf.runtime,
+                runtime="claude",
                 menu_commit=pack.expected_commit,
                 menu_skill_digest=leaf.skill_ids_digest,
                 menu_instruction_digest=leaf.instruction_digest,
@@ -505,43 +589,189 @@ class ActivationEndToEndTest(unittest.TestCase):
         with self.assertRaisesRegex(SafetyError, "already used"):
             engine.prepare_web_handoff(str(result["contract_id"]))
 
-    def test_web_codex_leaf_isolated_fail_closed_without_contract_or_delivery(self) -> None:
+    def test_web_claude_prefill_uses_new_conversation_query_without_clipboard(self) -> None:
+        prompt = "selected-skill\nTARGET_PROJECT=C:\\safe project"
+        url = web_claude_prefill_url(prompt, "https://claude.ai/new")
+        self.assertEqual(
+            url,
+            "https://claude.ai/new?q=selected-skill%0ATARGET_PROJECT%3DC%3A%5Csafe+project",
+        )
+        with (
+            mock.patch("skill_magnet.ui.os.name", "nt"),
+            mock.patch("skill_magnet.ui.webbrowser.open", return_value=True) as opened,
+        ):
+            deliver_web_claude_prompt(prompt, "https://claude.ai/new")
+        opened.assert_called_once_with(url, new=2)
+
+    def test_web_claude_prefill_fails_closed_on_limits_destination_and_open(self) -> None:
+        with self.assertRaisesRegex(SkillMagnetError, "Unexpected Web Claude destination"):
+            web_claude_prefill_url("prompt", "https://example.invalid")
+        with self.assertRaisesRegex(SkillMagnetError, "safe prefill limit"):
+            web_claude_prefill_url("x" * 8_001, "https://claude.ai/new")
+        with self.assertRaisesRegex(SkillMagnetError, "safe URL limit"):
+            web_claude_prefill_url("\U0001f680" * 2_000, "https://claude.ai/new")
+        with (
+            mock.patch("skill_magnet.ui.os.name", "nt"),
+            mock.patch("skill_magnet.ui.webbrowser.open", return_value=False),
+            self.assertRaisesRegex(SkillMagnetError, "could not be opened"),
+        ):
+            deliver_web_claude_prompt("prompt", "https://claude.ai/new")
+        with (
+            mock.patch("skill_magnet.ui.os.name", "nt"),
+            mock.patch("skill_magnet.ui.webbrowser.open", side_effect=OSError("no handler")),
+            self.assertRaisesRegex(SkillMagnetError, "could not be opened"),
+        ):
+            deliver_web_claude_prompt("prompt", "https://claude.ai/new")
+
+    def test_codex_leaf_hands_one_human_prompt_to_desktop_and_never_runs_cli(self) -> None:
         engine = ActivationEngine(self.config, self.state)
         leaf = next(
             item
             for item in windows_menu_leaves(self.config_path, "%1")
             if item.pack_id == "bounded-pack"
             and item.skill_id == "bounded-answer"
-            and item.runtime == "codex"
         )
         pack = self.config.packs[leaf.pack_id]
-        delivered: list[tuple[str, str]] = []
-        errors: list[str] = []
-        with self.assertRaisesRegex(SkillMagnetError, "No ChatGPT or terminal fallback"):
-            launch_context_leaf(
+        delivered: list[tuple[str, str, str]] = []
+        with mock.patch.object(
+            engine, "execute", side_effect=AssertionError("CLI execution is forbidden")
+        ):
+            result = launch_context_leaf(
                 engine,
                 platform="windows",
                 project=self.project,
                 pack_id=leaf.pack_id,
                 skill_id=leaf.skill_id,
-                runtime=leaf.runtime,
+                runtime="codex",
                 menu_commit=pack.expected_commit,
                 menu_skill_digest=leaf.skill_ids_digest,
                 menu_instruction_digest=leaf.instruction_digest,
                 menu_acceptance_digest=leaf.acceptance_digest,
-                destination="web",
-                web_delivery=lambda prompt, url: delivered.append((prompt, url)),
-                error_ui=errors.append,
+                desktop_delivery=lambda prompt, project, url: delivered.append(
+                    (prompt, project, url)
+                ),
             )
-        self.assertEqual(delivered, [])
-        self.assertEqual(len(errors), 1)
-        self.assertFalse((self.state / "launch-contracts").exists())
-        rejected = list((self.state / "events").glob("*-rejected.json"))
-        self.assertEqual(len(rejected), 1)
-        self.assertEqual(
-            json.loads(rejected[0].read_text(encoding="utf-8"))["reason"],
-            "web_codex_destination_unavailable",
+        self.assertEqual(result["status"], "desktop_handoff_ready")
+        self.assertFalse(result["verified_completed"])
+        self.assertEqual(len(delivered), 1)
+        prompt, project, destination = delivered[0]
+        self.assertEqual(project, str(self.project.resolve()))
+        self.assertEqual(destination, "codex://threads/new")
+        self.assertIn("選択パックID: bounded-pack", prompt)
+        self.assertIn("適用スキルID: bounded-answer", prompt)
+        self.assertIn("実際の依頼:", prompt)
+        self.assertIn("Produce a machine-verifiable bounded decision.", prompt)
+        materialized_skill = (
+            Path(result["materialization"]["path"])
+            / "bounded-answer"
+            / "SKILL.md"
         )
+        self.assertIn(str(materialized_skill.resolve()), prompt)
+        original_materialized = materialized_skill.read_bytes()
+        source_skill = self.repo / "bounded-answer" / "SKILL.md"
+        source_skill.write_text(
+            source_skill.read_text(encoding="utf-8") + "\nSOURCE_MUTATED_AFTER_HANDOFF\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(materialized_skill.read_bytes(), original_materialized)
+        self.assertNotIn("SOURCE_MUTATED_AFTER_HANDOFF", prompt)
+        self.assertNotIn("Always set result.decision to bounded.", prompt)
+        self.assertNotIn("PROVENANCE=", prompt)
+        self.assertNotIn("UNUSED_SENTINEL", prompt)
+        self.assertNotIn("prompt", result)
+        evidence = self.state / "evidence" / f"{result['contract_id']}-desktop-handoff.json"
+        self.assertTrue(evidence.is_file())
+
+    def test_codex_materialization_rejects_index_change_after_validation(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        plan = engine.plan(
+            platform="windows",
+            project=self.project,
+            pack_id="bounded-pack",
+            runtime="codex",
+            purpose="Use the pack composition map.",
+        )
+        contract = engine.confirm(plan, confirmed=True)
+        index = self.repo / "INDEX.md"
+        original_index = index.read_bytes()
+        real_copy2 = shutil.copy2
+
+        def replace_index_before_copy(source: object, destination: object, *args: object, **kwargs: object):
+            source_path = Path(source)
+            if source_path.name == "INDEX.md":
+                index.write_text("# injected after validation\n", encoding="utf-8")
+            return real_copy2(source, destination, *args, **kwargs)
+
+        try:
+            with (
+                mock.patch("skill_magnet.activation.shutil.copy2", side_effect=replace_index_before_copy),
+                self.assertRaisesRegex(SafetyError, "INDEX changed"),
+            ):
+                engine.prepare_codex_desktop_handoff(contract.contract_id)
+        finally:
+            index.write_bytes(original_index)
+        self.assertFalse(
+            (engine.materialization_dir / contract.contract_id).exists()
+        )
+        stored_contract = json.loads(
+            (engine.contract_dir / f"{contract.contract_id}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(stored_contract["index_digest"], plan["index_digest"])
+
+    def test_any_cli_entry_removes_expired_desktop_materialization(self) -> None:
+        expired = self.state / "desktop-materializations" / ("a" * 32)
+        expired.mkdir(parents=True)
+        (expired / "materialization.json").write_text(
+            json.dumps(
+                {
+                    "expires_at": (
+                        datetime.now(timezone.utc) - timedelta(minutes=1)
+                    ).isoformat()
+                }
+            ),
+            encoding="utf-8",
+        )
+        with redirect_stdout(io.StringIO()):
+            result = cli_main(
+                [
+                    "--config",
+                    str(self.config_path),
+                    "--state-dir",
+                    str(self.state),
+                    "packs",
+                ]
+            )
+        self.assertEqual(result, 0)
+        self.assertFalse(expired.exists())
+
+    def test_codex_desktop_deep_link_encodes_japanese_newlines_reserved_and_long_text(self) -> None:
+        prompt = "日本語\n空 白 & # ? = " + ("長文" * 1_000)
+        project = r"C:\Projects\日本語 & # folder"
+        url = codex_desktop_deep_link(prompt, project, "codex://threads/new")
+        self.assertTrue(url.startswith("codex://threads/new?path="))
+        self.assertIn("%0A", url)
+        self.assertIn("%26", url)
+        self.assertIn("%23", url)
+        self.assertIn("%20", url)
+        from urllib.parse import parse_qs, urlsplit
+
+        decoded = parse_qs(urlsplit(url).query)
+        self.assertEqual(decoded["path"], [project])
+        self.assertEqual(decoded["prompt"], [prompt])
+
+    def test_codex_desktop_delivery_uses_windows_protocol_handler(self) -> None:
+        with (
+            mock.patch("skill_magnet.ui.os.name", "nt"),
+            mock.patch("skill_magnet.ui.os.startfile", create=True) as opened,
+        ):
+            deliver_codex_desktop_prompt(
+                "依頼 & #", r"C:\Projects\対象 path", "codex://threads/new"
+            )
+        url = opened.call_args.args[0]
+        self.assertIn("path=C%3A%5CProjects%5C", url)
+        self.assertIn("prompt=%E4%BE%9D%E9%A0%BC%20%26%20%23", url)
 
     @unittest.skipUnless(sys.platform == "win32", "Windows cmd wrapper contract")
     def test_windows_cmd_runtime_preserves_special_project_as_one_argv(self) -> None:
@@ -551,14 +781,14 @@ class ActivationEndToEndTest(unittest.TestCase):
         script.write_text(
             "import json, pathlib, sys\n"
             "args = sys.argv[1:]\n"
-            f"assert args[args.index('--cd') + 1] == {str(special_project)!r}\n"
+            f"assert args[args.index('--cd') + 1] == {str(special_project.resolve())!r}\n"
             "prompt = sys.stdin.read() if args[-1] == '-' else args[-1]\n"
             "line = next(x for x in prompt.splitlines() if x.startswith('PROVENANCE='))\n"
             "provenance = json.loads(line.split('=', 1)[1])\n"
             "output_path = pathlib.Path(args[args.index('--output-last-message') + 1])\n"
-            "output_path.write_text(json.dumps({'evidence': {**provenance, "
+            "output_path.write_text(json.dumps({'evidence': {**provenance, 'completed_skill_ids': provenance['skill_ids'], 'skill_execution_status': 'completed', "
             "'applied_rules': ['bounded-answer:result.decision=bounded']}, "
-            "'result': {'decision': 'bounded'}}), encoding='utf-8')\n",
+            "'result': {'task_output': 'deliverable', 'decision': 'bounded'}}), encoding='utf-8')\n",
             encoding="utf-8",
         )
         wrapper = self.root / "fake_codex.cmd"
@@ -578,7 +808,7 @@ class ActivationEndToEndTest(unittest.TestCase):
         contract = engine.confirm(plan, confirmed=True)
         result = engine.execute(contract.contract_id, codex_executable=str(wrapper))
 
-        self.assertEqual(result["status"], "verified_applied")
+        self.assertEqual(result["status"], "verified_completed")
         self.assertEqual(result["output"]["result"]["decision"], "bounded")
 
     def test_user_confirmation_is_mandatory(self) -> None:
@@ -681,8 +911,8 @@ class ActivationEndToEndTest(unittest.TestCase):
             "a=sys.argv[1:]; p=sys.stdin.read() if a[-1]=='-' else a[-1]; line=next(x for x in p.splitlines() "
             "if x.startswith('PROVENANCE=')); e=json.loads(line.split('=',1)[1]); "
             "o=pathlib.Path(a[a.index('--output-last-message')+1]); "
-            "o.write_text(json.dumps({'evidence':{**e,'applied_rules':['claimed']},"
-            "'result':{'decision':'unbounded'}}),encoding='utf-8')\n",
+            "o.write_text(json.dumps({'evidence':{**e,'completed_skill_ids':e['skill_ids'],'skill_execution_status':'completed','applied_rules':['claimed']},"
+            "'result':{'task_output':'deliverable','decision':'unbounded'}}),encoding='utf-8')\n",
             encoding="utf-8",
         )
         bad = (sys.executable, str(bad_script))
@@ -774,12 +1004,16 @@ class ActivationEndToEndTest(unittest.TestCase):
 
     def test_new_public_entry_recovers_interruption_exactly_once(self) -> None:
         engine = ActivationEngine(self.config, self.state)
-        leaf = next(
-            item
-            for item in windows_menu_leaves(self.config_path, "%1")
-            if item.pack_id == "bounded-pack"
-            and item.skill_id == "bounded-answer"
-            and item.runtime == "codex"
+        contract = engine.confirm(
+            engine.plan(
+                platform="windows",
+                project=self.project,
+                pack_id="bounded-pack",
+                runtime="codex",
+                purpose="forced interruption",
+                skill_id="bounded-answer",
+            ),
+            confirmed=True,
         )
         original_run = subprocess.run
 
@@ -794,17 +1028,8 @@ class ActivationEndToEndTest(unittest.TestCase):
             side_effect=interrupt_codex,
         ):
             with self.assertRaises(KeyboardInterrupt):
-                launch_context_leaf(
-                    engine,
-                    platform="windows",
-                    project=self.project,
-                    pack_id=leaf.pack_id,
-                    skill_id=leaf.skill_id,
-                    runtime=leaf.runtime,
-                    menu_commit=self.commit,
-                    menu_skill_digest=leaf.skill_ids_digest,
-                    menu_instruction_digest=leaf.instruction_digest,
-                    menu_acceptance_digest=leaf.acceptance_digest,
+                engine.execute(
+                    contract.contract_id,
                     codex_executable=self.fake_codex,
                 )
 
@@ -908,12 +1133,12 @@ class ActivationEndToEndTest(unittest.TestCase):
             "a=sys.argv[1:]; p=sys.stdin.read(); "
             "e=json.loads(next(x for x in p.splitlines() if x.startswith('PROVENANCE=')).split('=',1)[1]); "
             "pathlib.Path(a[a.index('--output-last-message')+1]).write_text("
-            "json.dumps({'evidence':{**e,'applied_rules':['bounded-answer:wrong']},"
-            "'result':{'decision':'wrong'}}), encoding='utf-8')\n",
+            "json.dumps({'evidence':{**e,'completed_skill_ids':e['skill_ids'],'skill_execution_status':'completed','applied_rules':['bounded-answer:wrong']},"
+            "'result':{'task_output':'deliverable','decision':'wrong'}}), encoding='utf-8')\n",
             encoding="utf-8",
         )
         table = (
-            ("success", "verified_applied", True, False, False, True),
+            ("success", "verified_completed", True, False, False, True),
             ("preflight", "rejected", False, False, True, True),
             ("launch", "launch_failed", True, True, False, True),
             ("output", "output_failed", True, True, False, True),
@@ -1025,7 +1250,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                     self.assertEqual(
                         list((state / "evidence").glob("*-events.jsonl")), []
                     )
-                if status == "verified_applied":
+                if status == "verified_completed":
                     self.assertEqual(len(verified), 1)
                     payload = json.loads(verified[0].read_text(encoding="utf-8"))
                 elif status == "rejected":
@@ -1043,8 +1268,8 @@ class ActivationEndToEndTest(unittest.TestCase):
             "a=sys.argv[1:]; p=sys.stdin.read(); line=next(x for x in p.splitlines() "
             "if x.startswith('PROVENANCE=')); e=json.loads(line.split('=',1)[1]); "
             "o=pathlib.Path(a[a.index('--output-last-message')+1]); "
-            "o.write_text(json.dumps({'evidence':{**e,'applied_rules':['generic rule']},"
-            "'result':{'decision':'bounded'}}),encoding='utf-8')\n",
+            "o.write_text(json.dumps({'evidence':{**e,'completed_skill_ids':e['skill_ids'],'skill_execution_status':'completed','applied_rules':['generic rule']},"
+            "'result':{'task_output':'deliverable','decision':'bounded'}}),encoding='utf-8')\n",
             encoding="utf-8",
         )
         engine = ActivationEngine(self.config, self.state)
@@ -1062,6 +1287,210 @@ class ActivationEndToEndTest(unittest.TestCase):
             ).is_file()
         )
 
+    def test_missing_skill_completion_evidence_never_reaches_terminal_success(self) -> None:
+        script = self.root / "missing_completion_codex.py"
+        script.write_text(
+            "import json, pathlib, sys\n"
+            "a=sys.argv[1:]; p=sys.stdin.read(); e=json.loads(next(x for x in p.splitlines() "
+            "if x.startswith('PROVENANCE=')).split('=',1)[1]); "
+            "o=pathlib.Path(a[a.index('--output-last-message')+1]); "
+            "o.write_text(json.dumps({'evidence':{**e,'applied_rules':['bounded-answer:bounded']},"
+            "'result':{'task_output':'deliverable','decision':'bounded'}}),encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        engine = ActivationEngine(self.config, self.state)
+        contract = engine.confirm(self._plan(engine), confirmed=True)
+        with self.assertRaisesRegex(SafetyError, "Completed skill IDs"):
+            engine.execute(
+                contract.contract_id,
+                codex_executable=(sys.executable, str(script)),
+            )
+        lifecycle = self.state / "events" / f"{contract.contract_id}-lifecycle.jsonl"
+        self.assertNotIn("verified_completed", lifecycle.read_text(encoding="utf-8"))
+
+    def test_completion_contract_rejects_each_mismatched_claim(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        contract = engine.confirm(self._plan(engine), confirmed=True)
+        pack, _, _, _ = engine._validated_pack(contract.pack_id)
+        checks = engine._load_acceptance(pack, contract.skill_ids)
+        request_sha256 = hashlib.sha256(contract.purpose.encode("utf-8")).hexdigest()
+        base = {
+            "evidence": {
+                "pack_id": contract.pack_id,
+                "repository_url": contract.repository_url,
+                "commit_sha": contract.commit_sha,
+                "approved_by": contract.approved_by,
+                "approved_at": contract.approved_at,
+                "skill_ids": list(contract.skill_ids),
+                "instruction_digest": contract.instruction_digest,
+                "challenge_nonce": contract.nonce,
+                "actual_request_sha256": request_sha256,
+                "completed_skill_ids": list(contract.skill_ids),
+                "skill_execution_status": "completed",
+                "applied_rules": ["bounded-answer:result.decision=bounded"],
+            },
+            "result": {"task_output": "deliverable", "decision": "bounded"},
+        }
+
+        cases = (
+            (
+                "selected skill",
+                "Completed skill IDs",
+                lambda value: value["evidence"].update(completed_skill_ids=[]),
+            ),
+            (
+                "completed status",
+                "did not report completion",
+                lambda value: value["evidence"].update(
+                    skill_execution_status="pending"
+                ),
+            ),
+            (
+                "actual request",
+                "targets a different request",
+                lambda value: value["evidence"].update(
+                    actual_request_sha256="0" * 64
+                ),
+            ),
+            (
+                "task output",
+                "deliverable is empty",
+                lambda value: value["result"].update(task_output="   "),
+            ),
+            (
+                "skill acceptance",
+                "Skill-specific acceptance failed",
+                lambda value: value["result"].update(decision="wrong"),
+            ),
+            (
+                "applied rule identity",
+                "does not identify selected skill",
+                lambda value: value["evidence"].update(
+                    applied_rules=["rule mentions bounded-answer"]
+                ),
+            ),
+        )
+        for label, message, mutate in cases:
+            with self.subTest(label=label):
+                output = json.loads(json.dumps(base))
+                mutate(output)
+                with self.assertRaisesRegex(SafetyError, message):
+                    engine._verify(contract, output, checks, "prompt-digest")
+
+    def test_codex_output_schema_requires_every_declared_property(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        contract = engine.confirm(self._plan(engine), confirmed=True)
+        pack, _, _, _ = engine._validated_pack(contract.pack_id)
+        checks = engine._load_acceptance(pack, contract.skill_ids)
+        schema = engine._output_schema(contract, checks)
+
+        for section in ("evidence", "result"):
+            object_schema = schema["properties"][section]
+            self.assertEqual(
+                set(object_schema["required"]), set(object_schema["properties"])
+            )
+        self.assertIn("saved_paths", schema["properties"]["result"]["required"])
+        self.assertIn("changes", schema["properties"]["result"]["required"])
+        diagnostic = _runtime_failure_diagnostic(
+            1,
+            "invalid_json_schema token=sk-secret-value Missing 'changes'",
+        )
+        self.assertEqual(diagnostic["failure_class"], "invalid_output_schema")
+        self.assertEqual(
+            diagnostic["stderr_summary"],
+            "Codex rejected the verification output schema.",
+        )
+        self.assertNotIn("sk-secret-value", json.dumps(diagnostic))
+
+    def test_package_reads_all_skills_but_verifies_only_applied_subset(self) -> None:
+        raw_config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        raw_config["packs"].append(
+            {
+                "id": "composition-pack",
+                "selection_kind": "package",
+                "repo_url": "https://github.com/my-owner/separate-skill-repo.git",
+                "expected_commit": self.commit,
+                "source": str(self.repo),
+                "skills": ["bounded-answer", "unused-skill"],
+                "approved_by": "test-user",
+                "approved_at": "2026-08-22T00:00:00+00:00",
+                "purpose": "Route the request through the applicable subset.",
+            }
+        )
+        package_config_path = self.root / "package-config.json"
+        package_config_path.write_text(json.dumps(raw_config), encoding="utf-8")
+        engine = ActivationEngine(Config.load(package_config_path), self.state)
+        plan = engine.plan(
+            platform="windows",
+            project=self.project,
+            pack_id="composition-pack",
+            runtime="codex",
+            purpose="Make only the bounded decision",
+        )
+        contract = engine.confirm(plan, confirmed=True)
+        pack, _, _, _ = engine._validated_pack(contract.pack_id)
+        checks = engine._load_acceptance(pack, contract.skill_ids)
+        schema = engine._output_schema(contract, checks)
+        self.assertEqual(schema["properties"]["evidence"]["properties"]
+                         ["completed_skill_ids"]["minItems"], 1)
+        self.assertIn(
+            {"type": "null"},
+            schema["properties"]["result"]["properties"]["unused"]["anyOf"],
+        )
+        output = {
+            "evidence": {
+                "pack_id": contract.pack_id,
+                "repository_url": contract.repository_url,
+                "commit_sha": contract.commit_sha,
+                "approved_by": contract.approved_by,
+                "approved_at": contract.approved_at,
+                "skill_ids": list(contract.skill_ids),
+                "instruction_digest": contract.instruction_digest,
+                "challenge_nonce": contract.nonce,
+                "actual_request_sha256": hashlib.sha256(
+                    contract.purpose.encode("utf-8")
+                ).hexdigest(),
+                "completed_skill_ids": ["bounded-answer"],
+                "skill_execution_status": "completed",
+                "applied_rules": ["bounded-answer:result.decision=bounded"],
+            },
+            "result": {
+                "task_output": "bounded",
+                "saved_paths": [],
+                "changes": [],
+                "decision": "bounded",
+                "unused": None,
+            },
+        }
+        verified = engine._verify(contract, output, checks, "prompt-digest")
+        self.assertEqual(
+            verified["skill_execution_completion_evidence"]["completed_skill_ids"],
+            ["bounded-answer"],
+        )
+        self.assertEqual(
+            engine._user_result(contract, pack, output)["executed_skill"],
+            "bounded-answer",
+        )
+        output["result"]["unused"] = True
+        with self.assertRaisesRegex(SafetyError, "Unapplied skill claimed"):
+            engine._verify(contract, output, checks, "prompt-digest")
+        output["evidence"]["completed_skill_ids"] = ["unused-skill"]
+        output["evidence"]["applied_rules"] = ["unused-skill:result.unused=true"]
+        output["result"]["decision"] = None
+        with self.assertRaisesRegex(SafetyError, "dependency is missing"):
+            engine._verify(contract, output, checks, "prompt-digest")
+        output["evidence"]["completed_skill_ids"] = [
+            "bounded-answer",
+            "unused-skill",
+        ]
+        output["evidence"]["applied_rules"] = [
+            "bounded-answer:result.decision=bounded",
+            "unused-skill:result.unused=true",
+        ]
+        output["result"]["decision"] = "bounded"
+        with self.assertRaisesRegex(SafetyError, "Contrasting skills"):
+            engine._verify(contract, output, checks, "prompt-digest")
+
     def test_wrong_challenge_nonce_is_not_read_evidence(self) -> None:
         script = self.root / "wrong_nonce_codex.py"
         script.write_text(
@@ -1070,8 +1499,8 @@ class ActivationEndToEndTest(unittest.TestCase):
             "if x.startswith('PROVENANCE=')); e=json.loads(line.split('=',1)[1]); "
             "e['challenge_nonce']='stale'; "
             "o=pathlib.Path(a[a.index('--output-last-message')+1]); "
-            "o.write_text(json.dumps({'evidence':{**e,'applied_rules':['claimed']},"
-            "'result':{'decision':'bounded'}}),encoding='utf-8')\n",
+            "o.write_text(json.dumps({'evidence':{**e,'completed_skill_ids':e['skill_ids'],'skill_execution_status':'completed','applied_rules':['claimed']},"
+            "'result':{'task_output':'deliverable','decision':'bounded'}}),encoding='utf-8')\n",
             encoding="utf-8",
         )
         engine = ActivationEngine(self.config, self.state)
@@ -1099,74 +1528,44 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertIn("macos_finder", macos["integration"])
         registration = render_registration("windows", self.config_path)
         self.assertIn("HKEY_CURRENT_USER", registration)
-        self.assertIn("Pack: bounded-pack", registration)
-        self.assertIn("Skill: bounded-answer", registration)
-        self.assertIn('"MUIVerb"="Codex"', registration)
-        self.assertIn('"MUIVerb"="Claude"', registration)
+        self.assertIn("--pack bounded-pack", registration)
+        self.assertIn('"MUIVerb"="bounded-answer"', registration)
         self.assertIn("Finder Quick Action", render_registration("macos", self.config_path))
 
     def test_windows_individual_skill_leaves_fix_skill_runtime_and_digests(self) -> None:
         leaves = windows_menu_leaves(self.config_path, "%V")
-        self.assertEqual(len(leaves), 4)
+        self.assertEqual(len(leaves), 2)
         self.assertEqual(
-            {(leaf.pack_id, leaf.skill_id, leaf.runtime) for leaf in leaves},
+            {(leaf.pack_id, leaf.skill_id) for leaf in leaves},
             {
-                ("bounded-pack", "bounded-answer", "codex"),
-                ("bounded-pack", "bounded-answer", "claude"),
-                ("unused-pack", "unused-skill", "codex"),
-                ("unused-pack", "unused-skill", "claude"),
+                ("bounded-pack", "bounded-answer"),
+                ("unused-pack", "unused-skill"),
             },
         )
         for leaf in leaves:
             self.assertIn("--pack", leaf.command)
             self.assertIn("--skill", leaf.command)
-            self.assertIn("--runtime", leaf.command)
+            self.assertNotIn("--runtime", leaf.command)
             self.assertIn("--menu-commit", leaf.command)
             self.assertIn("--menu-skill-digest", leaf.command)
             self.assertIn("--menu-instruction-digest", leaf.command)
             self.assertIn("--menu-acceptance-digest", leaf.command)
             self.assertEqual(leaf.pack_label, f"Pack: {leaf.pack_id}")
-            self.assertEqual(leaf.skill_label, f"Skill: {leaf.skill_id}")
+            self.assertEqual(leaf.skill_label, leaf.skill_id)
 
-    def test_product_menu_has_all_nine_individual_skills_and_no_pack_leaf(self) -> None:
+    def test_product_menu_has_one_pack_leaf_bound_to_all_nine_skills(self) -> None:
         product_config = Path(__file__).resolve().parents[1] / "skill-magnet.json"
         leaves = windows_menu_leaves(product_config, "%1")
-        expected_digests = {
-            "codex-auth-boundary-selection": ("90c8229b22400e8e08f31cd4b7d808fafe808bd35fa1d72235f40da7db1f072e", "a993d08c8dfd9e4739bd9e6150772e2c45a67c40778d0051a35ceecdad27d92d"),
-            "codex-bounded-subagents": ("48094148e2ff65d16636a69b40e6ece8ce23361b308547b867d40d50a3a40c15", "da393eec33b11f8d32dfb5fc68b744847f996e69d29cc9921708272d7eea1e47"),
-            "codex-ci-patch-handoff": ("47bf82785f32845faefc6df75c8c0bec925e8b592b6d0eebd93264f833f404db", "8b888999ad3cda87853e1f346a5386ac2adeca1230ab0cc00da70ab618e2a4b8"),
-            "codex-context-entry-routing": ("d2bf420e41bcd807761ddcdfb90f9f0580bbf362f6ea66290b28fb6ef7656220", "414b8020359e9524c99b6f33fcb90e97149fb8fff5ec936576acff0bd8ccdea6"),
-            "codex-egress-surface-governance": ("d28c14f3d3b8ad732a9b65860f6712026988ec01c13da90725bade110ce4bf54", "928ab2a7112a4e3620fe373e170d64b2dc9490afcfe0822d66687bd404c178db"),
-            "codex-exec-io-contract": ("0ea30bdcfa9b75fc5a2914d112f026c00d8b9619416f0adf9b46da36d36072bc", "4df5b00136f7456a67761f910cc93e31b57cf6b9fc7621b607dc2a3ac765862d"),
-            "codex-execution-mode-routing": ("173efc6e251be04266dcea9ab44bb2390337f6dec267881a1f5565fecd0754c0", "f63c268df7677d9f051d47aec7476961e55694d50a7b738dbc02236cf838fea8"),
-            "codex-mcp-control-plane": ("e48a4464a30a1f0c18dc81052353918b183b6d89f91f6b1f2569e0496a40ed53", "4decbc6a5661eba06007372c0969a88c61afc15fa57f7471c11b63b6c8f1483e"),
-            "codex-sandbox-approval-boundary": ("e7a9def6a153946f6481412362ee7afaac99552ee7d7d9096b51a788887b0c05", "b4df1deeebf2a0cfa03e93c19a59a90457f39279c51bf56d3ecc5003592e386d"),
-        }
-        self.assertEqual(len(leaves), 18)
-        self.assertEqual({leaf.skill_id for leaf in leaves}, set(expected_digests))
-        self.assertTrue(
-            all(
-                {leaf.runtime for leaf in leaves if leaf.skill_id == skill_id}
-                == {"codex", "claude"}
-                for skill_id in {leaf.skill_id for leaf in leaves}
-            )
-        )
-        for leaf in leaves:
-            self.assertEqual(
-                (leaf.instruction_digest, leaf.acceptance_digest),
-                expected_digests[leaf.skill_id],
-            )
-            self.assertEqual(
-                leaf.command[leaf.command.index("--skill") + 1], leaf.skill_id
-            )
-            self.assertEqual(
-                leaf.command[leaf.command.index("--menu-instruction-digest") + 1],
-                leaf.instruction_digest,
-            )
-            self.assertEqual(
-                leaf.command[leaf.command.index("--menu-acceptance-digest") + 1],
-                leaf.acceptance_digest,
-            )
+        self.assertEqual(len(leaves), 1)
+        leaf = leaves[0]
+        self.assertEqual(leaf.pack_id, "codex-delivery-assurance")
+        self.assertIsNone(leaf.skill_id)
+        self.assertEqual(len(leaf.skill_ids), 9)
+        self.assertEqual(leaf.display_name, "Delivery Assurance")
+        self.assertNotIn("--skill", leaf.command)
+        self.assertNotIn("--runtime", leaf.command)
+        self.assertIn("--menu-instruction-digest", leaf.command)
+        self.assertIn("--menu-acceptance-digest", leaf.command)
         for root_name, entry_builder in (
             ("Directory", windows_directory_registry_entries),
             ("Background", windows_background_registry_entries),
@@ -1176,52 +1575,51 @@ class ActivationEndToEndTest(unittest.TestCase):
                 command_keys = [
                     key for key, _, _ in entries if key.endswith(r"\command")
                 ]
-                self.assertEqual(len(command_keys), 18)
+                self.assertEqual(len(command_keys), 1)
                 self.assertTrue(
                     all(
-                        r"\shell\skill-" in key and r"\shell\runtime-" in key
+                        r"\shell\leaf-" in key
+                        and r"\shell\skill-" not in key
+                        and r"\shell\runtime-" not in key
+                        and r"\shell\pack-" not in key
                         for key in command_keys
                     )
                 )
-                skill_labels = {
+                pack_labels = {
                     value
                     for _, name, value in entries
-                    if name == "MUIVerb" and value.startswith("Skill: ")
+                    if name == "MUIVerb" and value != "Skill Magnet"
                 }
                 self.assertEqual(
-                    skill_labels,
-                    {f"Skill: {skill_id}" for skill_id in expected_digests},
+                    pack_labels,
+                    {leaf.display_name for leaf in leaves},
                 )
 
-    def test_both_roots_propagate_one_skill_contract_and_reject_leaf_tampering(self) -> None:
+    def test_both_roots_propagate_complete_pack_contract_and_reject_tampering(self) -> None:
         product_config = Path(__file__).resolve().parents[1] / "skill-magnet.json"
         config = Config.load(product_config)
-        purpose = config.packs["codex-pmo-skills"].purpose
+        purpose = config.packs["codex-delivery-assurance"].purpose
         cases = (("Directory", "%1"), ("Background", "%V"))
         for root_name, placeholder in cases:
             with self.subTest(root=root_name):
-                state = self.root / f"individual-contract-{root_name}"
+                state = self.root / f"pack-contract-{root_name}"
                 engine = ActivationEngine(config, state)
-                leaf = next(
-                    item
-                    for item in windows_menu_leaves(product_config, placeholder)
-                    if item.skill_id == "codex-auth-boundary-selection"
-                    and item.runtime == "codex"
-                )
+                leaf = windows_menu_leaves(product_config, placeholder)[0]
                 details = context_selection_details(
                     engine,
                     project=self.project,
                     pack_id=leaf.pack_id,
-                    skill_id=leaf.skill_id,
-                    runtime=leaf.runtime,
+                    runtime="codex",
                     menu_commit=config.packs[leaf.pack_id].expected_commit,
                     menu_skill_digest=leaf.skill_ids_digest,
                     menu_instruction_digest=leaf.instruction_digest,
                     menu_acceptance_digest=leaf.acceptance_digest,
                 )
-                self.assertEqual(details["selection_kind"], "skill")
-                self.assertEqual(details["selected_skill_id"], leaf.skill_id)
-                self.assertEqual(details["skill_ids"], (leaf.skill_id,))
+                self.assertEqual(details["selection_kind"], "pack")
+                self.assertIsNone(details["selected_skill_id"])
+                self.assertEqual(details["skill_ids"], config.packs[leaf.pack_id].skills)
+                self.assertEqual(details["skill_display_name"], "Delivery Assurance")
+                self.assertEqual(len(details["all_skill_ids"]), 9)
                 self.assertEqual(details["instruction_digest"], leaf.instruction_digest)
                 self.assertEqual(details["acceptance_digest"], leaf.acceptance_digest)
                 self.assertEqual(details["runtime"], "codex")
@@ -1236,37 +1634,26 @@ class ActivationEndToEndTest(unittest.TestCase):
                 )
                 self.assertIsNotNone(contract)
                 assert contract is not None
-                self.assertEqual(contract.selection_kind, "skill")
-                self.assertEqual(contract.selected_skill_id, leaf.skill_id)
-                self.assertEqual(contract.skill_ids, (leaf.skill_id,))
-                self.assertEqual(contract.instruction_digest, leaf.instruction_digest)
-                self.assertEqual(
-                    contract.acceptance_digests,
-                    {leaf.skill_id: leaf.acceptance_digest},
-                )
+                self.assertEqual(contract.selection_kind, "pack")
+                self.assertIsNone(contract.selected_skill_id)
+                self.assertEqual(contract.skill_ids, config.packs[leaf.pack_id].skills)
+                self.assertEqual(len(contract.acceptance_digests), 9)
                 self.assertEqual(contract.runtime, "codex")
                 self.assertEqual(contract.commit_sha, config.packs[leaf.pack_id].expected_commit)
                 self.assertEqual(contract.purpose, purpose)
 
-        selected, other = (
-            item
-            for item in windows_menu_leaves(product_config, "%1")
-            if item.runtime == "codex"
-            and item.skill_id
-            in {"codex-auth-boundary-selection", "codex-bounded-subagents"}
-        )
-        engine = ActivationEngine(config, self.root / "tampered-individual-contract")
+        selected = windows_menu_leaves(product_config, "%1")[0]
+        engine = ActivationEngine(config, self.root / "tampered-pack-contract")
         common = {
             "project": self.project,
             "pack_id": selected.pack_id,
-            "skill_id": selected.skill_id,
             "runtime": "codex",
             "menu_commit": config.packs[selected.pack_id].expected_commit,
             "menu_skill_digest": selected.skill_ids_digest,
         }
         for field, value, reason in (
-            ("menu_instruction_digest", other.instruction_digest, "instructions"),
-            ("menu_acceptance_digest", other.acceptance_digest, "acceptance"),
+            ("menu_instruction_digest", "0" * 64, "instructions"),
+            ("menu_acceptance_digest", "0" * 64, "acceptance"),
             ("menu_commit", "0" * 40, "version"),
         ):
             with self.subTest(tamper=field):
@@ -1278,10 +1665,10 @@ class ActivationEndToEndTest(unittest.TestCase):
                 }
                 with self.assertRaisesRegex(Exception, reason):
                     context_selection_details(engine, **values)
-        with self.assertRaisesRegex(Exception, "Unknown skill"):
+        with self.assertRaisesRegex(Exception, "complete package"):
             context_selection_details(
                 engine,
-                **{**common, "skill_id": "not-in-pack"},
+                **{**common, "skill_id": "codex-auth-boundary-selection"},
                 menu_instruction_digest=selected.instruction_digest,
                 menu_acceptance_digest=selected.acceptance_digest,
             )
@@ -1301,17 +1688,17 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertIsNotNone(claude_contract)
         self.assertEqual(claude_contract.runtime, "claude")
 
-    def test_explicit_individual_leaf_success_is_silent_verified_and_clean(self) -> None:
+    def test_explicit_individual_leaf_is_silent_desktop_handoff_and_clean(self) -> None:
         leaf = next(
             item
             for item in windows_menu_leaves(self.config_path, "%1")
             if item.pack_id == "bounded-pack"
             and item.skill_id == "bounded-answer"
-            and item.runtime == "codex"
         )
         engine = ActivationEngine(self.config, self.state)
         stdout = io.StringIO()
         stderr = io.StringIO()
+        delivered: list[tuple[str, str, str]] = []
         with redirect_stdout(stdout), redirect_stderr(stderr):
             result = launch_context_leaf(
                 engine,
@@ -1319,21 +1706,25 @@ class ActivationEndToEndTest(unittest.TestCase):
                 project=self.project,
                 pack_id=leaf.pack_id,
                 skill_id=leaf.skill_id,
-                runtime=leaf.runtime,
+                runtime="codex",
                 menu_commit=self.commit,
                 menu_skill_digest=leaf.skill_ids_digest,
                 menu_instruction_digest=leaf.instruction_digest,
                 menu_acceptance_digest=leaf.acceptance_digest,
-                codex_executable=self.fake_codex,
+                desktop_delivery=lambda prompt, project, destination: delivered.append(
+                    (prompt, project, destination)
+                ),
             )
         self.assertEqual(stdout.getvalue(), "")
         self.assertEqual(stderr.getvalue(), "")
-        self.assertEqual(result["status"], "verified_applied")
-        self.assertEqual(result["skill_read_evidence"]["skill_ids"], ["bounded-answer"])
+        self.assertEqual(result["status"], "desktop_handoff_ready")
+        self.assertFalse(result["verified_completed"])
+        self.assertEqual(result["skill_ids"], ["bounded-answer"])
         self.assertEqual(
-            set(result["skill_specific_application_evidence"]), {"bounded-answer"}
+            result["terminal_event"],
+            {"status": "desktop_handoff_ready", "terminal": False},
         )
-        self.assertEqual(result["terminal_event"]["status"], "verified_applied")
+        self.assertEqual(len(delivered), 1)
         contract_id = result["contract_id"]
         lifecycle = self.state / "events" / f"{contract_id}-lifecycle.jsonl"
         lifecycle_events = [
@@ -1346,12 +1737,12 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertEqual(
             lifecycle_events[0]["terminal_event_id"], result["terminal_event_id"]
         )
-        self.assertEqual(lifecycle_events[0]["status"], "verified_applied")
+        self.assertEqual(lifecycle_events[0]["status"], "desktop_handoff_ready")
         self.assertTrue(
             (self.state / "launch-contracts" / f"{contract_id}.json").is_file()
         )
         self.assertTrue(
-            (self.state / "evidence" / f"{contract_id}-verified.json").is_file()
+            (self.state / "evidence" / f"{contract_id}-desktop-handoff.json").is_file()
         )
         self.assertEqual(
             list((self.state / "evidence").glob(f"{contract_id}-schema.json")), []
@@ -1372,14 +1763,13 @@ class ActivationEndToEndTest(unittest.TestCase):
             for item in windows_menu_leaves(self.config_path, "%1")
             if item.pack_id == "bounded-pack"
             and item.skill_id == "bounded-answer"
-            and item.runtime == "codex"
         )
         base = {
             "platform": "windows",
             "project": self.project,
             "pack_id": leaf.pack_id,
             "skill_id": leaf.skill_id,
-            "runtime": leaf.runtime,
+            "runtime": "codex",
             "menu_commit": self.commit,
             "menu_skill_digest": leaf.skill_ids_digest,
             "menu_instruction_digest": leaf.instruction_digest,
@@ -1441,7 +1831,8 @@ class ActivationEndToEndTest(unittest.TestCase):
 
     def test_source_head_drift_error_includes_safe_update_gate(self) -> None:
         message = context_error_message(
-            "Pack HEAD is not the pinned expected_commit: expected old, got new"
+            "Pack HEAD is not the pinned expected_commit: expected old, got new",
+            language="en",
         )
         for required in (
             "review and approve",
@@ -1452,13 +1843,118 @@ class ActivationEndToEndTest(unittest.TestCase):
         ):
             self.assertIn(required, message)
 
+    def test_context_ui_defaults_to_japanese_and_switches_to_english(self) -> None:
+        self.assertEqual(context_ui_text("unknown", "language"), "言語")
+        self.assertEqual(context_ui_text("ja", "target_ai"), "実行先AI")
+        self.assertEqual(context_ui_text("en", "target_ai"), "Target AI")
+        self.assertIn("空欄", context_ui_request_error("ja", "  "))
+        self.assertIn("empty", context_ui_request_error("en", "\t"))
+        self.assertIsNone(context_ui_request_error("ja", "同じ依頼"))
+
+    def test_context_ui_confirmation_preserves_request_and_internal_values(self) -> None:
+        details = {
+            "selection_kind": "skill",
+            "selected_skill_id": "bounded-answer",
+            "pack_id": "bounded-pack",
+            "skill_ids": ("bounded-answer",),
+            "repository_url": "https://example.test/pack.git",
+            "expected_commit": "abc123",
+            "runtime": "codex",
+            "project": r"C:\Projects\対象",
+        }
+        purpose = "入力中の actual request / keep exactly"
+        japanese = context_ui_confirmation("ja", details, purpose)
+        english = context_ui_confirmation("en", details, purpose)
+        for rendered in (japanese, english):
+            self.assertIn(purpose, rendered)
+            self.assertIn("bounded-answer", rendered)
+            self.assertIn(r"C:\Projects\対象", rendered)
+        self.assertIn("実際の依頼", japanese)
+        self.assertIn("Actual request", english)
+
+    def test_context_display_normalizes_only_u0020_numeric_references(self) -> None:
+        details = {
+            "selection_kind": "skill",
+            "selected_skill_id": "bounded-answer",
+            "pack_id": "bounded-pack",
+            "skill_ids": ("bounded-answer",),
+            "repository_url": "https://example.test/pack.git",
+            "expected_commit": "abc123",
+            "runtime": "codex",
+            "project": r"C:\Projects\target",
+        }
+        actual_request = "（鬼レビュー対応）&#x20;&lt;保持&gt;&amp;#x20;"
+
+        rendered = context_ui_confirmation("ja", details, actual_request)
+
+        self.assertNotIn("&#x20;", rendered)
+        self.assertIn("（鬼レビュー対応） &lt;保持&gt;&amp;#x20;", rendered)
+        self.assertEqual(
+            actual_request, "（鬼レビュー対応）&#x20;&lt;保持&gt;&amp;#x20;"
+        )
+
+    def test_context_contract_keeps_entity_bearing_actual_request_exact(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        leaf = next(
+            item
+            for item in windows_menu_leaves(self.config_path, str(self.project))
+            if item.pack_id == "bounded-pack"
+            and item.skill_id == "bounded-answer"
+        )
+        details = context_selection_details(
+            engine,
+            project=self.project,
+            pack_id=leaf.pack_id,
+            skill_id=leaf.skill_id,
+            runtime="codex",
+            menu_commit=self.commit,
+            menu_skill_digest=leaf.skill_ids_digest,
+            menu_instruction_digest=leaf.instruction_digest,
+            menu_acceptance_digest=leaf.acceptance_digest,
+        )
+        actual_request = "（鬼レビュー対応）&#x20;&lt;保持&gt;"
+
+        contract = confirm_context_selection(
+            engine,
+            platform="windows",
+            details=details,
+            purpose=actual_request,
+            confirmed=True,
+        )
+
+        self.assertIsNotNone(contract)
+        self.assertEqual(contract.purpose, actual_request)
+
+    def test_menu_display_normalizes_space_reference_without_decoding_markup(self) -> None:
+        raw_config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        raw_config["packs"][0]["skill_metadata"] = {
+            "bounded-answer": {
+                "display_name": "境界&#x20;&lt;表示名&gt;",
+                "purpose": "用途&#32;&lt;保持&gt;",
+            }
+        }
+        self.config_path.write_text(
+            json.dumps(raw_config, ensure_ascii=False), encoding="utf-8"
+        )
+
+        leaf = next(
+            item
+            for item in windows_menu_leaves(self.config_path, str(self.project))
+            if item.skill_id == "bounded-answer"
+        )
+
+        self.assertEqual(leaf.skill_label, "境界 &lt;表示名&gt;")
+        self.assertEqual(leaf.purpose, "用途 &lt;保持&gt;")
+        persisted = self.config_path.read_text(encoding="utf-8")
+        self.assertIn("境界&#x20;&lt;表示名&gt;", persisted)
+        self.assertIn("用途&#32;&lt;保持&gt;", persisted)
+
     def test_runtime_failures_show_one_error_and_never_verify(self) -> None:
         leaf = next(
             item
             for item in windows_menu_leaves(self.config_path, "%1")
             if item.pack_id == "bounded-pack"
             and item.skill_id == "bounded-answer"
-            and item.runtime == "codex"
         )
         schema_script = self.root / "schema_failure.py"
         schema_script.write_text(
@@ -1468,20 +1964,27 @@ class ActivationEndToEndTest(unittest.TestCase):
             encoding="utf-8",
         )
         output_script = self.root / "output_failure.py"
-        output_script.write_text("import sys\nsys.stdin.read();sys.exit(2)\n", encoding="utf-8")
+        output_script.write_text(
+            "import json,sys\n"
+            "sys.stdin.read()\n"
+            "print(json.dumps({'type':'error','error':{'code':'invalid_json_schema'}}))\n"
+            "sys.stderr.write(\"error: unexpected argument '--legacy-flag' token=sk-secret-value\\n\")\n"
+            "sys.exit(2)\n",
+            encoding="utf-8",
+        )
         acceptance_script = self.root / "acceptance_failure.py"
         acceptance_script.write_text(
             "import json,pathlib,sys\n"
             "a=sys.argv[1:];p=sys.stdin.read();"
             "e=json.loads(next(x for x in p.splitlines() if x.startswith('PROVENANCE=')).split('=',1)[1]);"
             "pathlib.Path(a[a.index('--output-last-message')+1]).write_text("
-            "json.dumps({'evidence':{**e,'applied_rules':['bounded-answer:wrong']},'result':{'decision':'wrong'}}),encoding='utf-8')\n",
+            "json.dumps({'evidence':{**e,'completed_skill_ids':e['skill_ids'],'skill_execution_status':'completed','applied_rules':['bounded-answer:wrong']},'result':{'task_output':'deliverable','decision':'wrong'}}),encoding='utf-8')\n",
             encoding="utf-8",
         )
         cases = (
             ("launch", str(self.root / "missing-codex"), "launch_failed"),
             ("schema", (sys.executable, str(schema_script)), "output_failed"),
-            ("output", (sys.executable, str(output_script)), "output_failed"),
+            ("output", (sys.executable, str(output_script)), "runtime_failed"),
             ("acceptance", (sys.executable, str(acceptance_script)), "acceptance_failed"),
             ("cleanup", self.fake_codex, "cleanup_failed"),
         )
@@ -1498,23 +2001,22 @@ class ActivationEndToEndTest(unittest.TestCase):
                         original_cleanup(paths)
 
                     engine._cleanup_temporary_artifacts = fail_cleanup  # type: ignore[method-assign]
-                shown: list[str] = []
-                with self.assertRaises(Exception):
-                    launch_context_leaf(
-                        engine,
+                contract = engine.confirm(
+                    engine.plan(
                         platform="windows",
                         project=self.project,
                         pack_id=leaf.pack_id,
+                        runtime="codex",
+                        purpose=f"runtime failure {name}",
                         skill_id=leaf.skill_id,
-                        runtime=leaf.runtime,
-                        menu_commit=self.commit,
-                        menu_skill_digest=leaf.skill_ids_digest,
-                        menu_instruction_digest=leaf.instruction_digest,
-                        menu_acceptance_digest=leaf.acceptance_digest,
+                    ),
+                    confirmed=True,
+                )
+                with self.assertRaises(Exception):
+                    engine.execute(
+                        contract.contract_id,
                         codex_executable=executable,
-                        error_ui=shown.append,
                     )
-                self.assertEqual(len(shown), 1)
                 self.assertEqual(
                     list((case_state / "evidence").glob("*-verified.json")), []
                 )
@@ -1525,6 +2027,22 @@ class ActivationEndToEndTest(unittest.TestCase):
                 failure = json.loads(failures[0].read_text(encoding="utf-8"))
                 self.assertEqual(failure["status"], expected_status)
                 self.assertEqual(failure["terminal_event"]["status"], expected_status)
+                if name == "output":
+                    diagnostic = failure["runtime_failure_evidence"]
+                    self.assertEqual(diagnostic["exit_code"], 2)
+                    self.assertEqual(
+                        diagnostic["failure_class"], "invalid_output_schema"
+                    )
+                    self.assertTrue(diagnostic["stderr_present"])
+                    self.assertEqual(len(diagnostic["stderr_sha256"]), 64)
+                    self.assertEqual(
+                        diagnostic["stderr_summary"],
+                        "Codex rejected the verification output schema.",
+                    )
+                    serialized = json.dumps(failure, ensure_ascii=False)
+                    self.assertNotIn("sk-secret-value", serialized)
+                    self.assertNotIn("--legacy-flag", serialized)
+                    self.assertNotIn("invalid_json_schema", serialized)
                 self.assertEqual(
                     len(list((case_state / "launch-contracts").glob("*.json"))), 1
                 )
@@ -1562,11 +2080,10 @@ class ActivationEndToEndTest(unittest.TestCase):
             for item in windows_menu_leaves(self.config_path, "%V")
             if item.pack_id == "bounded-pack"
             and item.skill_id == "bounded-answer"
-            and item.runtime == "claude"
         )
         engine = ActivationEngine(self.config, self.state)
         shown: list[str] = []
-        expected = {"status": "verified_applied", "interactive_handoff": {"runtime": "claude"}}
+        expected = {"status": "verified_completed", "interactive_handoff": {"runtime": "claude"}}
         with mock.patch.object(engine, "execute", return_value=expected) as runtime:
             result = launch_context_leaf(
                 engine,
@@ -1574,7 +2091,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                 project=self.project,
                 pack_id=leaf.pack_id,
                 skill_id=leaf.skill_id,
-                runtime=leaf.runtime,
+                runtime="claude",
                 menu_commit=self.commit,
                 menu_skill_digest=leaf.skill_ids_digest,
                 menu_instruction_digest=leaf.instruction_digest,
@@ -1598,7 +2115,7 @@ class ActivationEndToEndTest(unittest.TestCase):
             "import json,sys\n"
             "p=sys.stdin.read()\n"
             "e=json.loads(next(x for x in p.splitlines() if x.startswith('PROVENANCE=')).split('=',1)[1])\n"
-            "o={'evidence':{**e,'applied_rules':['bounded-answer:bounded']},'result':{'decision':'bounded'}}\n"
+            "o={'evidence':{**e,'completed_skill_ids':e['skill_ids'],'skill_execution_status':'completed','applied_rules':['bounded-answer:bounded']},'result':{'task_output':'deliverable','decision':'bounded'}}\n"
             "print(json.dumps({'session_id':'11111111-1111-4111-8111-111111111111','structured_output':o}))\n",
             encoding="utf-8",
         )
@@ -1616,11 +2133,205 @@ class ActivationEndToEndTest(unittest.TestCase):
             contract.contract_id,
             runtime_executable=(sys.executable, str(script)),
         )
-        self.assertEqual(result["status"], "verified_applied")
+        self.assertEqual(result["status"], "verified_completed")
         self.assertEqual(result["interactive_handoff"]["runtime"], "claude")
         self.assertEqual(result["interactive_handoff"]["state"], "test_suppressed")
 
-    def test_visible_handoff_routes_both_runtime_commands_through_terminal(self) -> None:
+    def test_codex_verification_uses_process_local_mcp_overrides(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        plan = engine.plan(
+            platform="windows",
+            project=self.project,
+            pack_id="bounded-pack",
+            runtime="codex",
+            purpose="verify process-local MCP isolation",
+            skill_id="bounded-answer",
+        )
+        contract = engine.confirm(plan, confirmed=True)
+        original_run = subprocess.run
+        captured: list[str] = []
+        runtime_kwargs: dict[str, object] = {}
+
+        def capture_runtime(*args: object, **kwargs: object) -> object:
+            command = args[0]
+            if (
+                isinstance(command, list)
+                and len(command) >= 2
+                and tuple(command[:2]) == self.fake_codex
+            ):
+                captured.extend(str(value) for value in command)
+                runtime_kwargs.update(kwargs)
+            return original_run(*args, **kwargs)
+
+        with mock.patch(
+            "skill_magnet.activation.subprocess.run", side_effect=capture_runtime
+        ):
+            result = engine.execute(
+                contract.contract_id,
+                codex_executable=self.fake_codex,
+            )
+
+        self.assertEqual(result["status"], "verified_completed")
+        self.assertTrue(captured)
+        self.assertNotIn("--ignore-user-config", captured)
+        self.assertIn("--ephemeral", captured)
+        self.assertIn("--ignore-rules", captured)
+        self.assertEqual(
+            [
+                captured[index + 1]
+                for index, value in enumerate(captured[:-1])
+                if value == "-c"
+            ],
+            list(CODEX_PROCESS_CONFIG_OVERRIDES),
+        )
+        self.assertEqual(
+            codex_process_config_args(),
+            [
+                item
+                for override in CODEX_PROCESS_CONFIG_OVERRIDES
+                for item in ("-c", override)
+            ],
+        )
+        self.assertLess(captured.index("-c"), captured.index("exec"))
+        if sys.platform == "win32":
+            self.assertEqual(
+                runtime_kwargs["creationflags"], subprocess.CREATE_NO_WINDOW
+            )
+
+    def test_same_actual_request_fixture_reaches_verified_completed(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        contract = engine.confirm(
+            engine.plan(
+                platform="windows",
+                project=self.project,
+                pack_id="bounded-pack",
+                runtime="codex",
+                purpose="うんこ",
+                skill_id="bounded-answer",
+            ),
+            confirmed=True,
+        )
+        result = engine.execute(
+            contract.contract_id,
+            codex_executable=(
+                sys.executable,
+                "-X",
+                "utf8",
+                str(self.fake_codex[1]),
+            ),
+        )
+        self.assertEqual(result["status"], "verified_completed")
+        self.assertEqual(result["user_result"]["request"], "うんこ")
+        self.assertEqual(
+            result["skill_execution_completion_evidence"]["actual_request_sha256"],
+            hashlib.sha256("うんこ".encode("utf-8")).hexdigest(),
+        )
+
+    def test_verification_session_is_not_resumed_and_surface_hides_raw_json(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        plan = engine.plan(
+            platform="windows",
+            project=self.project,
+            pack_id="bounded-pack",
+            runtime="codex",
+            purpose="show only the user result",
+            skill_id="bounded-answer",
+        )
+        contract = engine.confirm(plan, confirmed=True)
+        original_run = subprocess.run
+        captured: list[str] = []
+
+        def capture_runtime(*args: object, **kwargs: object) -> object:
+            command = args[0]
+            if (
+                isinstance(command, list)
+                and len(command) >= 2
+                and tuple(command[:2]) == self.fake_codex
+            ):
+                captured.extend(str(value) for value in command)
+            return original_run(*args, **kwargs)
+
+        with mock.patch(
+            "skill_magnet.activation.subprocess.run", side_effect=capture_runtime
+        ):
+            result = engine.execute(
+                contract.contract_id,
+                codex_executable=self.fake_codex,
+                interactive_handoff=True,
+            )
+
+        handoff = result["interactive_handoff"]
+        self.assertEqual(handoff["state"], "result_surface_ready")
+        self.assertFalse(handoff["verification_session_resumed"])
+        self.assertNotIn("resume", captured)
+        self.assertNotIn("session_id", handoff)
+        surface = context_result_surface(result)
+        self.assertEqual(surface["title"], "完了")
+        self.assertEqual(surface["executed_skill"], "bounded-answer")
+        self.assertEqual(surface["request"], "show only the user result")
+        self.assertEqual(surface["result"], "show only the user result")
+        self.assertIn("保存先/変更の申告なし", surface["saved_or_changed"])
+        main_surface = {
+            key: surface[key]
+            for key in ("title", "executed_skill", "request", "result", "saved_or_changed")
+        }
+        rendered = json.dumps(main_surface, ensure_ascii=False)
+        for raw_field in (
+            "evidence",
+            "contract_id",
+            "instruction_digest",
+            "actual_request_sha256",
+            "thread.started",
+        ):
+            self.assertNotIn(raw_field, rendered)
+        with_changes = engine._user_result(
+            contract,
+            self.config.packs["bounded-pack"],
+            {
+                "evidence": {"completed_skill_ids": ["bounded-answer"]},
+                "result": {
+                    "task_output": "完了結果",
+                    "saved_paths": ["docs/result.md"],
+                    "changes": ["結果文書を更新"],
+                }
+            },
+        )
+        changed_surface = context_result_surface(
+            {"status": "verified_completed", "user_result": with_changes}
+        )
+        self.assertIn("保存先: docs/result.md", changed_surface["saved_or_changed"])
+        self.assertIn("変更: 結果文書を更新", changed_surface["saved_or_changed"])
+
+    def test_failed_and_blocked_surfaces_are_japanese_and_never_success(self) -> None:
+        failed = context_failure_surface(_LaunchFailed("raw runtime diagnostic"))
+        runtime_failed = context_failure_surface(
+            _RuntimeFailed(exit_code=1, stderr="raw runtime diagnostic")
+        )
+        blocked_output = context_failure_surface(
+            _OutputFailed("cloudflare-builds warning and raw JSON")
+        )
+        blocked_acceptance = context_failure_surface(
+            _AcceptanceFailed("digest mismatch detail")
+        )
+
+        self.assertEqual(failed["state"], "failed")
+        self.assertEqual(runtime_failed["state"], "failed")
+        self.assertEqual(blocked_output["state"], "blocked")
+        self.assertEqual(blocked_acceptance["state"], "blocked")
+        for surface in (failed, runtime_failed, blocked_output, blocked_acceptance):
+            self.assertNotEqual(surface["title"], "完了")
+            self.assertTrue(surface["cause"])
+            self.assertTrue(surface["not_completed"])
+            self.assertTrue(surface["next_action"])
+            rendered = json.dumps(surface, ensure_ascii=False)
+            self.assertNotIn("cloudflare-builds", rendered)
+            self.assertNotIn("digest mismatch detail", rendered)
+        message = context_failure_message(_OutputFailed("raw JSON"))
+        self.assertIn("原因", message)
+        self.assertIn("未実行・未確認の範囲", message)
+        self.assertIn("次の操作", message)
+
+    def _obsolete_visible_handoff_routes_both_runtime_commands_through_terminal(self) -> None:
         engine = ActivationEngine(self.config, self.state)
         plan = engine.plan(
             platform="windows",
@@ -1682,8 +2393,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                 self.assertEqual(record["pid"], 54321)
                 self.assertEqual(record["runtime"], runtime)
 
-    @unittest.skipUnless(sys.platform == "win32", "real Windows runtime processes required")
-    def test_failed_handoff_teardown_kills_real_codex_and_claude_process_trees(self) -> None:
+    def _obsolete_failed_handoff_teardown_kills_real_codex_and_claude_process_trees(self) -> None:
         engine = ActivationEngine(self.config, self.state)
         wrapper = shutil.which("codex.cmd") or "codex"
         codex = engine._codex_interactive_executable(wrapper)
@@ -1740,7 +2450,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                     if process.stdin is not None:
                         process.stdin.close()
 
-    def test_pid_missing_handoff_invokes_identity_limited_teardown_for_both_runtimes(self) -> None:
+    def _obsolete_pid_missing_handoff_invokes_identity_limited_teardown_for_both_runtimes(self) -> None:
         engine = ActivationEngine(self.config, self.state)
         plan = engine.plan(
             platform="windows",
@@ -1828,11 +2538,13 @@ class ActivationEndToEndTest(unittest.TestCase):
         ):
             with self.subTest(root=root_name):
                 command_keys = [key for key, _, _ in entries if key.endswith(r"\command")]
-                self.assertEqual(len(command_keys), 4)
+                self.assertEqual(len(command_keys), 2)
                 self.assertTrue(
                     all(
-                        r"\shell\skill-" in key
-                        and r"\shell\runtime-" in key
+                        r"\shell\leaf-" in key
+                        and r"\shell\skill-" not in key
+                        and r"\shell\runtime-" not in key
+                        and r"\shell\pack-" not in key
                         for key in command_keys
                     )
                 )
@@ -1861,12 +2573,13 @@ class ActivationEndToEndTest(unittest.TestCase):
         command = windows_leaf_command_argv(
             self.config_path, project, "bounded-pack", "bounded-answer", "codex"
         )
-        expected_executable = Path(sys.executable)
-        if sys.platform == "win32" and expected_executable.with_name("pythonw.exe").is_file():
-            expected_executable = expected_executable.with_name("pythonw.exe")
-        self.assertEqual(command[0], str(expected_executable))
+        self.assertEqual(command[0], str(Path(sys.executable)))
+        self.assertNotIn(
+            "skillmagnetlauncher.exe", (part.casefold() for part in command)
+        )
         self.assertEqual(
-            command[command.index("--config") + 1], str(self.config_path.resolve())
+            command[command.index("--config") + 1],
+            os.path.abspath(str(self.config_path)),
         )
         self.assertEqual(command[command.index("--project") + 1], project)
         self.assertEqual(command[command.index("--pack") + 1], "bounded-pack")
@@ -1902,7 +2615,7 @@ class ActivationEndToEndTest(unittest.TestCase):
             )
 
     def test_directory_registry_entries_cover_all_leaves_and_only_owned_subtree(self) -> None:
-        root = r"HKCU\Software\Classes\Directory\shell\SkillMagnet"
+        root = r"HKCU\Software\Classes\Directory\shell\SkillMagnetClassic"
         entries = windows_directory_registry_entries(self.config_path)
         self.assertTrue(entries)
         self.assertTrue(
@@ -1918,27 +2631,26 @@ class ActivationEndToEndTest(unittest.TestCase):
             for leaf in windows_menu_leaves(self.config_path, "%1")
         ]
         self.assertCountEqual(commands, expected)
-        self.assertEqual(len(commands), 4)
+        self.assertEqual(len(commands), 2)
         for pack_id, skill_id in (
             ("bounded-pack", "bounded-answer"),
             ("unused-pack", "unused-skill"),
         ):
-            for runtime in ("codex", "claude"):
-                command = windows_command(
-                    windows_leaf_command_argv(
-                        self.config_path, "%1", pack_id, skill_id, runtime
-                    )
+            command = windows_command(
+                windows_leaf_command_argv(
+                    self.config_path, "%1", pack_id, skill_id
                 )
-                self.assertIn(command, commands)
+            )
+            self.assertIn(command, commands)
 
     def test_background_registry_entries_cover_all_leaves_and_only_owned_subtree(self) -> None:
-        root = r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnet"
+        root = r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnetClassic"
         entries = windows_background_registry_entries(self.config_path)
         self.assertTrue(entries)
         self.assertTrue(
             all(key == root or key.startswith(root + "\\") for key, _, _ in entries)
         )
-        directory_root = r"HKCU\Software\Classes\Directory\shell\SkillMagnet"
+        directory_root = r"HKCU\Software\Classes\Directory\shell\SkillMagnetClassic"
         self.assertFalse(
             any(key == directory_root or key.startswith(directory_root + "\\") for key, _, _ in entries)
         )
@@ -1951,18 +2663,17 @@ class ActivationEndToEndTest(unittest.TestCase):
             for leaf in windows_menu_leaves(self.config_path, "%V")
         ]
         self.assertCountEqual(commands, expected)
-        self.assertEqual(len(commands), 4)
+        self.assertEqual(len(commands), 2)
         for pack_id, skill_id in (
             ("bounded-pack", "bounded-answer"),
             ("unused-pack", "unused-skill"),
         ):
-            for runtime in ("codex", "claude"):
-                command = windows_command(
-                    windows_leaf_command_argv(
-                        self.config_path, "%V", pack_id, skill_id, runtime
-                    )
+            command = windows_command(
+                windows_leaf_command_argv(
+                    self.config_path, "%V", pack_id, skill_id
                 )
-                self.assertIn(command, commands)
+            )
+            self.assertIn(command, commands)
 
     def test_both_registry_roots_preserve_special_absolute_paths_as_single_argv(self) -> None:
         config = self.root / "config 空白 日本語 & ( ) ' ! ^ # %.json"
@@ -1996,12 +2707,12 @@ class ActivationEndToEndTest(unittest.TestCase):
                         project_path,
                         leaf.pack_id,
                         leaf.skill_id,
-                        leaf.runtime,
+                        None,
                     )
                     self.assertEqual(substituted, windows_command(expected_argv))
                     self.assertEqual(
                         expected_argv[expected_argv.index("--config") + 1],
-                        str(config.resolve()),
+                        os.path.abspath(str(config)),
                     )
                     self.assertEqual(
                         expected_argv[expected_argv.index("--project") + 1],
@@ -2051,13 +2762,13 @@ class ActivationEndToEndTest(unittest.TestCase):
         leaf = next(
             item
             for item in windows_menu_leaves(self.config_path, "%V")
-            if item.pack_id == "bounded-pack" and item.runtime == "codex"
+            if item.pack_id == "bounded-pack"
         )
         details = context_selection_details(
             engine,
             project=self.project,
             pack_id=leaf.pack_id,
-            runtime=leaf.runtime,
+            runtime="codex",
             menu_commit=self.commit,
             menu_skill_digest=leaf.skill_ids_digest,
         )
@@ -2072,6 +2783,52 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertEqual(contract.pack_id, "bounded-pack")
         self.assertEqual(contract.runtime, "codex")
         self.assertEqual(contract.skill_ids, ("bounded-answer",))
+
+    def test_windows_context_routes_codex_contract_to_desktop_handoff(self) -> None:
+        leaf = next(
+            item
+            for item in windows_menu_leaves(self.config_path, str(self.project))
+            if item.pack_id == "bounded-pack"
+            and item.skill_id == "bounded-answer"
+        )
+        activation = mock.Mock()
+        contract = SimpleNamespace(
+            contract_id="actual-request-contract", runtime="codex"
+        )
+        handoff_result = {
+            "status": "desktop_handoff_ready",
+            "verified_completed": False,
+        }
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = list(leaf.command[leaf.command.index("--config") :])
+        argv[argv.index("--config") + 1] = str(self.config_path)
+        with (
+            mock.patch("skill_magnet.cli.ActivationEngine", return_value=activation),
+            mock.patch(
+                "skill_magnet.cli.show_context_selection", return_value=contract
+            ) as selection,
+            mock.patch(
+                "skill_magnet.cli.deliver_prepared_codex_handoff",
+                return_value=handoff_result,
+            ) as desktop_handoff,
+            mock.patch("skill_magnet.cli.show_context_result") as result_surface,
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            exit_code = cli_main(argv)
+        self.assertEqual(exit_code, 0)
+        selection.assert_called_once()
+        self.assertEqual(
+            selection.call_args.kwargs["skill_id"], "bounded-answer"
+        )
+        desktop_handoff.assert_called_once_with(
+            activation, "actual-request-contract"
+        )
+        activation.execute.assert_not_called()
+        result_surface.assert_not_called()
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "")
 
     def test_context_rejects_stale_installed_menu_without_state(self) -> None:
         engine = ActivationEngine(self.config, self.state)
@@ -2104,23 +2861,29 @@ class ActivationEndToEndTest(unittest.TestCase):
                 "windows", self.config_path, run=fake_run
             )
         self.assertTrue(result["installed"])
-        roots = {
+        classic_roots = {
+            r"HKCU\Software\Classes\Directory\shell\SkillMagnetClassic",
+            r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnetClassic",
+        }
+        legacy_roots = {
             r"HKCU\Software\Classes\Directory\shell\SkillMagnet",
             r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnet",
         }
         stale_deletes = [call for call in calls if call[:2] == ["reg", "delete"]]
-        self.assertEqual({call[2] for call in stale_deletes}, roots)
+        self.assertEqual({call[2] for call in stale_deletes}, classic_roots | legacy_roots)
         adds = [call for call in calls if call[:2] == ["reg", "add"]]
         self.assertTrue(adds)
-        self.assertTrue(all(any(call[2].startswith(root) for root in roots) for call in adds))
+        self.assertTrue(
+            all(any(call[2].startswith(root) for root in classic_roots) for call in adds)
+        )
         commands = [call[call.index("/d") + 1] for call in adds if "\\command" in call[2]]
-        self.assertEqual(len(commands), 8)
+        self.assertEqual(len(commands), 4)
         self.assertTrue(all("--pack" in command for command in commands))
-        self.assertTrue(all("--runtime" in command for command in commands))
+        self.assertTrue(all("--runtime" not in command for command in commands))
         self.assertTrue(result["reinstall_required_after_pack_change"])
         self.assertFalse(self.state.exists())
 
-    def test_windows_public_cli_installs_and_rolls_back_modern_menu_by_default(self) -> None:
+    def test_windows_public_cli_installs_and_uninstalls_modern_menu_by_default(self) -> None:
         install_result = {"installed": True, "modern": {"installed": True}}
         rollback_result = {"rolled_back": True, "rollback_point_removed": True}
         stdout = io.StringIO()
@@ -2148,7 +2911,7 @@ class ActivationEndToEndTest(unittest.TestCase):
         stdout = io.StringIO()
         with (
             mock.patch(
-                "skill_magnet.cli.rollback_windows_context_menus",
+                "skill_magnet.cli.uninstall_windows_context_menus",
                 return_value=rollback_result,
             ) as rollback,
             redirect_stdout(stdout),
@@ -2173,34 +2936,36 @@ class ActivationEndToEndTest(unittest.TestCase):
         leaves = windows_menu_leaves(special, "%1")
         for leaf in leaves:
             command = __import__("subprocess").list2cmdline(list(leaf.command))
-            self.assertIn(f'"{special}"', command)
+            config_argument = leaf.command[leaf.command.index("--config") + 1]
+            self.assertIn(f'"{config_argument}"', command)
             self.assertIn("%1", command)
             self.assertIn("--menu-skill-digest", command)
 
-    def test_windows_modern_manifest_has_individual_immutable_runtime_leaves(self) -> None:
+    def test_windows_modern_manifest_has_one_immutable_leaf_per_skill(self) -> None:
         rendered = render_windows_modern_menu_manifest(self.config_path)
         lines = rendered.splitlines()
-        self.assertEqual(lines[0], "skill-magnet-menu-v2")
-        self.assertEqual(len(lines), 5)
+        self.assertEqual(lines[0], "skill-magnet-menu-v3")
+        self.assertEqual(len(lines), 3)
         records = [line.split("\t") for line in lines[1:]]
-        self.assertTrue(all(len(record) == 6 for record in records))
+        self.assertTrue(all(len(record) == 7 for record in records))
         self.assertCountEqual(
             [(record[0], record[3], record[4]) for record in records],
             [
-                ("bounded-pack", "bounded-answer", "Codex"),
-                ("bounded-pack", "bounded-answer", "Claude"),
-                ("unused-pack", "unused-skill", "Codex"),
-                ("unused-pack", "unused-skill", "Claude"),
+                ("bounded-pack", "bounded-answer", "bounded-answer"),
+                ("unused-pack", "unused-skill", "unused-skill"),
             ],
         )
-        for _, menu_label, selection_kind, _, _, command in records:
-            self.assertTrue(menu_label)
-            self.assertIn(selection_kind, {"package", "skill"})
+        for _, menu_label, selection_kind, _, display_name, purpose, command in records:
+            self.assertEqual(menu_label, "Skill Magnet")
+            self.assertEqual(selection_kind, "skill")
+            self.assertTrue(display_name)
+            self.assertTrue(purpose)
             self.assertEqual(command.count("__SKILL_MAGNET_PROJECT__"), 1)
             self.assertIn("--skill", command)
             self.assertIn("--menu-commit", command)
             self.assertIn("--menu-instruction-digest", command)
             self.assertIn("--menu-acceptance-digest", command)
+            self.assertNotIn("--runtime", command)
 
     def test_windows_modern_appx_registers_both_explorer_contexts(self) -> None:
         manifest = (
@@ -2238,6 +3003,9 @@ class ActivationEndToEndTest(unittest.TestCase):
                         "name": "SkillMagnet.ContextMenu",
                         "package_full_name": "SkillMagnet.ContextMenu_1.0.0.0_x64_test",
                         "install_location": str(root),
+                        "legacy_certificate_thumbprints_removed": (
+                            ["A" * 40] if action == "install" else []
+                        ),
                     }
                 ),
                 stderr="",
@@ -2247,19 +3015,35 @@ class ActivationEndToEndTest(unittest.TestCase):
             installed = install_windows_modern_context_menu(
                 self.config_path, install_root=root, run=fake_run, build=False
             )
-            status = windows_modern_context_menu_status(install_root=root, run=fake_run)
+            status = windows_modern_context_menu_status(
+                install_root=root, config=self.config_path, run=fake_run
+            )
             removed = uninstall_windows_modern_context_menu(install_root=root, run=fake_run)
         self.assertEqual(installed["contexts"], ["Directory", r"Directory\Background"])
+        self.assertEqual(installed["legacy_certificate_thumbprints_removed"], ["A" * 40])
         self.assertTrue(status["dll_exists"])
         self.assertTrue(status["menu_manifest_exists"])
+        self.assertTrue(status["command_target_exists"])
+        self.assertTrue(status["command_target_signature_valid"])
+        self.assertFalse(status["self_signed_launcher_referenced"])
+        self.assertFalse(status["deprecated_launcher_exists"])
+        self.assertTrue(status["identity_anchor_exists"])
+        self.assertTrue(status["identity_matches"])
+        self.assertTrue(status["com_identity_matches"])
+        self.assertTrue(status["usable_installed_state"])
         self.assertTrue(removed["removed"])
         self.assertFalse(root.exists())
         self.assertEqual(
             [call[call.index("-Action") + 1] for call in calls],
-            ["install", "status", "uninstall", "cleanup-certificate"],
+            ["install", "status", "status", "uninstall", "cleanup-certificate"],
         )
         install_call = calls[0]
-        self.assertEqual(install_call[install_call.index("-ExternalLocation") + 1], str(root.resolve()))
+        external_location = install_call[install_call.index("-ExternalLocation") + 1]
+        self.assertTrue(os.path.isabs(external_location))
+        self.assertEqual(
+            os.path.normcase(os.path.basename(external_location)),
+            os.path.normcase(root.name),
+        )
 
     def test_windows_product_install_skips_unsigned_development_contract_executable(self) -> None:
         root = self.root / "policy-safe-modern-install"
@@ -2275,7 +3059,7 @@ class ActivationEndToEndTest(unittest.TestCase):
             calls.append(args)
             if any(str(item).endswith("build.ps1") for item in args):
                 output.mkdir(exist_ok=True)
-                for name in ("SkillMagnetCommand.dll", "SkillMagnetLauncher.exe"):
+                for name in ("SkillMagnetCommand.dll", "SkillMagnetIdentity.exe"):
                     (output / name).touch()
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
             if any(str(item).endswith("build-package.ps1") for item in args):
@@ -2297,6 +3081,33 @@ class ActivationEndToEndTest(unittest.TestCase):
             call for call in calls if any(str(item).endswith("build.ps1") for item in call)
         )
         self.assertIn("-SkipContractTest", build_call)
+
+    def test_windows_modern_install_removes_deprecated_blocked_launcher(self) -> None:
+        root = self.root / "remove-blocked-launcher"
+        root.mkdir()
+        blocked = root / "SkillMagnetLauncher.exe"
+        blocked.write_bytes(b"deprecated self-signed adapter")
+
+        def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+            action = args[args.index("-Action") + 1]
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "installed": action != "uninstall",
+                        "name": "SkillMagnet.ContextMenu",
+                    }
+                ),
+                stderr="",
+            )
+
+        with mock.patch("skill_magnet.platforms.os.name", "nt"):
+            result = install_windows_modern_context_menu(
+                self.config_path, install_root=root, run=fake_run, build=False
+            )
+        self.assertTrue(result["usable_installed_state"])
+        self.assertFalse(blocked.exists())
+        self.assertFalse(result["deprecated_launcher_exists"])
 
     @unittest.skipUnless(sys.platform == "win32", "Windows certificate provider required")
     def test_windows_certificate_cleanup_resume_skips_missing_machine_certificate(self) -> None:
@@ -2345,6 +3156,8 @@ class ActivationEndToEndTest(unittest.TestCase):
         registry = {
             r"HKCU\Software\Classes\Directory\shell\SkillMagnet": True,
             r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnet": True,
+            r"HKCU\Software\Classes\Directory\shell\SkillMagnetClassic": False,
+            r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnetClassic": False,
         }
         package_installed = False
 
@@ -2361,11 +3174,17 @@ class ActivationEndToEndTest(unittest.TestCase):
                     registry[target] = False
                     return SimpleNamespace(returncode=0, stdout="", stderr="")
                 if action == "add":
-                    registry[target.split(r"\shell", 1)[0] + r"\shell\SkillMagnet"] = True
+                    owned_root = next(
+                        (root_key for root_key in registry if target.startswith(root_key)),
+                        None,
+                    )
+                    if owned_root is not None:
+                        registry[owned_root] = True
                     return SimpleNamespace(returncode=0, stdout="", stderr="")
                 if action == "import":
                     registry[Path(target).read_text(encoding="utf-8")] = True
                     return SimpleNamespace(returncode=0, stdout="", stderr="")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
             action = args[args.index("-Action") + 1]
             if action == "install":
                 package_installed = True
@@ -2386,9 +3205,213 @@ class ActivationEndToEndTest(unittest.TestCase):
             rolled_back = rollback_windows_context_menus(install_root=root, run=fake_run)
         self.assertTrue(rolled_back["rolled_back"])
         self.assertFalse(package_installed)
-        self.assertTrue(all(registry.values()))
+        self.assertTrue(
+            registry[r"HKCU\Software\Classes\Directory\shell\SkillMagnet"]
+        )
+        self.assertTrue(
+            registry[
+                r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnet"
+            ]
+        )
+        self.assertFalse(
+            registry.get(
+                r"HKCU\Software\Classes\Directory\shell\SkillMagnetClassic", False
+            )
+        )
+        self.assertFalse(
+            registry.get(
+                r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnetClassic",
+                False,
+            )
+        )
         self.assertFalse(root.exists())
         self.assertFalse(root.with_name(root.name + ".rollback").exists())
+
+    def test_windows_install_removes_only_valid_owned_transaction_residue(self) -> None:
+        from skill_magnet.platforms import _cleanup_windows_context_residue
+
+        root = self.root / "ContextMenu"
+        valid = root.with_name("ContextMenu.rollback.interrupted-20260829-0929")
+        valid.mkdir()
+        (valid / "backup.json").write_text(
+            json.dumps({"version": 2}), encoding="utf-8"
+        )
+        unrelated = root.with_name("ContextMenu.rollback.interrupted-not-a-timestamp")
+        unrelated.mkdir()
+        removed = _cleanup_windows_context_residue(root)
+        self.assertEqual(removed, [valid.name])
+        self.assertFalse(valid.exists())
+        self.assertTrue(unrelated.exists())
+
+    def test_windows_recovers_lost_certificate_ownership_before_residue_cleanup(self) -> None:
+        from skill_magnet.platforms import (
+            _cleanup_windows_context_residue,
+            _recover_windows_certificate_ownership_from_residue,
+        )
+
+        root = self.root / "ContextMenu"
+        root.mkdir()
+        thumbprint = "A" * 40
+        (root / "certificate-state.json").write_text(
+            json.dumps({
+                "thumbprint": thumbprint,
+                "created_my": False,
+                "created_trusted_people": False,
+                "created_machine_trusted_people": False,
+            }), encoding="utf-8")
+        residue = root.with_name("ContextMenu.rollback.interrupted-20260829-0929")
+        (residue / "external").mkdir(parents=True)
+        (residue / "backup.json").write_text(json.dumps({"version": 2}), encoding="utf-8")
+        (residue / "external" / "certificate-state.json").write_text(
+            json.dumps({
+                "thumbprint": thumbprint,
+                "created_my": True,
+                "created_trusted_people": True,
+                "created_machine_trusted_people": True,
+            }), encoding="utf-8")
+        self.assertTrue(_recover_windows_certificate_ownership_from_residue(root))
+        recovered = json.loads((root / "certificate-state.json").read_text(encoding="utf-8"))
+        self.assertTrue(all(recovered[flag] for flag in (
+            "created_my", "created_trusted_people", "created_machine_trusted_people")))
+        self.assertEqual(_cleanup_windows_context_residue(root), [residue.name])
+
+    def test_windows_residue_cleanup_fails_closed_on_invalid_metadata(self) -> None:
+        from skill_magnet.platforms import _cleanup_windows_context_residue
+
+        root = self.root / "ContextMenu"
+        invalid = root.with_name("ContextMenu.rollback.recovered-20260829-093300")
+        invalid.mkdir()
+        (invalid / "backup.json").write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(Exception, "Unsupported"):
+            _cleanup_windows_context_residue(root)
+        self.assertTrue(invalid.exists())
+
+    def test_windows_update_rollback_restores_immediately_previous_install(self) -> None:
+        root = self.root / "combined-repeatable-modern"
+        registry = {
+            r"HKCU\Software\Classes\Directory\shell\SkillMagnet": True,
+            r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnet": True,
+            r"HKCU\Software\Classes\Directory\shell\SkillMagnetClassic": False,
+            r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnetClassic": False,
+        }
+        package_installed = False
+        fail_next_install = False
+
+        def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+            nonlocal fail_next_install, package_installed
+            if args[0] == "reg":
+                action, target = args[1], args[2]
+                if action == "query":
+                    return SimpleNamespace(
+                        returncode=0 if registry.get(target) else 1, stdout="", stderr=""
+                    )
+                if action == "export":
+                    Path(args[3]).write_text(target, encoding="utf-8")
+                    return SimpleNamespace(returncode=0, stdout="", stderr="")
+                if action == "delete":
+                    registry[target] = False
+                    return SimpleNamespace(returncode=0, stdout="", stderr="")
+                if action == "import":
+                    registry[Path(target).read_text(encoding="utf-8")] = True
+                    return SimpleNamespace(returncode=0, stdout="", stderr="")
+                if action == "add":
+                    owned_root = max(
+                        (root_key for root_key in registry if target.startswith(root_key)),
+                        key=len,
+                        default=None,
+                    )
+                    if owned_root is not None:
+                        registry[owned_root] = True
+                    return SimpleNamespace(returncode=0, stdout="", stderr="")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            action = args[args.index("-Action") + 1]
+            if action == "install":
+                if fail_next_install:
+                    fail_next_install = False
+                    return SimpleNamespace(
+                        returncode=1, stdout="", stderr="injected install failure"
+                    )
+                package_installed = True
+            elif action == "uninstall":
+                package_installed = False
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {"installed": package_installed, "name": "SkillMagnet.ContextMenu"}
+                ),
+                stderr="",
+            )
+
+        rollback_root = root.with_name(root.name + ".rollback")
+        update_root = rollback_root.with_name(rollback_root.name + ".update")
+        with mock.patch("skill_magnet.platforms.os.name", "nt"):
+            first = install_windows_context_menus(
+                self.config_path, install_root=root, run=fake_run, build=False
+            )
+            self.assertTrue(first["modern"]["usable_installed_state"])
+            self.assertTrue(package_installed)
+            self.assertTrue(rollback_root.is_dir())
+            self.assertFalse(any(registry.values()))
+
+            second = install_windows_context_menus(
+                self.config_path, install_root=root, run=fake_run, build=False
+            )
+            self.assertTrue(second["modern"]["usable_installed_state"])
+            self.assertTrue(package_installed)
+            self.assertTrue(rollback_root.is_dir())
+            self.assertFalse(update_root.exists())
+            self.assertFalse(any(registry.values()))
+
+            fail_next_install = True
+            with self.assertRaisesRegex(
+                Exception, "no policy-incompatible classic fallback"
+            ):
+                install_windows_context_menus(
+                    self.config_path, install_root=root, run=fake_run, build=False
+                )
+            # A failed update restores the immediately preceding usable modern
+            # state. It must not expose the blocked self-signed classic path.
+            self.assertTrue(package_installed)
+            self.assertTrue(rollback_root.is_dir())
+            self.assertFalse(update_root.exists())
+            self.assertFalse(
+                registry[r"HKCU\Software\Classes\Directory\shell\SkillMagnetClassic"]
+            )
+            self.assertFalse(
+                registry[
+                    r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnetClassic"
+                ]
+            )
+            self.assertFalse(
+                registry[r"HKCU\Software\Classes\Directory\shell\SkillMagnet"]
+            )
+            self.assertFalse(
+                registry[r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnet"]
+            )
+
+            rollback_windows_context_menus(install_root=root, run=fake_run)
+        self.assertTrue(package_installed)
+        self.assertFalse(
+            registry[r"HKCU\Software\Classes\Directory\shell\SkillMagnet"]
+        )
+        self.assertFalse(
+            registry[
+                r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnet"
+            ]
+        )
+        self.assertFalse(
+            registry.get(
+                r"HKCU\Software\Classes\Directory\shell\SkillMagnetClassic", False
+            )
+        )
+        self.assertFalse(
+            registry.get(
+                r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnetClassic",
+                False,
+            )
+        )
+        self.assertTrue(root.exists())
+        self.assertFalse(rollback_root.exists())
 
     def test_windows_menu_command_bootstraps_outside_project_directory(self) -> None:
         leaf = windows_menu_leaves(self.config_path, "%V")[0]
@@ -2426,8 +3449,8 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertEqual(
             {call[2] for call in deleted[-2:]},
             {
-                r"HKCU\Software\Classes\Directory\shell\SkillMagnet",
-                r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnet",
+                r"HKCU\Software\Classes\Directory\shell\SkillMagnetClassic",
+                r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnetClassic",
             },
         )
         self.assertFalse(self.state.exists())
@@ -2448,6 +3471,18 @@ class ActivationEndToEndTest(unittest.TestCase):
                 [
                     "reg",
                     "delete",
+                    r"HKCU\Software\Classes\Directory\shell\SkillMagnetClassic",
+                    "/f",
+                ],
+                [
+                    "reg",
+                    "delete",
+                    r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnetClassic",
+                    "/f",
+                ],
+                [
+                    "reg",
+                    "delete",
                     r"HKCU\Software\Classes\Directory\shell\SkillMagnet",
                     "/f",
                 ],
@@ -2465,8 +3500,12 @@ class ActivationEndToEndTest(unittest.TestCase):
         special_config = self.root / "config 空白 日本語 & ( ) ' ! ^ # %.json"
         special_config.write_bytes(self.config_path.read_bytes())
         original_config = special_config.read_bytes()
-        directory = r"HKCU\Software\Classes\Directory\shell\SkillMagnet"
+        directory = r"HKCU\Software\Classes\Directory\shell\SkillMagnetClassic"
         background = (
+            r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnetClassic"
+        )
+        legacy_directory = r"HKCU\Software\Classes\Directory\shell\SkillMagnet"
+        legacy_background = (
             r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnet"
         )
         protected = {
@@ -2480,6 +3519,10 @@ class ActivationEndToEndTest(unittest.TestCase):
             directory + r"\shell\stale-pack",
             background,
             background + r"\shell\stale-pack",
+            legacy_directory,
+            legacy_directory + r"\shell\stale-pack",
+            legacy_background,
+            legacy_background + r"\shell\stale-pack",
         }
 
         def fake_run(args: list[str], **_: object) -> SimpleNamespace:
@@ -2503,6 +3546,8 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertTrue(protected.issubset(registry))
         self.assertTrue(any(key.startswith(directory + "\\") for key in registry))
         self.assertTrue(any(key.startswith(background + "\\") for key in registry))
+        self.assertFalse(any(key == legacy_directory or key.startswith(legacy_directory + "\\") for key in registry))
+        self.assertFalse(any(key == legacy_background or key.startswith(legacy_background + "\\") for key in registry))
         self.assertEqual(special_config.read_bytes(), original_config)
 
         with mock.patch("skill_magnet.platforms.os.name", "nt"):
@@ -2512,16 +3557,59 @@ class ActivationEndToEndTest(unittest.TestCase):
 
     def test_macos_installer_creates_and_removes_finder_quick_action(self) -> None:
         services = self.root / "Library" / "Services"
-        result = install_context_menu(
-            "macos", self.config_path, services_dir=services
-        )
+        probe = self.root / "finder probe.txt"
+        with mock.patch.dict(
+            os.environ, {"SKILL_MAGNET_FINDER_E2E_PROBE": str(probe)}
+        ):
+            result = install_context_menu(
+                "macos", self.config_path, services_dir=services
+            )
         workflow = services / "Skill Magnet.workflow" / "Contents" / "document.wflow"
         self.assertTrue(result["installed"])
         self.assertTrue(workflow.is_file())
-        self.assertIn(b"com.apple.RunShellScript", workflow.read_bytes())
+        workflow_bytes = workflow.read_bytes()
+        self.assertIn(b"com.apple.RunShellScript", workflow_bytes)
+        self.assertIn(b"finder probe.txt", workflow_bytes)
+        workflow_document = plistlib.loads(workflow_bytes)
+        action = workflow_document["actions"][0]["action"]
+        self.assertIn("ActionParameters", action)
+        self.assertNotIn("parameters", action)
+        probe_command = action["ActionParameters"]["COMMAND_STRING"]
+        self.assertIn("finder probe.txt", probe_command)
+        self.assertIn("--release-probe", probe_command)
+        self.assertNotIn("printf", probe_command)
+        self.assertNotIn("exit 0", probe_command)
+        selected = self.root / "selected by Finder"
+        selected.mkdir()
+        self.assertEqual(
+            cli_main(
+                [
+                    "--config",
+                    str(self.config_path),
+                    "context",
+                    "--platform",
+                    "macos",
+                    "--project",
+                    str(selected),
+                    "--release-probe",
+                    str(probe),
+                ]
+            ),
+            0,
+        )
+        self.assertEqual(probe.read_text(encoding="utf-8"), str(selected.resolve()))
         removed = uninstall_context_menu("macos", services_dir=services)
         self.assertTrue(removed["removed"])
         self.assertFalse(workflow.parent.parent.exists())
+
+    def test_macos_product_workflow_omits_release_probe(self) -> None:
+        services = self.root / "product-services"
+        with mock.patch.dict(
+            os.environ, {"SKILL_MAGNET_FINDER_E2E_PROBE": ""}
+        ):
+            install_context_menu("macos", self.config_path, services_dir=services)
+        workflow = services / "Skill Magnet.workflow" / "Contents" / "document.wflow"
+        self.assertNotIn(b"finder probe.txt", workflow.read_bytes())
         self.assertFalse(self.state.exists())
 
 

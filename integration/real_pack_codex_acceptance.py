@@ -34,7 +34,7 @@ def main() -> int:
         plan = engine.plan(
             platform="windows" if sys.platform == "win32" else "macos",
             project=project,
-            pack_id="codex-pmo-skills",
+            pack_id="codex-delivery-assurance",
             runtime="codex",
             purpose=PURPOSE,
             ttl_minutes=30,

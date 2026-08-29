@@ -1,0 +1,88 @@
+{
+  "captured_run": {
+    "status": "verified_completed",
+    "contract_id": "2d5cce267dd948fe880c43acaeab3390",
+    "attempt_id": "2f40b52feab84dd69651487d43c40bbb",
+    "selected_skill_id": "codex-sandbox-approval-boundary",
+    "actual_request": "このプロジェクトでCodexのサンドボックス承認境界を、日本語で具体的に3点まとめてください。",
+    "actual_request_sha256": "6a7251459069b39f9f6904ec38d1007de917d2c6507838a0c2a2d85ed186c27d",
+    "instruction_digest": "e7a9def6a153946f6481412362ee7afaac99552ee7d7d9096b51a788887b0c05",
+    "acceptance_digest": "b4df1deeebf2a0cfa03e93c19a59a90457f39279c51bf56d3ecc5003592e386d",
+    "verified_evidence_sha256": "614fae64954eb26d01f2987383b01be9d3eec5006814e122ef1d027395c27a11"
+  },
+  "runtime": {
+    "version": "codex-cli 0.148.0",
+    "executable": "C:\\Users\\HOMEA\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe",
+    "pid": 25844,
+    "exit_code": 0,
+    "started_at": "2026-08-29T02:07:04.845670+09:00",
+    "finished_at": "2026-08-29T02:07:29.335958+09:00",
+    "sandbox": "read-only",
+    "approval": "never",
+    "ephemeral": true,
+    "process_local_disabled_mcp_servers": [
+      "cloudflare-builds",
+      "cloudflare-observability",
+      "unreal-mcp"
+    ],
+    "metadata_sha256": "cb78d62a742d5c7cf6d95323ea43595d816ddf648294e4d9a57edb4ae0253df3"
+  },
+  "screenshots": {
+    "A": {
+      "repository_path": "A-real-codex-execution-window.png",
+      "user_copy": "C:\\Users\\HOMEA\\Documents\\Codex\\2026-08-28\\skill-magnet-pm\\outputs\\skill-magnet-A-real-codex-visible-e2e-20260829.png",
+      "sha256": "1e63f760389927aea1ce81a6ebb1a8532b3bf4da493239760428a5ce9a8ca033",
+      "captured_at": "2026-08-29T02:07:53.0514019+09:00",
+      "window_title": "C:\\WINDOWS\\system32\\cmd.exe",
+      "window_pid": 26980,
+      "window_size": [960, 711],
+      "scope": "dedicated real Codex console window rectangle only",
+      "visually_verified": true
+    },
+    "B": {
+      "repository_path": "B-skill-magnet-japanese-result-window.png",
+      "user_copy": "C:\\Users\\HOMEA\\Documents\\Codex\\2026-08-28\\skill-magnet-pm\\outputs\\skill-magnet-B-japanese-result-visible-e2e-20260829.png",
+      "sha256": "dc38e917b0efce23f046759ce9e21a106e8a43630d10e436bcf830177b052d76",
+      "captured_at": "2026-08-29T02:08:23.0172450+09:00",
+      "window_title": "Skill Magnet — 完了",
+      "window_pid": 9424,
+      "window_size": [696, 610],
+      "scope": "Skill Magnet result window rectangle only",
+      "visually_verified": true
+    }
+  },
+  "sanitized_log": {
+    "path": "sanitized-visible-e2e.log",
+    "sha256": "dc5c2dbd83ab63f504a4b2f544ca935586709406147c629de25ad40ef8ae5ec9",
+    "contains_full_actual_answer": true,
+    "contains_credentials": false,
+    "contains_raw_user_config": false
+  },
+  "verification": {
+    "focused_pass": 4,
+    "full_repository_pass": 105,
+    "full_repository_skipped": 1,
+    "native_contract_pass": 2,
+    "consoleless_residual_probe_pass": 3,
+    "git_diff_check": "PASS",
+    "checked_pids": [25844, 26980, 9424],
+    "live_checked_pids": 0,
+    "matching_product_owned_processes": 0,
+    "global_config_sha256_before": "c1e5c92a3eb925e93ea509e1f60e68959ee96e2e7f828143386107debb9d791d",
+    "global_config_sha256_after": "c1e5c92a3eb925e93ea509e1f60e68959ee96e2e7f828143386107debb9d791d"
+  },
+  "artifact_hashes": {
+    "verified-visible-run.json": "31c954c42052cf8e2f78f4f782ca84656e358492160340207c1345b4c6a12115",
+    "visible-runtime-metadata.json": "cb78d62a742d5c7cf6d95323ea43595d816ddf648294e4d9a57edb4ae0253df3"
+  },
+  "post_e2e_external_config_observation": {
+    "e2e_hash_comparison_completed_at": "2026-08-29T02:08:41+09:00",
+    "e2e_hashes_equal": true,
+    "later_observed_hash": "f5f27d4eea18a9bacbce2968938f54693016256e0f3484758e62d5f3c1241e5a",
+    "later_config_creation_and_write_time": "2026-08-29T02:11:50.0602587+09:00",
+    "concurrent_chatgpt_process_started_at": "2026-08-29T02:11:45.330780+09:00",
+    "classification": "external change after the captured E2E comparison window",
+    "restored_or_modified_by_this_task": false
+  },
+  "setup_history_preserved_in_state": true
+}

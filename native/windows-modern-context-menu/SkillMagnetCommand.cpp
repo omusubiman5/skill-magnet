@@ -1,5 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <bcrypt.h>
 #include <shobjidl.h>
 
 #include <atomic>
@@ -14,6 +15,79 @@ static const CLSID CLSID_SkillMagnetCommand = {
 static constexpr wchar_t kProjectMarker[] = L"__SKILL_MAGNET_PROJECT__";
 static std::atomic<long> g_object_count{0};
 static HMODULE g_module = nullptr;
+
+static std::wstring InvokeLogPath() {
+    std::vector<wchar_t> local_app_data(32768);
+    const DWORD size = GetEnvironmentVariableW(
+        L"LOCALAPPDATA", local_app_data.data(), static_cast<DWORD>(local_app_data.size()));
+    if (!size || size >= local_app_data.size()) return {};
+    std::wstring product_root(local_app_data.data(), size);
+    product_root += L"\\SkillMagnet";
+    CreateDirectoryW(product_root.c_str(), nullptr);
+    product_root += L"\\ContextMenu";
+    CreateDirectoryW(product_root.c_str(), nullptr);
+    return product_root + L"\\invoke.log";
+}
+
+static std::wstring Sha256Digest(const std::wstring& value) {
+    BCRYPT_ALG_HANDLE algorithm = nullptr;
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    DWORD object_size = 0;
+    DWORD hash_size = 0;
+    DWORD copied = 0;
+    std::wstring result;
+    if (!BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(
+            &algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0)) ||
+        !BCRYPT_SUCCESS(BCryptGetProperty(
+            algorithm, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&object_size),
+            sizeof(object_size), &copied, 0)) ||
+        !BCRYPT_SUCCESS(BCryptGetProperty(
+            algorithm, BCRYPT_HASH_LENGTH, reinterpret_cast<PUCHAR>(&hash_size),
+            sizeof(hash_size), &copied, 0))) {
+        if (algorithm) BCryptCloseAlgorithmProvider(algorithm, 0);
+        return L"unavailable";
+    }
+    std::vector<UCHAR> object(object_size);
+    std::vector<UCHAR> digest(hash_size);
+    PUCHAR bytes = reinterpret_cast<PUCHAR>(const_cast<wchar_t*>(value.data()));
+    const ULONG byte_count = static_cast<ULONG>(value.size() * sizeof(wchar_t));
+    if (BCRYPT_SUCCESS(BCryptCreateHash(
+            algorithm, &hash, object.data(), object_size, nullptr, 0, 0)) &&
+        BCRYPT_SUCCESS(BCryptHashData(hash, bytes, byte_count, 0)) &&
+        BCRYPT_SUCCESS(BCryptFinishHash(hash, digest.data(), hash_size, 0))) {
+        static constexpr wchar_t hex[] = L"0123456789abcdef";
+        result.reserve(digest.size() * 2);
+        for (const UCHAR byte : digest) {
+            result.push_back(hex[byte >> 4]);
+            result.push_back(hex[byte & 0x0f]);
+        }
+    }
+    if (hash) BCryptDestroyHash(hash);
+    BCryptCloseAlgorithmProvider(algorithm, 0);
+    return result.empty() ? L"unavailable" : result;
+}
+
+static void LogInvokeEvent(const wchar_t* event, const std::wstring& command_digest,
+                           DWORD detail = 0) noexcept {
+    const std::wstring path = InvokeLogPath();
+    if (path.empty()) return;
+    SYSTEMTIME timestamp{};
+    GetSystemTime(&timestamp);
+    wchar_t line[512]{};
+    const int length = swprintf_s(
+        line, L"%04u-%02u-%02uT%02u:%02u:%02u.%03uZ\tevent=%ls\tcommand_sha256=%ls\tdetail=%lu\r\n",
+        timestamp.wYear, timestamp.wMonth, timestamp.wDay, timestamp.wHour,
+        timestamp.wMinute, timestamp.wSecond, timestamp.wMilliseconds, event,
+        command_digest.c_str(), static_cast<unsigned long>(detail));
+    if (length <= 0) return;
+    HANDLE file = CreateFileW(path.c_str(), FILE_APPEND_DATA,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return;
+    DWORD written = 0;
+    WriteFile(file, line, static_cast<DWORD>(length * sizeof(wchar_t)), &written, nullptr);
+    CloseHandle(file);
+}
 
 static HRESULT CopyString(const std::wstring& value, PWSTR* output) noexcept {
     if (!output) return E_POINTER;
@@ -50,21 +124,6 @@ static std::string ReadMenuManifest() {
     std::wstring path = ModuleDirectory() + L"\\SkillMagnetMenu.tsv";
     HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    // A sparse package gives the COM server package identity, so
-    // GetModuleFileNameW may report the virtual WindowsApps package path even
-    // though the mutable menu contract lives in the registered external
-    // location. Resolve that product-owned location explicitly as a fallback.
-    if (file == INVALID_HANDLE_VALUE) {
-        std::vector<wchar_t> local_app_data(32768);
-        const DWORD size = GetEnvironmentVariableW(
-            L"LOCALAPPDATA", local_app_data.data(), static_cast<DWORD>(local_app_data.size()));
-        if (size > 0 && size < local_app_data.size()) {
-            path.assign(local_app_data.data(), size);
-            path += L"\\SkillMagnet\\ContextMenu\\SkillMagnetMenu.tsv";
-            file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        }
-    }
     if (file == INVALID_HANDLE_VALUE) return {};
     LARGE_INTEGER length{};
     if (!GetFileSizeEx(file, &length) || length.QuadPart <= 0 || length.QuadPart > 8 * 1024 * 1024) {
@@ -110,6 +169,21 @@ static std::wstring QuoteArgument(const std::wstring& value) {
     output.append(slashes * 2, L'\\');
     output.push_back(L'\"');
     return output;
+}
+
+static std::wstring WindowsErrorDetail(DWORD error) {
+    wchar_t* raw = nullptr;
+    const DWORD length = FormatMessageW(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+            FORMAT_MESSAGE_IGNORE_INSERTS,
+        nullptr, error, 0, reinterpret_cast<PWSTR>(&raw), 0, nullptr);
+    std::wstring detail = length && raw ? std::wstring(raw, length) : L"Unknown Windows error";
+    if (raw) LocalFree(raw);
+    while (!detail.empty() &&
+           (detail.back() == L'\r' || detail.back() == L'\n' || detail.back() == L' ')) {
+        detail.pop_back();
+    }
+    return L"Windows error " + std::to_wstring(error) + L": " + detail;
 }
 
 static HRESULT SelectedPath(IShellItemArray* items, std::wstring* path) {
@@ -211,27 +285,45 @@ public:
     }
     HRESULT STDMETHODCALLTYPE Invoke(IShellItemArray* items, IBindCtx*) override {
         if (command_.empty()) return E_NOTIMPL;
+        const std::wstring template_digest = Sha256Digest(command_);
+        LogInvokeEvent(L"invoke_enter", template_digest);
         std::wstring project;
         HRESULT result = SelectedPath(items, &project);
+        if (FAILED(result)) {
+            LogInvokeEvent(L"selection_failed", template_digest,
+                           static_cast<DWORD>(result));
+        } else {
+            LogInvokeEvent(L"selection_succeeded", template_digest);
+        }
         const size_t marker = command_.find(kProjectMarker);
         if (FAILED(result) || marker == std::wstring::npos) {
+            if (marker == std::wstring::npos) {
+                LogInvokeEvent(L"marker_missing", template_digest);
+            }
             MessageBoxW(nullptr, L"Skill Magnet could not resolve the selected folder.",
                         L"Skill Magnet", MB_OK | MB_ICONERROR);
             return FAILED(result) ? result : E_INVALIDARG;
         }
         std::wstring launch = command_;
         launch.replace(marker, wcslen(kProjectMarker), QuoteArgument(project));
+        const std::wstring launch_digest = Sha256Digest(launch);
         std::vector<wchar_t> mutable_command(launch.begin(), launch.end());
         mutable_command.push_back(L'\0');
         STARTUPINFOW startup{sizeof(startup)};
         PROCESS_INFORMATION process{};
         if (!CreateProcessW(nullptr, mutable_command.data(), nullptr, nullptr, FALSE,
-                            CREATE_UNICODE_ENVIRONMENT, nullptr, project.c_str(),
+                            CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW, nullptr,
+                            project.c_str(),
                             &startup, &process)) {
-            MessageBoxW(nullptr, L"Skill Magnet could not start the selected AI task.",
-                        L"Skill Magnet", MB_OK | MB_ICONERROR);
-            return HRESULT_FROM_WIN32(GetLastError());
+            const DWORD error = GetLastError();
+            LogInvokeEvent(L"create_process_failed", launch_digest, error);
+            const std::wstring message =
+                L"Skill Magnet could not start the selected AI task.\n\n" +
+                WindowsErrorDetail(error);
+            MessageBoxW(nullptr, message.c_str(), L"Skill Magnet", MB_OK | MB_ICONERROR);
+            return HRESULT_FROM_WIN32(error);
         }
+        LogInvokeEvent(L"create_process_succeeded", launch_digest, process.dwProcessId);
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
         return S_OK;
@@ -311,10 +403,6 @@ static MenuNode* LoadRoot() {
     const std::string data = ReadMenuManifest();
     size_t start = 0;
     bool header_seen = false;
-    std::wstring first_pack;
-    std::wstring first_label;
-    std::wstring first_kind;
-    bool multiple_packs = false;
     while (start < data.size()) {
         size_t end = data.find('\n', start);
         if (end == std::string::npos) end = data.size();
@@ -322,37 +410,24 @@ static MenuNode* LoadRoot() {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         start = end + 1;
         if (!header_seen) {
-            header_seen = line == "skill-magnet-menu-v2";
+            header_seen = line == "skill-magnet-menu-v3";
             if (!header_seen) break;
             continue;
         }
         if (line.empty()) continue;
         const auto fields = SplitFields(line);
-        if (fields.size() != 6 || fields[0].empty() || fields[1].empty() ||
-            (fields[2] != L"package" && fields[2] != L"skill") || fields[3].empty() ||
-            (fields[4] != L"Codex" && fields[4] != L"Claude") ||
-            fields[5].find(kProjectMarker) == std::wstring::npos) continue;
-        if (first_pack.empty()) {
-            first_pack = fields[0];
-            first_label = fields[1];
-            first_kind = fields[2];
-        } else if (fields[0] != first_pack) {
-            multiple_packs = true;
-        }
+        if (fields.size() != 7 || fields[0].empty() || fields[1] != L"Skill Magnet" ||
+            (fields[2] != L"package" && fields[2] != L"skill") ||
+            fields[3].empty() || fields[4].empty() ||
+            fields[5].empty() || fields[6].find(kProjectMarker) == std::wstring::npos) continue;
         // Windows 11's compact Explorer surface renders only the extension
         // root's immediate IExplorerCommand flyout reliably. Preserve the full
-        // explicit selection in each leaf label instead of producing blank
-        // recursive flyouts. The classic fallback retains the nested layout.
-        const std::wstring leaf_title = multiple_packs
-            ? L"Package: " + fields[1] + L" | Skill: " + fields[3] + L" | " + fields[4]
-            : L"Skill: " + fields[3] + L" | " + fields[4];
-        if (!root->AddLeaf(leaf_title, fields[5])) {
+        // explicit skill selection in each leaf label instead of producing
+        // blank recursive flyouts. The AI is selected in the confirmation UI.
+        if (!root->AddLeaf(fields[4], fields[6])) {
             root->Release();
             return nullptr;
         }
-    }
-    if (!first_pack.empty() && !multiple_packs) {
-        root->SetTitle((first_kind == L"package" ? L"Package: " : L"Skill: ") + first_label);
     }
     return root;
 }
