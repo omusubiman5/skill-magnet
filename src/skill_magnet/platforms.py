@@ -83,7 +83,15 @@ def _windows_launcher_path() -> Path:
     local_app_data = os.environ.get("LOCALAPPDATA")
     if not local_app_data:
         local_app_data = tempfile.gettempdir()
-    return Path(local_app_data) / "SkillMagnet" / "ContextMenu" / "SkillMagnetLauncher.exe"
+    # Path chooses its concrete class from os.name at call time.  The Windows
+    # contract is also exercised on POSIX runners with os.name mocked, so keep
+    # the host-native class captured at import time.
+    return (
+        type(_PACKAGE_ROOT)(local_app_data)
+        / "SkillMagnet"
+        / "ContextMenu"
+        / "SkillMagnetLauncher.exe"
+    )
 
 
 def _cli_prefix(config: Path, *, windows_launcher: bool = False) -> tuple[str, ...]:
@@ -94,7 +102,7 @@ def _cli_prefix(config: Path, *, windows_launcher: bool = False) -> tuple[str, .
         f"sys.path.insert(0,{str(source_root)!r});"
         "runpy.run_module('skill_magnet',run_name='__main__')"
     )
-    executable = Path(sys.executable)
+    executable = type(_PACKAGE_ROOT)(sys.executable)
     command = (str(executable), "-c", bootstrap, "--config", str(config.absolute()))
     if windows_launcher:
         return (str(_windows_launcher_path()), *command)
@@ -338,7 +346,7 @@ def _windows_modern_paths(install_root: Path | None = None) -> tuple[Path, Path,
         local_app_data = os.environ.get("LOCALAPPDATA")
         if not local_app_data:
             raise SkillMagnetError("LOCALAPPDATA is required for modern context-menu installation")
-        install_root = Path(local_app_data) / "SkillMagnet" / "ContextMenu"
+        install_root = type(_PACKAGE_ROOT)(local_app_data) / "SkillMagnet" / "ContextMenu"
     return native_root, _absolute_path(install_root), native_root / "package.ps1"
 
 

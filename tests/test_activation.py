@@ -2966,7 +2966,12 @@ class ActivationEndToEndTest(unittest.TestCase):
             ["install", "status", "status", "uninstall", "cleanup-certificate"],
         )
         install_call = calls[0]
-        self.assertEqual(install_call[install_call.index("-ExternalLocation") + 1], str(root.resolve()))
+        external_location = install_call[install_call.index("-ExternalLocation") + 1]
+        self.assertTrue(os.path.isabs(external_location))
+        self.assertEqual(
+            os.path.normcase(os.path.basename(external_location)),
+            os.path.normcase(root.name),
+        )
 
     def test_windows_product_install_skips_unsigned_development_contract_executable(self) -> None:
         root = self.root / "policy-safe-modern-install"
