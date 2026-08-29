@@ -2942,6 +2942,9 @@ class ActivationEndToEndTest(unittest.TestCase):
                         "name": "SkillMagnet.ContextMenu",
                         "package_full_name": "SkillMagnet.ContextMenu_1.0.0.0_x64_test",
                         "install_location": str(root),
+                        "legacy_certificate_thumbprints_removed": (
+                            ["A" * 40] if action == "install" else []
+                        ),
                     }
                 ),
                 stderr="",
@@ -2954,6 +2957,7 @@ class ActivationEndToEndTest(unittest.TestCase):
             status = windows_modern_context_menu_status(install_root=root, run=fake_run)
             removed = uninstall_windows_modern_context_menu(install_root=root, run=fake_run)
         self.assertEqual(installed["contexts"], ["Directory", r"Directory\Background"])
+        self.assertEqual(installed["legacy_certificate_thumbprints_removed"], ["A" * 40])
         self.assertTrue(status["dll_exists"])
         self.assertTrue(status["menu_manifest_exists"])
         self.assertTrue(status["command_target_exists"])

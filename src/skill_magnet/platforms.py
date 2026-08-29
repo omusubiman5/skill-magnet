@@ -574,8 +574,8 @@ def install_windows_modern_context_menu(
             detail = (package_build.stderr or package_build.stdout or "unknown package build error").strip()
             raise SkillMagnetError(f"Windows signed identity package build failed: {detail}")
 
-    status = _package_action("install", script, install_root=root, run=run)
-    if not status.get("installed"):
+    install_status = _package_action("install", script, install_root=root, run=run)
+    if not install_status.get("installed"):
         raise SkillMagnetError("Windows modern context-menu package did not register")
     status = windows_modern_context_menu_status(
         install_root=root, config=config, run=run
@@ -589,6 +589,12 @@ def install_windows_modern_context_menu(
             "external_location": str(root),
             "contexts": ["Directory", r"Directory\Background"],
             "reinstall_required_after_pack_change": True,
+            # status is intentionally read back after registration, but that
+            # command cannot reconstruct which historical trust entries the
+            # install transaction removed. Preserve the transaction evidence.
+            "legacy_certificate_thumbprints_removed": list(
+                install_status.get("legacy_certificate_thumbprints_removed", [])
+            ),
         }
     )
     return status
