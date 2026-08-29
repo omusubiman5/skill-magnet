@@ -13,8 +13,8 @@
   "menu_leaf_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
-  "release_code_sha": "74774bc48b43ccf08360d4b89e204069e08ae193",
-  "wheel_payload_sha256": "d2e822e490462ec55c19ca78ea0821448007ccf80cd3a549911e25261fac748d",
+  "release_code_sha": "136539e3f80b245dee5baac617a1d41708d39018",
+  "wheel_payload_sha256": "8094ae4da399e0a97eb5c00241afc3818bf2c7ce16f17c87d10f4c1f42d34694",
   "automated_status": "PASS",
   "windows_explorer_field_status": "PASS_0.3.2_SMART_APP_CONTROL_REAL_UI_TO_CONFIRMATION",
   "codex_desktop_result_status": "PASS_USER_CONFIRMED_NATURAL_LANGUAGE_RESULT"

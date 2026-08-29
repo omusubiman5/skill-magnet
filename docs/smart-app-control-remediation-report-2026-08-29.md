@@ -30,8 +30,8 @@ launcherを外した初期0.3.1でも、外部locationの自己署名`SkillMagne
 | Explorer real UI | PASS: 通常右クリック → `Skill Magnet` → `PMO` → `Skill Magnet — 実行確認` |
 | process launch | PASS: `create_process_succeeded`、PID 7868 |
 | Code Integrity after 0.3.2 invocation | PASS: Skill Magnet関連3033/3077は0件 |
-| candidate commit | PASS: `74774bc48b43ccf08360d4b89e204069e08ae193` |
-| canonical wheel | PASS: logical payload SHA-256 `d2e822e490462ec55c19ca78ea0821448007ccf80cd3a549911e25261fac748d` |
+| candidate artifact-input commit | PASS: `136539e3f80b245dee5baac617a1d41708d39018` |
+| canonical wheel | PASS: physical SHA-256 `6517eeff49a1132eaf08d6927ec7dcb812a2b8930ce1a6e38464a3a994ec2507`、logical payload SHA-256 `8094ae4da399e0a97eb5c00241afc3818bf2c7ce16f17c87d10f4c1f42d34694` |
 | real OS lifecycle | PASS: install → update → rollback → uninstall |
 | lifecycle residue | PASS: Appx、owned registry、rollback point、external test rootは0 |
 
