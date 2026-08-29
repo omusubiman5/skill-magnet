@@ -7,11 +7,13 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "certificate-state.ps1")
 Import-Module Microsoft.PowerShell.Security
 Import-Module PKI
 $name = "SkillMagnet.ContextMenu"
 $nonInteractiveCertificateTrust =
     $env:SKILL_MAGNET_NONINTERACTIVE_CERTIFICATE_TRUST -eq "1"
+$legacyThumbprints = @()
 
 if ($Action -eq "install") {
     if (-not (Test-Path -LiteralPath $Manifest -PathType Leaf)) { throw "Missing package manifest: $Manifest" }
@@ -42,6 +44,50 @@ if ($Action -eq "install") {
             }
             $state | Add-Member -NotePropertyName created_machine_trusted_people -NotePropertyValue $true -Force
             $state | ConvertTo-Json | Set-Content -LiteralPath $certificateState -Encoding UTF8
+        }
+
+        $legacyThumbprints = @(
+            Get-SkillMagnetLegacyTrustedCertificateThumbprints `
+                -ActiveThumbprint ([string]$state.thumbprint)
+        )
+        if ($legacyThumbprints.Count -gt 0) {
+            $machinePaths = @(
+                $legacyThumbprints | ForEach-Object {
+                    "Cert:\LocalMachine\TrustedPeople\$_"
+                }
+            )
+            if ($nonInteractiveCertificateTrust) {
+                foreach ($machinePath in $machinePaths) {
+                    Remove-Item -LiteralPath $machinePath -Force
+                }
+                $cleanupExitCode = 0
+            }
+            else {
+                $pathLiterals = ($machinePaths | ForEach-Object {
+                    "'" + $_.Replace("'", "''") + "'"
+                }) -join ","
+                $cleanupCommand = (
+                    "@($pathLiterals) | ForEach-Object { " +
+                    "if (Test-Path -LiteralPath `$_) { Remove-Item -LiteralPath `$_ -Force } }"
+                )
+                $encodedCommand = [Convert]::ToBase64String(
+                    [Text.Encoding]::Unicode.GetBytes($cleanupCommand)
+                )
+                $cleanup = Start-Process -FilePath powershell.exe -Verb RunAs -Wait -PassThru `
+                    -ArgumentList @("-NoProfile", "-NonInteractive", "-EncodedCommand", $encodedCommand)
+                $cleanupExitCode = $cleanup.ExitCode
+            }
+            $machineResidue = @($machinePaths | Where-Object {
+                Test-Path -LiteralPath $_
+            })
+            if ($cleanupExitCode -ne 0 -or $machineResidue.Count -gt 0) {
+                throw "Legacy Skill Magnet machine certificate cleanup failed"
+            }
+            foreach ($thumbprint in $legacyThumbprints) {
+                Remove-Item -LiteralPath (
+                    "Cert:\CurrentUser\TrustedPeople\" + $thumbprint
+                ) -Force
+            }
         }
     }
     Add-AppxPackage -Path $package -ExternalLocation $ExternalLocation -ForceApplicationShutdown
@@ -75,4 +121,5 @@ $package = Get-AppxPackage -Name $name | Select-Object -First 1
     name = $name
     package_full_name = if ($package) { $package.PackageFullName } else { $null }
     install_location = if ($package) { $package.InstallLocation } else { $null }
+    legacy_certificate_thumbprints_removed = @($legacyThumbprints)
 } | ConvertTo-Json -Compress
