@@ -36,12 +36,31 @@ try {
         Remove-Item -LiteralPath ("Cert:\CurrentUser\My\" + $legacy.Thumbprint) -Force
     }
 
-    $installOutput = python -m skill_magnet install-context-menu `
+    New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
+    [ordered]@{
+        thumbprint = $legacyThumbprints[-1]
+        created_my = $false
+        created_trusted_people = $false
+        created_machine_trusted_people = $false
+        owned_certificate_thumbprints = @($legacyThumbprints)
+    } | ConvertTo-Json | Set-Content `
+        -LiteralPath (Join-Path $installRoot "certificate-state.json") `
+        -Encoding UTF8
+
+    $defaultConfig = python -c "from skill_magnet.cli import _default_config_path; print(_default_config_path())"
+    $priorConfig = Join-Path $testBase "prior-skill-magnet.json"
+    $prior = Get-Content -LiteralPath $defaultConfig -Raw | ConvertFrom-Json
+    $prior.packs[0].purpose = "Prior installed release used only by the rollback lifecycle."
+    $prior | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $priorConfig -Encoding UTF8
+
+    $installOutput = python -m skill_magnet --config $priorConfig install-context-menu `
         --platform windows --confirm | Out-String
     Assert-True ($LASTEXITCODE -eq 0) "Context-menu installation failed."
     $installed = $installOutput | ConvertFrom-Json
     Assert-True ([bool]$installed.modern.usable_installed_state) `
         "The real MSIX installation did not become usable."
+    $priorMenuHash = (Get-FileHash -Algorithm SHA256 `
+        -LiteralPath (Join-Path $installRoot "SkillMagnetMenu.tsv")).Hash
     foreach ($legacyThumbprint in $legacyThumbprints) {
         Assert-True (-not (Test-Path -LiteralPath (
             "Cert:\CurrentUser\TrustedPeople\" + $legacyThumbprint
@@ -59,6 +78,17 @@ try {
     Assert-True ($thumbprint -match '^[0-9A-Fa-f]{40}$') `
         "Certificate ownership thumbprint is invalid."
 
+    $updateOutput = python -m skill_magnet install-context-menu `
+        --platform windows --confirm | Out-String
+    Assert-True ($LASTEXITCODE -eq 0) "Context-menu update failed."
+    $updated = $updateOutput | ConvertFrom-Json
+    Assert-True ([bool]$updated.modern.usable_installed_state) `
+        "The updated real MSIX installation did not become usable."
+    $updatedMenuHash = (Get-FileHash -Algorithm SHA256 `
+        -LiteralPath (Join-Path $installRoot "SkillMagnetMenu.tsv")).Hash
+    Assert-True ($updatedMenuHash -ne $priorMenuHash) `
+        "The real update did not change its menu contract."
+
     $statusOutput = python -m skill_magnet context-menu-status `
         --platform windows | Out-String
     Assert-True ($LASTEXITCODE -eq 0) "Context-menu status failed."
@@ -68,12 +98,30 @@ try {
     Assert-True ([int]$status.menu_leaf_count -eq 1) `
         "Installed release does not expose exactly one package leaf."
 
-    $rollbackOutput = python -m skill_magnet uninstall-context-menu `
+    $rollbackOutput = python -m skill_magnet rollback-context-menu `
         --platform windows --confirm | Out-String
-    Assert-True ($LASTEXITCODE -eq 0) "Context-menu rollback/uninstall failed."
+    Assert-True ($LASTEXITCODE -eq 0) "Context-menu update rollback failed."
     $rollback = $rollbackOutput | ConvertFrom-Json
     Assert-True ([bool]$rollback.rollback_point_removed) `
         "Rollback point was not removed."
+    Assert-True ([bool](Get-AppxPackage -Name "SkillMagnet.ContextMenu")) `
+        "Rollback did not restore the prior real Appx package."
+    $restoredMenuHash = (Get-FileHash -Algorithm SHA256 `
+        -LiteralPath (Join-Path $installRoot "SkillMagnetMenu.tsv")).Hash
+    Assert-True ($restoredMenuHash -eq $priorMenuHash) `
+        "Rollback did not restore the prior menu contract."
+    $priorStatusOutput = python -m skill_magnet --config $priorConfig `
+        context-menu-status --platform windows | Out-String
+    $priorStatus = $priorStatusOutput | ConvertFrom-Json
+    Assert-True ([bool]$priorStatus.usable_installed_state) `
+        "Rollback did not restore a usable prior release."
+
+    $uninstallOutput = python -m skill_magnet uninstall-context-menu `
+        --platform windows --confirm | Out-String
+    Assert-True ($LASTEXITCODE -eq 0) "Context-menu uninstall failed."
+    $uninstalled = $uninstallOutput | ConvertFrom-Json
+    Assert-True ([bool]$uninstalled.rollback_point_removed) `
+        "Uninstall left a rollback point."
 
     Assert-True (-not (Get-AppxPackage -Name "SkillMagnet.ContextMenu")) `
         "MSIX package remains installed."

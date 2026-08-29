@@ -6,7 +6,6 @@ import base64
 import os
 import plistlib
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -869,7 +868,11 @@ def install_windows_context_menus(
                 "locations": list(_windows_owned_menu_roots()),
             }
         if not first_install:
-            shutil.rmtree(transaction_backup)
+            # A successful update advances the one rollback point to the
+            # immediately previous installed state. The original pre-install
+            # snapshot belongs to uninstall, not update rollback semantics.
+            shutil.rmtree(backup)
+            os.replace(transaction_backup, backup)
         return {
             "installed": True,
             "platform": "windows",
@@ -902,6 +905,36 @@ def rollback_windows_context_menus(
         "platform": "windows",
         "external_location": str(root),
         "rollback_point_removed": True,
+        "removed_transaction_residue": removed_residue,
+    }
+
+
+def uninstall_windows_context_menus(
+    *, install_root: Path | None = None, run: object = subprocess.run
+) -> dict[str, object]:
+    """Remove the current product state instead of restoring an older update."""
+    if os.name != "nt":
+        raise SkillMagnetError("Windows context menus can only be uninstalled on Windows")
+    _, root, package_script = _windows_modern_paths(install_root)
+    status = _package_action("uninstall", package_script, install_root=root, run=run)
+    if status.get("installed"):
+        raise SkillMagnetError("Windows modern context-menu package remains registered")
+    if root.exists():
+        _package_action(
+            "cleanup-certificate", package_script, install_root=root, run=run
+        )
+        shutil.rmtree(root)
+    uninstall_context_menu("windows", run=run)
+    backup = _windows_context_backup_root(root)
+    if backup.exists():
+        _validate_windows_residue(backup, backup.parent)
+        shutil.rmtree(backup)
+    removed_residue = _cleanup_windows_context_residue(root)
+    return {
+        "removed": True,
+        "platform": "windows",
+        "external_location": str(root),
+        "rollback_point_removed": not backup.exists(),
         "removed_transaction_residue": removed_residue,
     }
 
@@ -1072,15 +1105,17 @@ def install_context_menu(
     # one shell-quoted absolute path. Normal product workflows contain no
     # probe branch at all.
     probe_target = os.environ.get("SKILL_MAGNET_FINDER_E2E_PROBE")
-    probe_command = ""
+    workflow_command = spec.command
     if probe_target:
         probe_path = type(_PACKAGE_ROOT)(probe_target)
         if not probe_path.is_absolute():
             raise SafetyError("Finder E2E probe path must be absolute")
-        probe_command = (
-            f'printf "%s" "$1" > {shlex.quote(str(probe_path))}; exit 0\n'
+        workflow_command = (
+            *workflow_command,
+            "--release-probe",
+            str(probe_path),
         )
-    shell_command = probe_command + subprocess_command(spec.command).replace(
+    shell_command = subprocess_command(workflow_command).replace(
         '"$SELECTED_PATH"', '"$1"'
     )
     document = {

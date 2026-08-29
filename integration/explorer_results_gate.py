@@ -5,6 +5,8 @@ import json
 import re
 import subprocess
 import sys
+import hashlib
+import zipfile
 from pathlib import Path
 
 LEDGER_START = "<!-- explorer-results-ledger:start"
@@ -36,6 +38,12 @@ def validate_consistency(text: str, *, observed_test_count: int,
         errors.append("human-readable test count mismatch")
     if ledger.get("release_scope") != "one-package-leaf":
         errors.append("release_scope must be one-package-leaf")
+    if not re.fullmatch(r"[0-9a-f]{40}", str(ledger.get("release_code_sha", ""))):
+        errors.append("release_code_sha must be a lowercase 40-hex commit")
+    if not re.fullmatch(
+        r"[0-9a-f]{64}", str(ledger.get("wheel_payload_sha256", ""))
+    ):
+        errors.append("wheel_payload_sha256 must be a lowercase 64-hex digest")
     stale = (r"18\s*(?:個別|immediate)\s*(?:leaf|leaves)",
              r"固定9\s*skills\s*[×x]\s*(?:Codex|Claude)",
              r"保管庫の固定commitから個別skillを選び")
@@ -44,10 +52,75 @@ def validate_consistency(text: str, *, observed_test_count: int,
     return errors
 
 
+def wheel_payload_sha256(wheel: Path) -> str:
+    digest = hashlib.sha256()
+    with zipfile.ZipFile(wheel) as archive:
+        for name in sorted(archive.namelist()):
+            if name.endswith("/"):
+                continue
+            digest.update(name.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(archive.read(name))
+            digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def validate_release_provenance(
+    repository: Path, ledger: dict[str, object], wheel: Path | None
+) -> list[str]:
+    errors: list[str] = []
+    release_sha = str(ledger.get("release_code_sha", ""))
+    if not re.fullmatch(r"[0-9a-f]{40}", release_sha):
+        return errors
+    commit = subprocess.run(
+        ["git", "cat-file", "-e", f"{release_sha}^{{commit}}"],
+        cwd=repository,
+        capture_output=True,
+    )
+    if commit.returncode != 0:
+        errors.append("release_code_sha does not identify a repository commit")
+        return errors
+    artifact_inputs = [
+        "src",
+        "native",
+        "setup.py",
+        "pyproject.toml",
+        "skill-magnet.json",
+        ".approved-snapshots",
+    ]
+    changed = subprocess.run(
+        ["git", "diff", "--name-only", f"{release_sha}..HEAD", "--", *artifact_inputs],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if changed:
+        errors.append("artifact inputs changed after release_code_sha: " + changed)
+    worktree_changed = subprocess.run(
+        ["git", "diff", "--name-only", "HEAD", "--", *artifact_inputs],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if worktree_changed:
+        errors.append("uncommitted artifact inputs remain: " + worktree_changed)
+    if wheel is not None:
+        actual = wheel_payload_sha256(wheel)
+        if actual != ledger.get("wheel_payload_sha256"):
+            errors.append(
+                "wheel_payload_sha256 mismatch: "
+                f"ledger={ledger.get('wheel_payload_sha256')!r}, observed={actual!r}"
+            )
+    return errors
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate current Explorer release evidence.")
     parser.add_argument("results", type=Path)
     parser.add_argument("--observed-test-count", type=int)
+    parser.add_argument("--wheel", type=Path)
     args = parser.parse_args(argv)
     repository = args.results.resolve().parents[1]
     sys.path.insert(0, str(repository / "src"))
@@ -66,13 +139,17 @@ def main(argv: list[str] | None = None) -> int:
             text=True,
         )
         count = int(counted.stdout.strip())
+    results_text = args.results.read_text(encoding="utf-8")
     errors = validate_consistency(
-        args.results.read_text(encoding="utf-8"), observed_test_count=count,
+        results_text, observed_test_count=count,
         observed_leaf_count=len(leaves),
         observed_selection_kinds=sorted(
             {config.packs[leaf.pack_id].selection_kind for leaf in leaves}
         ),
         observed_pack_skill_count=len(leaves[0].skill_ids) if leaves else 0)
+    errors.extend(
+        validate_release_provenance(repository, parse_ledger(results_text), args.wheel)
+    )
     for error in errors:
         print(f"ERROR: {error}")
     if errors:

@@ -40,6 +40,7 @@ from skill_magnet.platforms import (
     render_registration,
     uninstall_context_menu,
     uninstall_windows_modern_context_menu,
+    uninstall_windows_context_menus,
     windows_modern_context_menu_status,
     windows_background_registry_entries,
     windows_command,
@@ -681,6 +682,70 @@ class ActivationEndToEndTest(unittest.TestCase):
         evidence = self.state / "evidence" / f"{result['contract_id']}-desktop-handoff.json"
         self.assertTrue(evidence.is_file())
 
+    def test_codex_materialization_rejects_index_change_after_validation(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        plan = engine.plan(
+            platform="windows",
+            project=self.project,
+            pack_id="bounded-pack",
+            runtime="codex",
+            purpose="Use the pack composition map.",
+        )
+        contract = engine.confirm(plan, confirmed=True)
+        index = self.repo / "INDEX.md"
+        original_index = index.read_bytes()
+        real_copy2 = shutil.copy2
+
+        def replace_index_before_copy(source: object, destination: object, *args: object, **kwargs: object):
+            source_path = Path(source)
+            if source_path == index:
+                index.write_text("# injected after validation\n", encoding="utf-8")
+            return real_copy2(source, destination, *args, **kwargs)
+
+        try:
+            with (
+                mock.patch("skill_magnet.activation.shutil.copy2", side_effect=replace_index_before_copy),
+                self.assertRaisesRegex(SafetyError, "INDEX changed"),
+            ):
+                engine.prepare_codex_desktop_handoff(contract.contract_id)
+        finally:
+            index.write_bytes(original_index)
+        self.assertFalse(
+            (engine.materialization_dir / contract.contract_id).exists()
+        )
+        stored_contract = json.loads(
+            (engine.contract_dir / f"{contract.contract_id}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(stored_contract["index_digest"], plan["index_digest"])
+
+    def test_any_cli_entry_removes_expired_desktop_materialization(self) -> None:
+        expired = self.state / "desktop-materializations" / ("a" * 32)
+        expired.mkdir(parents=True)
+        (expired / "materialization.json").write_text(
+            json.dumps(
+                {
+                    "expires_at": (
+                        datetime.now(timezone.utc) - timedelta(minutes=1)
+                    ).isoformat()
+                }
+            ),
+            encoding="utf-8",
+        )
+        with redirect_stdout(io.StringIO()):
+            result = cli_main(
+                [
+                    "--config",
+                    str(self.config_path),
+                    "--state-dir",
+                    str(self.state),
+                    "packs",
+                ]
+            )
+        self.assertEqual(result, 0)
+        self.assertFalse(expired.exists())
+
     def test_codex_desktop_deep_link_encodes_japanese_newlines_reserved_and_long_text(self) -> None:
         prompt = "日本語\n空 白 & # ? = " + ("長文" * 1_000)
         project = r"C:\Projects\日本語 & # folder"
@@ -1246,7 +1311,7 @@ class ActivationEndToEndTest(unittest.TestCase):
     def test_completion_contract_rejects_each_mismatched_claim(self) -> None:
         engine = ActivationEngine(self.config, self.state)
         contract = engine.confirm(self._plan(engine), confirmed=True)
-        pack, _, _ = engine._validated_pack(contract.pack_id)
+        pack, _, _, _ = engine._validated_pack(contract.pack_id)
         checks = engine._load_acceptance(pack, contract.skill_ids)
         request_sha256 = hashlib.sha256(contract.purpose.encode("utf-8")).hexdigest()
         base = {
@@ -1315,7 +1380,7 @@ class ActivationEndToEndTest(unittest.TestCase):
     def test_codex_output_schema_requires_every_declared_property(self) -> None:
         engine = ActivationEngine(self.config, self.state)
         contract = engine.confirm(self._plan(engine), confirmed=True)
-        pack, _, _ = engine._validated_pack(contract.pack_id)
+        pack, _, _, _ = engine._validated_pack(contract.pack_id)
         checks = engine._load_acceptance(pack, contract.skill_ids)
         schema = engine._output_schema(contract, checks)
 
@@ -1363,7 +1428,7 @@ class ActivationEndToEndTest(unittest.TestCase):
             purpose="Make only the bounded decision",
         )
         contract = engine.confirm(plan, confirmed=True)
-        pack, _, _ = engine._validated_pack(contract.pack_id)
+        pack, _, _, _ = engine._validated_pack(contract.pack_id)
         checks = engine._load_acceptance(pack, contract.skill_ids)
         schema = engine._output_schema(contract, checks)
         self.assertEqual(schema["properties"]["evidence"]["properties"]
@@ -2822,7 +2887,7 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertTrue(result["reinstall_required_after_pack_change"])
         self.assertFalse(self.state.exists())
 
-    def test_windows_public_cli_installs_and_rolls_back_modern_menu_by_default(self) -> None:
+    def test_windows_public_cli_installs_and_uninstalls_modern_menu_by_default(self) -> None:
         install_result = {"installed": True, "modern": {"installed": True}}
         rollback_result = {"rolled_back": True, "rollback_point_removed": True}
         stdout = io.StringIO()
@@ -2850,7 +2915,7 @@ class ActivationEndToEndTest(unittest.TestCase):
         stdout = io.StringIO()
         with (
             mock.patch(
-                "skill_magnet.cli.rollback_windows_context_menus",
+                "skill_magnet.cli.uninstall_windows_context_menus",
                 return_value=rollback_result,
             ) as rollback,
             redirect_stdout(stdout),
@@ -3192,7 +3257,7 @@ class ActivationEndToEndTest(unittest.TestCase):
             _cleanup_windows_context_residue(root)
         self.assertTrue(invalid.exists())
 
-    def test_windows_combined_install_is_repeatable_and_keeps_original_uninstall_point(self) -> None:
+    def test_windows_update_rollback_restores_immediately_previous_install(self) -> None:
         root = self.root / "combined-repeatable-modern"
         registry = {
             r"HKCU\Software\Classes\Directory\shell\SkillMagnet": True,
@@ -3293,11 +3358,11 @@ class ActivationEndToEndTest(unittest.TestCase):
             )
 
             rollback_windows_context_menus(install_root=root, run=fake_run)
-        self.assertFalse(package_installed)
-        self.assertTrue(
+        self.assertTrue(package_installed)
+        self.assertFalse(
             registry[r"HKCU\Software\Classes\Directory\shell\SkillMagnet"]
         )
-        self.assertTrue(
+        self.assertFalse(
             registry[
                 r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnet"
             ]
@@ -3313,7 +3378,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                 False,
             )
         )
-        self.assertFalse(root.exists())
+        self.assertTrue(root.exists())
         self.assertFalse(rollback_root.exists())
 
     def test_windows_menu_command_bootstraps_outside_project_directory(self) -> None:
@@ -3477,7 +3542,30 @@ class ActivationEndToEndTest(unittest.TestCase):
         action = workflow_document["actions"][0]["action"]
         self.assertIn("ActionParameters", action)
         self.assertNotIn("parameters", action)
-        self.assertIn("finder probe.txt", action["ActionParameters"]["COMMAND_STRING"])
+        probe_command = action["ActionParameters"]["COMMAND_STRING"]
+        self.assertIn("finder probe.txt", probe_command)
+        self.assertIn("--release-probe", probe_command)
+        self.assertNotIn("printf", probe_command)
+        self.assertNotIn("exit 0", probe_command)
+        selected = self.root / "selected by Finder"
+        selected.mkdir()
+        self.assertEqual(
+            cli_main(
+                [
+                    "--config",
+                    str(self.config_path),
+                    "context",
+                    "--platform",
+                    "macos",
+                    "--project",
+                    str(selected),
+                    "--release-probe",
+                    str(probe),
+                ]
+            ),
+            0,
+        )
+        self.assertEqual(probe.read_text(encoding="utf-8"), str(selected.resolve()))
         removed = uninstall_context_menu("macos", services_dir=services)
         self.assertTrue(removed["removed"])
         self.assertFalse(workflow.parent.parent.exists())

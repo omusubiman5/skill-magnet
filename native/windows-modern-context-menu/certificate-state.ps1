@@ -13,6 +13,22 @@ function Merge-SkillMagnetCertificateState {
     $sameCertificate = $PreviousState -and (
         $PreviousState.thumbprint -eq $Thumbprint
     )
+    $ownedThumbprints = @()
+    if ($PreviousState) {
+        if ($PreviousState.PSObject.Properties.Name -contains "owned_certificate_thumbprints") {
+            $ownedThumbprints += @($PreviousState.owned_certificate_thumbprints)
+        }
+        $previousThumbprint = [string]$PreviousState.thumbprint
+        $previousOwned = [bool]$PreviousState.created_my -or
+            [bool]$PreviousState.created_trusted_people -or
+            [bool]$PreviousState.created_machine_trusted_people
+        if ($previousOwned -and $previousThumbprint -match '^[0-9A-Fa-f]{40}$') {
+            $ownedThumbprints += $previousThumbprint
+        }
+    }
+    if ($CreatedMy -or $CreatedTrustedPeople) {
+        $ownedThumbprints += $Thumbprint
+    }
     [ordered]@{
         thumbprint = $Thumbprint
         created_my = $CreatedMy -or (
@@ -24,19 +40,29 @@ function Merge-SkillMagnetCertificateState {
         created_machine_trusted_people = (
             $sameCertificate -and [bool]$PreviousState.created_machine_trusted_people
         )
+        owned_certificate_thumbprints = @(
+            $ownedThumbprints |
+                Where-Object { $_ -match '^[0-9A-Fa-f]{40}$' } |
+                ForEach-Object { $_.ToUpperInvariant() } |
+                Sort-Object -Unique
+        )
     }
 }
 
-function Test-SkillMagnetLegacyTrustedCertificate {
+function Test-SkillMagnetOwnedLegacyTrustedCertificate {
     param(
         [Parameter(Mandatory=$true)]
         [object]$Certificate,
         [Parameter(Mandatory=$true)]
-        [string]$ActiveThumbprint
+        [string]$ActiveThumbprint,
+        [Parameter(Mandatory=$true)]
+        [string[]]$OwnedThumbprints
     )
 
-    $thumbprint = [string]$Certificate.Thumbprint
-    if ($thumbprint -notmatch '^[0-9A-Fa-f]{40}$' -or $thumbprint -eq $ActiveThumbprint) {
+    $thumbprint = ([string]$Certificate.Thumbprint).ToUpperInvariant()
+    if ($thumbprint -notmatch '^[0-9A-F]{40}$' -or
+        $thumbprint -eq $ActiveThumbprint.ToUpperInvariant() -or
+        @($OwnedThumbprints | ForEach-Object { $_.ToUpperInvariant() }) -notcontains $thumbprint) {
         return $false
     }
     if ($Certificate.Subject -ne "CN=Skill Magnet Local" -or
@@ -56,8 +82,10 @@ function Test-SkillMagnetLegacyTrustedCertificate {
     })
 }
 
-function Get-SkillMagnetLegacyTrustedCertificateThumbprints {
+function Get-SkillMagnetOwnedLegacyTrustedCertificateThumbprints {
     param(
+        [Parameter(Mandatory=$true)]
+        [object]$State,
         [Parameter(Mandatory=$true)]
         [string]$ActiveThumbprint
     )
@@ -65,25 +93,30 @@ function Get-SkillMagnetLegacyTrustedCertificateThumbprints {
     if ($ActiveThumbprint -notmatch '^[0-9A-Fa-f]{40}$') {
         throw "Active Skill Magnet certificate thumbprint is invalid."
     }
-    $userCertificates = @(
-        Get-ChildItem Cert:\CurrentUser\TrustedPeople |
-            Where-Object {
-                Test-SkillMagnetLegacyTrustedCertificate `
-                    -Certificate $_ -ActiveThumbprint $ActiveThumbprint
-            }
-    )
-    $machineThumbprints = @(
-        Get-ChildItem Cert:\LocalMachine\TrustedPeople |
-            Where-Object {
-                Test-SkillMagnetLegacyTrustedCertificate `
-                    -Certificate $_ -ActiveThumbprint $ActiveThumbprint
-            } |
-            ForEach-Object { $_.Thumbprint.ToUpperInvariant() }
-    )
-    return @(
-        $userCertificates |
-            ForEach-Object { $_.Thumbprint.ToUpperInvariant() } |
-            Where-Object { $machineThumbprints -contains $_ } |
-            Sort-Object -Unique
-    )
+    $ownedThumbprints = if (
+        $State -and
+        $State.PSObject.Properties.Name -contains "owned_certificate_thumbprints"
+    ) { @($State.owned_certificate_thumbprints) } else { @() }
+    $result = @()
+    foreach ($ownedThumbprint in $ownedThumbprints) {
+        $candidate = ([string]$ownedThumbprint).ToUpperInvariant()
+        if ($candidate -notmatch '^[0-9A-F]{40}$' -or
+            $candidate -eq $ActiveThumbprint.ToUpperInvariant()) {
+            continue
+        }
+        $userPath = "Cert:\CurrentUser\TrustedPeople\$candidate"
+        $machinePath = "Cert:\LocalMachine\TrustedPeople\$candidate"
+        if (-not (Test-Path -LiteralPath $userPath) -or
+            -not (Test-Path -LiteralPath $machinePath)) {
+            continue
+        }
+        $userCertificate = Get-Item -LiteralPath $userPath
+        if (Test-SkillMagnetOwnedLegacyTrustedCertificate `
+            -Certificate $userCertificate `
+            -ActiveThumbprint $ActiveThumbprint `
+            -OwnedThumbprints $ownedThumbprints) {
+            $result += $candidate
+        }
+    }
+    return @($result | Sort-Object -Unique)
 }

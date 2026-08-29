@@ -96,10 +96,10 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 
 Explorerの通常右クリックに`Skill Magnet`が一つだけ表示されます。`その他のオプションを表示`側に同名のclassic入口が重複していてはいけません。
 
-repository rootで次のread-only commandを実行します。このcommandは状態を表示するだけで、登録を変更しません。
+任意のdirectoryで次のread-only commandを実行します。このcommandはwheelに同梱された既定configを使い、状態を表示するだけで登録を変更しません。導入時と異なるcheckoutのconfigを指定しないでください。
 
 ```powershell
-python -m skill_magnet --config .\skill-magnet.json context-menu-status --platform windows
+python -m skill_magnet context-menu-status --platform windows
 ```
 
 正常なmodern登録では、出力に少なくとも次の値が含まれます。
@@ -123,10 +123,10 @@ UACを拒否しても、作業対象projectのfile、skill内容、Codex/Claude�
 
 次の順で再開します。
 
-1. repository rootでstatusを確認します。
+1. 任意のdirectoryでstatusを確認します。
 
    ```powershell
-   python -m skill_magnet --config .\skill-magnet.json context-menu-status --platform windows
+   python -m skill_magnet context-menu-status --platform windows
    ```
 
 2. UACの表示内容が前節の「はい」を押してよい条件と一致するか確認します。
@@ -134,7 +134,7 @@ UACを拒否しても、作業対象projectのfile、skill内容、Codex/Claude�
 3. 一致する場合だけ、同じinstall commandを一度だけ再実行します。
 
    ```powershell
-   python -m skill_magnet --config .\skill-magnet.json install-context-menu --platform windows --confirm
+   python -m skill_magnet install-context-menu --platform windows --confirm
    ```
 
 4. もう一度失敗したら再試行を繰り返さず、statusとerrorを保存して報告します。
@@ -149,14 +149,14 @@ UACを拒否しても、作業対象projectのfile、skill内容、Codex/Claude�
 
 ### アンインストールと元に戻す
 
-どちらもrepository rootで実行します。
+どちらも任意のdirectoryで実行します。
 
 | 目的 | command |
 |---|---|
-| 直前の導入・更新を取り消し、保存済みの導入前状態へ戻す | `python -m skill_magnet --config .\skill-magnet.json rollback-context-menu --platform windows --confirm` |
-| Skill Magnetの登録を削除する意図を明示する | `python -m skill_magnet --config .\skill-magnet.json uninstall-context-menu --platform windows --confirm` |
+| 直前の導入・更新を取り消し、保存済みの導入前状態へ戻す | `python -m skill_magnet rollback-context-menu --platform windows --confirm` |
+| Skill Magnetの登録を削除する意図を明示する | `python -m skill_magnet uninstall-context-menu --platform windows --confirm` |
 
-現行Windows実装では、uninstallも保存済みrollback pointを使って導入前状態へ戻るため、最終的な処理はrollbackと同じです。導入直後の復旧にはrollback、製品を使わない意思を示す場合はuninstallという名称を使い分けます。導入前からSkill Magnetの登録が存在した場合は、その保存済み状態が復元されます。
+現行Windows実装では、更新成功時に直前の導入状態をrollback pointとして入れ替えます。`rollback`はその直前版を復元し、`uninstall`は現在版とrollback point、製品所有の証明書・登録をすべて削除します。初回導入直後の`rollback`は導入前状態へ戻ります。
 
 削除時にWindowsの確認画面が出ることがあります。これは導入時にSkill Magnetが追加したWindowsの信頼情報を片付けるためです。前述の表と一致するときだけ承認します。完了後にstatusを実行し、導入前に登録がなかった環境では`package_registered`と`usable_installed_state`が`false`、Explorerに`Skill Magnet`がないことを確認します。
 

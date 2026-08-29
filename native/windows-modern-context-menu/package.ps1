@@ -47,7 +47,8 @@ if ($Action -eq "install") {
         }
 
         $legacyThumbprints = @(
-            Get-SkillMagnetLegacyTrustedCertificateThumbprints `
+            Get-SkillMagnetOwnedLegacyTrustedCertificateThumbprints `
+                -State $state `
                 -ActiveThumbprint ([string]$state.thumbprint)
         )
         if ($legacyThumbprints.Count -gt 0) {

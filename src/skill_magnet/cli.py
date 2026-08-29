@@ -16,6 +16,7 @@ from .platforms import (
     render_registration,
     uninstall_context_menu,
     uninstall_windows_modern_context_menu,
+    uninstall_windows_context_menus,
     rollback_windows_context_menus,
     windows_modern_context_menu_status,
 )
@@ -107,6 +108,7 @@ def _parser() -> argparse.ArgumentParser:
     context.add_argument("--menu-skill-digest")
     context.add_argument("--menu-instruction-digest")
     context.add_argument("--menu-acceptance-digest")
+    context.add_argument("--release-probe", type=Path, help=argparse.SUPPRESS)
     spec = commands.add_parser("context-menu-spec")
     spec.add_argument("--platform", required=True, choices=("windows", "macos"))
     render = commands.add_parser("render-context-menu")
@@ -141,6 +143,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = Config.load(args.config)
         engine = Engine(config, args.state_dir)
+        # Every CLI command is a public product entry. Recover abandoned
+        # attempts and expire immutable Desktop handoffs before doing any new
+        # work, including read-only status commands.
+        ActivationEngine(config, args.state_dir).recover_interrupted_attempts()
         if args.command == "packs":
             result = {
                 "packs": [
@@ -185,6 +191,19 @@ def main(argv: list[str] | None = None) -> int:
                     activation, contract.contract_id
                 )
         elif args.command == "context":
+            if args.release_probe is not None:
+                if args.platform != "macos":
+                    raise SkillMagnetError("Release probe is limited to the macOS adapter")
+                probe = args.release_probe.resolve()
+                if not probe.is_absolute() or not args.project.resolve().is_dir():
+                    raise SkillMagnetError("Invalid macOS release probe request")
+                probe.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    with probe.open("x", encoding="utf-8") as handle:
+                        handle.write(str(args.project.resolve()))
+                except FileExistsError as exc:
+                    raise SkillMagnetError("macOS release probe already exists") from exc
+                return 0
             activation = ActivationEngine(config, args.state_dir)
             if args.platform == "windows":
                 required = (
@@ -286,7 +305,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise SkillMagnetError("Context-menu removal requires --confirm")
             result = {}
             if args.platform == "windows":
-                result = rollback_windows_context_menus()
+                result = uninstall_windows_context_menus()
             else:
                 result["classic"] = uninstall_context_menu(args.platform)
         elif args.command == "context-menu-status":

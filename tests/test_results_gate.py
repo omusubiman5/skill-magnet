@@ -30,6 +30,13 @@ class ExplorerResultsGateTest(unittest.TestCase):
         self.assertTrue(self.validate(self.text, self.count + 1))
         self.assertTrue(self.validate(self.text.replace('"menu_leaf_count": 1', '"menu_leaf_count": 18')))
         self.assertTrue(self.validate(self.text + "\n固定9 skills × Codex の18個別leaf\n"))
+        self.assertTrue(
+            self.validate(
+                self.text.replace(
+                    parse_ledger(self.text)["release_code_sha"], "not-a-commit"
+                )
+            )
+        )
 
     def test_cli_returns_nonzero_for_observed_mismatch(self) -> None:
         completed = subprocess.run(

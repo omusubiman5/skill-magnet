@@ -46,7 +46,7 @@ def main() -> int:
     contract = _contract(args.source_contract.resolve())
     config = Config.load(args.config.resolve())
     engine = ActivationEngine(config, evidence_dir / "state")
-    pack, commit, _ = engine._validated_pack(contract.pack_id)
+    pack, commit, _, _ = engine._validated_pack(contract.pack_id)
     if commit != contract.commit_sha:
         raise RuntimeError("source contract commit does not match current approved pack")
     checks = engine._load_acceptance(pack, contract.skill_ids)

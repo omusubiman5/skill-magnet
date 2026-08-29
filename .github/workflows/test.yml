@@ -21,11 +21,48 @@ jobs:
       - run: python -m pip install -e .
       - run: python -m unittest discover -s tests -v
       - if: runner.os == 'Windows'
+        name: Install standalone wheel candidate
+        shell: pwsh
+        run: |
+          $wheelDir = Join-Path $env:RUNNER_TEMP "skill-magnet-wheel"
+          python -m pip wheel . --no-deps --wheel-dir $wheelDir
+          $wheels = @(Get-ChildItem -LiteralPath $wheelDir -Filter "skill_magnet-*.whl")
+          if ($wheels.Count -ne 1) { throw "Expected exactly one candidate wheel." }
+          $wheel = $wheels[0]
+          python -m pip install --force-reinstall $wheel.FullName
+          $modulePath = python -c "import pathlib,skill_magnet; print(pathlib.Path(skill_magnet.__file__).resolve())"
+          if ($modulePath.StartsWith($env:GITHUB_WORKSPACE, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Release lifecycle still imports the repository checkout: $modulePath"
+          }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "SKILL_MAGNET_WHEEL=$($wheel.FullName)"
+      - if: runner.os == 'macOS'
+        name: Install standalone wheel candidate
+        shell: zsh {0}
+        run: |
+          wheel_dir="${RUNNER_TEMP}/skill-magnet-wheel"
+          python -m pip wheel . --no-deps --wheel-dir "${wheel_dir}"
+          wheel=("${wheel_dir}"/skill_magnet-*.whl)
+          python -m pip install --force-reinstall "${wheel[1]}"
+          module_path="$(python -c 'import pathlib,skill_magnet; print(pathlib.Path(skill_magnet.__file__).resolve())')"
+          [[ "${module_path}" != "${GITHUB_WORKSPACE}"/* ]] || {
+            print -u2 "Release lifecycle still imports the repository checkout: ${module_path}"
+            exit 1
+          }
+          print "SKILL_MAGNET_WHEEL=${wheel[1]}" >> "${GITHUB_ENV}"
+      - name: Gate candidate SHA and standalone wheel payload
+        shell: bash
+        run: python integration/explorer_results_gate.py docs/windows-explorer-leaf-launch-results.md --wheel "${SKILL_MAGNET_WHEEL}"
+      - if: runner.os == 'Windows'
         shell: pwsh
         run: ./tests/powershell/certificate-state-tests.ps1
       - if: runner.os == 'Windows'
+        name: Build native binaries from installed wheel
         shell: pwsh
-        run: ./native/windows-modern-context-menu/build.ps1 -OutDir ./native/windows-modern-context-menu/out -SkipContractTest
+        run: |
+          $native = python -c "from skill_magnet.platforms import _windows_modern_paths; print(_windows_modern_paths()[0])"
+          & (Join-Path $native "build.ps1") `
+            -OutDir (Join-Path $env:RUNNER_TEMP "wheel-native-out") `
+            -SkipContractTest
       - if: runner.os == 'Windows'
         shell: pwsh
         run: ./tests/powershell/windows-release-lifecycle-tests.ps1

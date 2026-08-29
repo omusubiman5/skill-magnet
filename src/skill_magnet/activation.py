@@ -157,6 +157,8 @@ class LaunchContract:
     selection_kind: str
     selected_skill_id: str | None
     skill_ids: tuple[str, ...]
+    skill_hashes: dict[str, str]
+    index_digest: str | None
     instruction_digest: str
     acceptance_digests: dict[str, str]
     confirmed_at: str
@@ -234,6 +236,7 @@ class ActivationEngine:
         contract: LaunchContract,
         pack: Pack,
         expected_hashes: dict[str, str],
+        expected_index_digest: str | None,
     ) -> tuple[Pack, dict[str, Any]]:
         self._cleanup_expired_materializations()
         self.materialization_dir.mkdir(parents=True, exist_ok=True)
@@ -253,6 +256,8 @@ class ActivationEngine:
                 index_digest = hashlib.sha256(
                     (temporary / "INDEX.md").read_bytes()
                 ).hexdigest()
+            if index_digest != expected_index_digest:
+                raise SafetyError("Pack INDEX changed during Desktop materialization")
             copied_hashes: dict[str, str] = {}
             for skill_id in contract.skill_ids:
                 shutil.copytree(pack.source / skill_id, temporary / skill_id)
@@ -408,7 +413,9 @@ class ActivationEngine:
         if failures:
             raise _CleanupFailed(tuple(failures))
 
-    def _validated_pack(self, pack_id: str) -> tuple[Pack, str, dict[str, str]]:
+    def _validated_pack(
+        self, pack_id: str
+    ) -> tuple[Pack, str, dict[str, str], str | None]:
         pack = self.engine._pack(pack_id)
         commit, hashes = self.engine._validate_pack(pack)
         if not pack.purpose:
@@ -423,7 +430,13 @@ class ActivationEngine:
             raise SafetyError(f"Pack {pack_id} approval timestamp requires a timezone")
         if approved_at > self.now():
             raise SafetyError(f"Pack {pack_id} approval timestamp is in the future")
-        return pack, commit, hashes
+        index = pack.source / "INDEX.md"
+        index_digest = (
+            hashlib.sha256(index.read_bytes()).hexdigest()
+            if index.is_file()
+            else None
+        )
+        return pack, commit, hashes, index_digest
 
     @staticmethod
     def _acceptance_path(pack: Pack, skill: str) -> Path:
@@ -517,7 +530,7 @@ class ActivationEngine:
         project = project.resolve()
         if not project.is_dir():
             raise SkillMagnetError(f"Project directory does not exist: {project}")
-        pack, commit, hashes = self._validated_pack(pack_id)
+        pack, commit, hashes, index_digest = self._validated_pack(pack_id)
         if skill_id is not None and skill_id not in pack.skills:
             raise SkillMagnetError(f"Unknown skill for pack {pack_id}: {skill_id}")
         selected_skills = (skill_id,) if skill_id is not None else pack.skills
@@ -545,6 +558,7 @@ class ActivationEngine:
             "selected_skill_id": skill_id,
             "skill_ids": list(selected_skills),
             "skill_hashes": {skill: hashes[skill] for skill in selected_skills},
+            "index_digest": index_digest,
             "instruction_digest": instruction_digest,
             "acceptance_digests": {
                 skill: self.approved_blob_digest(pack, skill, "acceptance.json")
@@ -641,6 +655,8 @@ class ActivationEngine:
             "selection_kind",
             "selected_skill_id",
             "skill_ids",
+            "skill_hashes",
+            "index_digest",
             "instruction_digest",
             "acceptance_digests",
             "ttl_minutes",
@@ -679,6 +695,8 @@ class ActivationEngine:
             "selection_kind": plan["selection_kind"],
             "selected_skill_id": plan["selected_skill_id"],
             "skill_ids": tuple(plan["skill_ids"]),
+            "skill_hashes": dict(plan["skill_hashes"]),
+            "index_digest": plan["index_digest"],
             "instruction_digest": plan["instruction_digest"],
             "acceptance_digests": dict(plan["acceptance_digests"]),
             "confirmed_at": confirmed_at.isoformat(),
@@ -843,11 +861,17 @@ class ActivationEngine:
         contract = self._read_contract(contract_id)
         if contract.runtime != "codex":
             raise _LaunchFailed("Codex Desktop handoff requires the Codex runtime")
-        pack, commit, hashes = self._validated_pack(contract.pack_id)
+        pack, commit, hashes, index_digest = self._validated_pack(contract.pack_id)
         if commit != contract.commit_sha or pack.repo_url != contract.repository_url:
             raise SafetyError("Pack provenance changed after confirmation")
+        if (
+            {skill: hashes[skill] for skill in contract.skill_ids}
+            != contract.skill_hashes
+            or index_digest != contract.index_digest
+        ):
+            raise SafetyError("Pack content changed after confirmation")
         materialized_pack, materialization = self._materialize_desktop_pack(
-            contract, pack, hashes
+            contract, pack, contract.skill_hashes, contract.index_digest
         )
         prompt = self._desktop_task_prompt(contract, materialized_pack)
         prompt_digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
@@ -864,6 +888,8 @@ class ActivationEngine:
                 contract.purpose.encode("utf-8")
             ).hexdigest(),
             "instruction_digest": contract.instruction_digest,
+            "skill_hashes": dict(contract.skill_hashes),
+            "index_digest": contract.index_digest,
             "acceptance_digests": dict(contract.acceptance_digests),
             "prompt": prompt,
             "prompt_sha256": prompt_digest,
@@ -919,7 +945,7 @@ class ActivationEngine:
             raise _LaunchFailed(
                 "Web Codex has no supported authenticated prompt input on this account"
             )
-        pack, commit, _ = self._validated_pack(contract.pack_id)
+        pack, commit, _, _ = self._validated_pack(contract.pack_id)
         if commit != contract.commit_sha or pack.repo_url != contract.repository_url:
             raise SafetyError("Pack provenance changed after confirmation")
         prompt = self._task_envelope(contract, pack)
@@ -1198,7 +1224,7 @@ class ActivationEngine:
     ) -> dict[str, Any]:
         self.recover_interrupted_attempts()
         contract = self._read_contract(contract_id)
-        pack, commit, _ = self._validated_pack(contract.pack_id)
+        pack, commit, _, _ = self._validated_pack(contract.pack_id)
         if commit != contract.commit_sha or pack.repo_url != contract.repository_url:
             raise SafetyError("Pack provenance changed after confirmation")
         checks = self._load_acceptance(pack, contract.skill_ids)
