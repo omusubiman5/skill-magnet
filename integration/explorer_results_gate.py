@@ -53,14 +53,23 @@ def validate_consistency(text: str, *, observed_test_count: int,
 
 
 def wheel_payload_sha256(wheel: Path) -> str:
+    """Hash logical wheel payload, excluding RECORD and normalizing text EOLs."""
     digest = hashlib.sha256()
     with zipfile.ZipFile(wheel) as archive:
         for name in sorted(archive.namelist()):
-            if name.endswith("/"):
+            if name.endswith("/") or name.endswith(".dist-info/RECORD"):
                 continue
+            content = archive.read(name)
+            if b"\0" not in content:
+                try:
+                    content.decode("utf-8")
+                except UnicodeDecodeError:
+                    pass
+                else:
+                    content = content.replace(b"\r\n", b"\n")
             digest.update(name.encode("utf-8"))
             digest.update(b"\0")
-            digest.update(archive.read(name))
+            digest.update(content)
             digest.update(b"\0")
     return digest.hexdigest()
 

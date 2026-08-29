@@ -37,6 +37,28 @@ class DistributionArtifactTest(unittest.TestCase):
             wheel = next(wheels.glob("skill_magnet-*.whl"))
             with zipfile.ZipFile(wheel) as archive:
                 names = set(archive.namelist())
+                skill_member = next(
+                    name
+                    for name in names
+                    if name.endswith(
+                        "skill_magnet/_packs/codex-pmo-skills-c7747bba/"
+                        "codex-sandbox-approval-boundary/SKILL.md"
+                    )
+                )
+                bundled_skill = archive.read(skill_member)
+            canonical_skill = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(ROOT / ".approved-snapshots" / "codex-pmo-skills-c7747bba"),
+                    "show",
+                    "c7747bba0bc391316aa558b3b4e8dd412045d2dc:"
+                    "codex-sandbox-approval-boundary/SKILL.md",
+                ],
+                check=True,
+                capture_output=True,
+            ).stdout
+            self.assertEqual(bundled_skill, canonical_skill)
             expected_suffixes = (
                 "skill_magnet/skill-magnet.json",
                 "skill_magnet/_native/windows-modern-context-menu/build.ps1",

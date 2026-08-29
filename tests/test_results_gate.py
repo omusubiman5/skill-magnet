@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
-from integration.explorer_results_gate import parse_ledger, validate_consistency
+from integration.explorer_results_gate import (
+    parse_ledger,
+    validate_consistency,
+    wheel_payload_sha256,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 RESULTS = ROOT / "docs" / "windows-explorer-leaf-launch-results.md"
@@ -45,6 +51,31 @@ class ExplorerResultsGateTest(unittest.TestCase):
             cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(completed.returncode, 1)
         self.assertIn("full_test_count mismatch", completed.stdout)
+
+    def test_wheel_payload_hash_is_cross_platform_but_content_sensitive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            windows_wheel = root / "windows.whl"
+            macos_wheel = root / "macos.whl"
+            changed_wheel = root / "changed.whl"
+            fixtures = (
+                (windows_wheel, b"line one\r\nline two\r\n", b"windows record"),
+                (macos_wheel, b"line one\nline two\n", b"macos record"),
+                (changed_wheel, b"line one\nchanged\n", b"changed record"),
+            )
+            for wheel, text, record in fixtures:
+                with zipfile.ZipFile(wheel, "w") as archive:
+                    archive.writestr("skill_magnet/data.txt", text)
+                    archive.writestr("skill_magnet/data.bin", b"\0\r\n\xff")
+                    archive.writestr("skill_magnet-0.3.0.dist-info/RECORD", record)
+            self.assertEqual(
+                wheel_payload_sha256(windows_wheel),
+                wheel_payload_sha256(macos_wheel),
+            )
+            self.assertNotEqual(
+                wheel_payload_sha256(macos_wheel),
+                wheel_payload_sha256(changed_wheel),
+            )
 
 
 if __name__ == "__main__":

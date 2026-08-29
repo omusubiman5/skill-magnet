@@ -44,6 +44,42 @@ def _copy_tree(source: Path, destination: Path) -> None:
     shutil.copytree(source, destination, ignore=ignored)
 
 
+def _copy_git_tree(source: Path, destination: Path, commit: str) -> None:
+    """Copy canonical Git blob bytes, independent of checkout EOL conversion."""
+    listing = subprocess.run(
+        ["git", "-C", str(source), "ls-tree", "-r", "-z", commit],
+        check=True,
+        capture_output=True,
+    ).stdout
+    destination.mkdir(parents=True)
+    for entry in listing.split(b"\0"):
+        if not entry:
+            continue
+        metadata, relative_bytes = entry.split(b"\t", 1)
+        mode, object_type, object_id = metadata.decode("ascii").split()
+        relative = relative_bytes.decode("utf-8")
+        parts = Path(relative).parts
+        if (
+            object_type != "blob"
+            or mode == "120000"
+            or not parts
+            or any(part in {"", ".", "..", ".git", "out", "__pycache__"} for part in parts)
+            or relative.endswith((".obj", ".lib", ".exp", ".pyc"))
+        ):
+            if mode == "120000":
+                raise RuntimeError(f"Links are not allowed in bundled skills: {relative}")
+            continue
+        target = destination.joinpath(*parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(
+            subprocess.run(
+                ["git", "-C", str(source), "cat-file", "blob", object_id],
+                check=True,
+                capture_output=True,
+            ).stdout
+        )
+
+
 class BuildPyWithRuntimeAssets(build_py):
     def run(self) -> None:
         super().run()
@@ -79,7 +115,7 @@ class BuildPyWithRuntimeAssets(build_py):
         bundled_pack = package_root / "_packs" / PACK_NAME
         if bundled_pack.exists():
             shutil.rmtree(bundled_pack)
-        _copy_tree(PACK_SOURCE, bundled_pack)
+        _copy_git_tree(PACK_SOURCE, bundled_pack, actual_commit)
         manifest = {
             "version": 1,
             "repo_url": pack["repo_url"],
@@ -95,6 +131,7 @@ class BuildPyWithRuntimeAssets(build_py):
         (bundled_pack / ".skill-magnet-snapshot.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
+            newline="\n",
         )
 
         bundled_native = package_root / "_native" / "windows-modern-context-menu"
