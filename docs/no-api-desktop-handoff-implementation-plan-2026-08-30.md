@@ -50,6 +50,7 @@ Skill Magnetを「選択したskill packのINDEXと全SKILL.mdを一つの強制
 ### tests
 
 - promptにINDEX、全SKILL.md、actual request、skill適用必須、関係規則、説明だけ禁止が含まれることを検査する。
+- Windowsの`.skill-magnet`を含む絶対pathをMarkdown-safeなverbatim表現で渡し、`\.`によるseparator消失を防ぐ。
 - promptに`activation-complete`、receipt、output schema、API key要求が含まれないことを検査する。
 - Desktop handoffが`desktop_handoff_ready`を返し、回答完了を主張しないことを検査する。
 - launch失敗、期限切れmaterialization、同時操作、install/update/rollback/uninstall後の残留ゼロを維持する。

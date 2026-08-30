@@ -14,6 +14,7 @@ Skill MagnetのCodex製品経路を、外部APIを呼ぶ実行器ではなく、
 - completion receipt、callback command、`activation-complete`、Desktop output schemaを製品コードとCLIから削除した。
 - handoff結果は`desktop_handoff_ready`、`handoff_completed: true`、`answer_completion_claimed: false`として記録し、Desktop回答をSkill Magnetが取得・検証したとは表示しない。
 - Python package/MSIXの版を0.4.0へ更新した。
+- 0.4.0実機handoffで、裸のWindows pathに含まれる`\.`がMarkdown escapeとして解釈され、`C:\Users\HOMEA\.skill-magnet`が`C:\Users\HOMEA.skill-magnet`へ破損する不具合を確認した。全project/INDEX/SKILL pathをinline code内のforward-slash絶対pathへ変更し、0.4.1へ更新した。
 
 ## テスト契約
 
@@ -29,7 +30,7 @@ Skill MagnetのCodex製品経路を、外部APIを呼ぶ実行器ではなく、
 
 ## 検証状況
 
-- `python -m unittest discover -s tests -v`: 129 tests PASS、環境依存1件skip。旧receiptテストを削除し、新しいhandoff契約テストへ置換した。
+- `python -m unittest discover -s tests -v`: 130 testsを実行するsuiteへ更新した。`.skill-magnet`を含むWindows pathのseparator保持テストを追加した。
 - product policy、README、MVP設計文書の規範principle一致テスト: PASS。
 - Python/MSIX version同期テスト: PASS。
 - 0.4.0 wheelを独立した2 directoryでbuildし、論理payload SHA-256 `c9a0ffe8f542fd475144ac8fecd284175a46863d69d1d44ec5be78ed901ba38f`が一致した。

@@ -9,19 +9,19 @@
 <!-- explorer-results-ledger:start
 {
   "release_scope": "one-package-leaf",
-  "full_test_count": 129,
+  "full_test_count": 130,
   "menu_leaf_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
   "release_code_sha": "d6ea6777a269cea85d03061270ef7b1527ee24c7",
   "wheel_payload_sha256": "c9a0ffe8f542fd475144ac8fecd284175a46863d69d1d44ec5be78ed901ba38f",
-  "automated_status": "CI_33310087151_WINDOWS_MACOS_GREEN_129_PASS",
+  "automated_status": "LOCAL_WINDOWS_GREEN_130_PASS_CI_PENDING",
   "windows_explorer_field_status": "PASS_INSTALLED_MENU_MANIFEST_DELIVERY_ASSURANCE_8F12AF5",
   "codex_desktop_result_status": "HANDOFF_READY_ANSWER_COMPLETION_NOT_CLAIMED"
 }
 explorer-results-ledger:end -->
 
-- 統合テスト: `python -m unittest discover -s tests -v` — 129 tests PASS、環境依存1件skip
+- 統合テスト: `python -m unittest discover -s tests -v` — 130 tests PASS、環境依存1件skip
 - menu contract: 1 package leaf / selection kind `package` / pack内9 skills
 - 自動証拠: contract固定、INDEX/全SKILL materialization、source改変耐性、deep-link binding、CLI非起動、rollback、残留物回収
 - wheel再現性: 独立した2 directoryで0.4.0 wheelをbuildし、論理payload SHA-256が両方`c9a0ffe8f542fd475144ac8fecd284175a46863d69d1d44ec5be78ed901ba38f`で一致した。
@@ -35,7 +35,7 @@ explorer-results-ledger:end -->
 
 `integration/explorer_results_gate.py`は、この台帳のtest count・leaf数・selection kind・pack skill数を、現在のテストsuiteと`skill-magnet.json`から得た値へ照合します。また、旧個別leaf仕様の文言が正本へ再混入した場合に失敗します。
 
-Windows 0.4.0候補の最終受入では、次を新しい証拠として追記します。
+Windows 0.4.1候補の最終受入では、次を新しい証拠として追記します。
 
 1. wheelからのnative build、MSIX署名・install、Directory/Backgroundの単一`Delivery Assurance`表示。
 2. package leafからCodex Desktop新規タスクを開き、INDEX/全SKILLの読了と最低1つの適用を必須にしたpromptが損失なく渡ること。

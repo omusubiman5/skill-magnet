@@ -841,8 +841,9 @@ class ActivationEngine:
         instruction_refs = [
             "- "
             + skill_id
-            + ": "
-            + str((pack.source / skill_id / "SKILL.md").resolve())
+            + ": `"
+            + (pack.source / skill_id / "SKILL.md").resolve().as_posix()
+            + "`"
             + " (SHA-256: "
             + hashlib.sha256(
                 (pack.source / skill_id / "SKILL.md").read_bytes()
@@ -856,7 +857,7 @@ class ActivationEngine:
             index_digest = hashlib.sha256(index_path.read_bytes()).hexdigest()
             index_section = (
                 "\nパックINDEX（最初に全文を読む）:\n"
-                f"{index_path} (SHA-256: {index_digest})\n"
+                f"`{index_path.as_posix()}` (SHA-256: {index_digest})\n"
             )
         skill_label = (
             f"適用スキルID: {', '.join(contract.skill_ids)}\n"
@@ -874,7 +875,7 @@ class ActivationEngine:
             "しないでください。各スキルを個別の回答生成依頼として扱わず、一つの実行方法へ"
             "統合してください。OpenAIまたはAnthropicのAPI key、従量課金API、追加支払いを"
             "要求せず、このCodex Desktopタスクの既存利用枠だけで実行してください。\n\n"
-            f"対象プロジェクト: {contract.project}\n"
+            f"対象プロジェクト: `{Path(contract.project).resolve().as_posix()}`\n"
             f"選択パックID: {contract.pack_id}\n"
             f"{skill_label}"
             f"Skill Magnet contract ID: {contract.contract_id}\n"

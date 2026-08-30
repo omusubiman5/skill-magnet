@@ -531,6 +531,27 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertEqual(list((self.state / "evidence").glob("*-desktop-schema.json")), [])
         self.assertEqual(list((self.state / "evidence").glob("*-desktop-output.json")), [])
 
+    def test_desktop_prompt_preserves_hidden_windows_path_separator(self) -> None:
+        hidden_state = self.root / ".skill-magnet"
+        engine = ActivationEngine(self.config, hidden_state)
+        contract = engine.confirm(self._plan(engine), confirmed=True)
+        prepared = engine.prepare_codex_desktop_handoff(contract.contract_id)
+
+        materialized = (
+            hidden_state
+            / "desktop-materializations"
+            / contract.contract_id
+        ).resolve()
+        index_path = (materialized / "INDEX.md").as_posix()
+        skill_path = (
+            materialized / "bounded-answer" / "SKILL.md"
+        ).as_posix()
+        prompt = prepared["prompt"]
+        self.assertIn(f"`{index_path}`", prompt)
+        self.assertIn(f"`{skill_path}`", prompt)
+        self.assertIn("/.skill-magnet/desktop-materializations/", prompt)
+        self.assertNotIn(r"HOMEA\.skill-magnet", prompt)
+
     def test_desktop_delivery_failure_removes_materialization_and_retains_negative_evidence(self) -> None:
         engine = ActivationEngine(self.config, self.state)
         contract = engine.confirm(self._plan(engine), confirmed=True)
@@ -784,7 +805,7 @@ class ActivationEndToEndTest(unittest.TestCase):
             / "bounded-answer"
             / "SKILL.md"
         )
-        self.assertIn(str(materialized_skill.resolve()), prompt)
+        self.assertIn(f"`{materialized_skill.resolve().as_posix()}`", prompt)
         original_materialized = materialized_skill.read_bytes()
         source_skill = self.repo / "bounded-answer" / "SKILL.md"
         source_skill.write_text(
