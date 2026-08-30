@@ -50,9 +50,10 @@ def get_title(command: ctypes.c_void_p) -> str:
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
+    if len(sys.argv) not in {2, 4} or (len(sys.argv) == 4 and sys.argv[2] != "--invoke"):
         return 2
     dll_path = Path(sys.argv[1]).resolve()
+    invoke_path = Path(sys.argv[3]).resolve() if len(sys.argv) == 4 else None
     identity_path = dll_path.with_name("SkillMagnetIdentity.exe")
     if not identity_path.is_file():
         return 5
@@ -66,6 +67,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="SkillMagnetContract-") as local_app_data:
         os.environ["LOCALAPPDATA"] = local_app_data
+        ctypes.windll.ole32.CoInitializeEx(None, 2)
         library = ctypes.WinDLL(str(dll_path))
         get_class = library.DllGetClassObject
         get_class.argtypes = (
@@ -138,6 +140,43 @@ def main() -> int:
                 "EnumSubCommands",
             )
             titles: list[str] = []
+            invoke_succeeded = invoke_path is None
+            selected_item = ctypes.c_void_p()
+            selected_items = ctypes.c_void_p()
+            if invoke_path is not None:
+                shell32 = ctypes.windll.shell32
+                shell32.SHCreateItemFromParsingName.argtypes = (
+                    ctypes.c_wchar_p,
+                    ctypes.c_void_p,
+                    ctypes.POINTER(GUID),
+                    ctypes.POINTER(ctypes.c_void_p),
+                )
+                shell32.SHCreateItemFromParsingName.restype = ctypes.c_long
+                iid_shell_item = guid("43826d1e-e718-42ee-bc55-a1e261c37bfe")
+                check_hresult(
+                    shell32.SHCreateItemFromParsingName(
+                        str(invoke_path),
+                        None,
+                        ctypes.byref(iid_shell_item),
+                        ctypes.byref(selected_item),
+                    ),
+                    "SHCreateItemFromParsingName",
+                )
+                shell32.SHCreateShellItemArrayFromShellItem.argtypes = (
+                    ctypes.c_void_p,
+                    ctypes.POINTER(GUID),
+                    ctypes.POINTER(ctypes.c_void_p),
+                )
+                shell32.SHCreateShellItemArrayFromShellItem.restype = ctypes.c_long
+                iid_shell_item_array = guid("b63ea76d-1f85-456f-a19c-48159efa858b")
+                check_hresult(
+                    shell32.SHCreateShellItemArrayFromShellItem(
+                        selected_item,
+                        ctypes.byref(iid_shell_item_array),
+                        ctypes.byref(selected_items),
+                    ),
+                    "SHCreateShellItemArrayFromShellItem",
+                )
             try:
                 while True:
                     child = ctypes.c_void_p()
@@ -154,13 +193,34 @@ def main() -> int:
                         break
                     try:
                         titles.append(get_title(child))
+                        if invoke_path is not None and not invoke_succeeded:
+                            check_hresult(
+                                method(
+                                    child,
+                                    8,
+                                    ctypes.c_long,
+                                    ctypes.c_void_p,
+                                    ctypes.c_void_p,
+                                )(child, selected_items, None),
+                                "IExplorerCommand.Invoke",
+                            )
+                            invoke_succeeded = True
                     finally:
                         release(child)
             finally:
                 release(enumerator)
+                if selected_items:
+                    release(selected_items)
+                if selected_item:
+                    release(selected_item)
             if titles != expected_titles:
                 raise RuntimeError(f"unexpected child titles: {titles!r}")
-            if (Path(local_app_data) / "SkillMagnet" / "ContextMenu" / "invoke.log").exists():
+            if not invoke_succeeded:
+                raise RuntimeError("child command was not invoked")
+            if (
+                invoke_path is None
+                and (Path(local_app_data) / "SkillMagnet" / "ContextMenu" / "invoke.log").exists()
+            ):
                 raise RuntimeError("menu enumeration produced an invoke event")
         finally:
             release(command)
@@ -172,6 +232,7 @@ def main() -> int:
         # Authenticode-valid Python command from SkillMagnetMenu.tsv directly.
         if any("SkillMagnetLauncher.exe" in line for line in lines):
             raise RuntimeError("policy-incompatible launcher remains in menu contract")
+        ctypes.windll.ole32.CoUninitialize()
     print("SkillMagnet IExplorerCommand contract PASS (Python host)")
     return 0
 

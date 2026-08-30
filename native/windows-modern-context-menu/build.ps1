@@ -18,7 +18,7 @@ $common = @("/nologo", "/std:c++20", "/EHsc", "/W4", "/WX", "/DUNICODE", "/D_UNI
 & cl @common "/LD" "/Fo:$OutDir\SkillMagnetCommand.obj" "$PSScriptRoot\SkillMagnetCommand.cpp" "/link" "/OUT:$OutDir\SkillMagnetCommand.dll" "/IMPLIB:$OutDir\SkillMagnetCommand.lib" "/EXPORT:DllGetClassObject" "/EXPORT:DllCanUnloadNow" "bcrypt.lib" "ole32.lib" "user32.lib"
 if ($LASTEXITCODE -ne 0) { throw "SkillMagnetCommand.dll build failed ($LASTEXITCODE)." }
 Copy-Item -Force "$PSScriptRoot\SkillMagnetMenu.tsv" "$OutDir\SkillMagnetMenu.tsv"
-& cl @common "/Fo:$OutDir\ContractTest.obj" "$PSScriptRoot\ContractTest.cpp" "/link" "/OUT:$OutDir\ContractTest.exe" "ole32.lib"
+& cl @common "/Fo:$OutDir\ContractTest.obj" "$PSScriptRoot\ContractTest.cpp" "/link" "/OUT:$OutDir\ContractTest.exe" "ole32.lib" "shell32.lib"
 if ($LASTEXITCODE -ne 0) { throw "ContractTest.exe build failed ($LASTEXITCODE)." }
 & cl @common "/Fo:$OutDir\SkillMagnetIdentity.obj" "$PSScriptRoot\SkillMagnetIdentity.cpp" "/link" "/SUBSYSTEM:WINDOWS" "/OUT:$OutDir\SkillMagnetIdentity.exe"
 if ($LASTEXITCODE -ne 0) { throw "SkillMagnetIdentity.exe build failed ($LASTEXITCODE)." }

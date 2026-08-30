@@ -531,28 +531,55 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertEqual(list((self.state / "evidence").glob("*-desktop-schema.json")), [])
         self.assertEqual(list((self.state / "evidence").glob("*-desktop-output.json")), [])
 
-    def test_desktop_prompt_preserves_hidden_windows_path_separator(self) -> None:
+    def test_desktop_prompt_uses_pinned_github_urls_without_local_skill_paths(self) -> None:
         hidden_state = self.root / ".skill-magnet"
         engine = ActivationEngine(self.config, hidden_state)
         contract = engine.confirm(self._plan(engine), confirmed=True)
         prepared = engine.prepare_codex_desktop_handoff(contract.contract_id)
 
-        materialized = (
-            hidden_state
-            / "desktop-materializations"
-            / contract.contract_id
-        ).resolve()
-        index_path = (materialized / "INDEX.md").as_posix()
-        skill_path = (
-            materialized / "bounded-answer" / "SKILL.md"
-        ).as_posix()
         prompt = prepared["prompt"]
-        self.assertIn(f"`{index_path}`", prompt)
-        self.assertIn(f"`{skill_path}`", prompt)
-        self.assertIn("/.skill-magnet/desktop-materializations/", prompt)
-        self.assertNotIn(r"HOMEA\.skill-magnet", prompt)
+        raw_root = f"https://raw.githubusercontent.com/my-owner/separate-skill-repo/{self.commit}"
+        self.assertIn(f"{raw_root}/INDEX.md", prompt)
+        self.assertIn(f"{raw_root}/bounded-answer/SKILL.md", prompt)
+        self.assertNotIn("desktop-materializations", prompt)
+        self.assertNotIn("SKILL.md`", prompt)
 
-    def test_desktop_delivery_failure_removes_materialization_and_retains_negative_evidence(self) -> None:
+    def test_desktop_and_claude_prompts_accept_a_pack_without_index(self) -> None:
+        (self.repo / "INDEX.md").unlink()
+        git(self.repo, "add", "-u")
+        git(self.repo, "commit", "-m", "remove optional index")
+        commit = git(self.repo, "rev-parse", "HEAD")
+        config_data = json.loads(self.config_path.read_text(encoding="utf-8"))
+        for configured_pack in config_data["packs"]:
+            configured_pack["expected_commit"] = commit
+        config_data["packs"][0]["selection_kind"] = "package"
+        self.config_path.write_text(
+            json.dumps(config_data),
+            encoding="utf-8",
+        )
+        config = Config.load(self.config_path)
+        for runtime in ("codex", "claude"):
+            with self.subTest(runtime=runtime):
+                engine = ActivationEngine(config, self.root / f"no-index-{runtime}")
+                plan = engine.plan(
+                    platform="windows",
+                    project=self.project,
+                    pack_id="bounded-pack",
+                    runtime=runtime,
+                    purpose="Apply the skill to the request",
+                )
+                contract = engine.confirm(plan, confirmed=True)
+                prepared = (
+                    engine.prepare_codex_desktop_handoff(contract.contract_id)
+                    if runtime == "codex"
+                    else engine.prepare_web_handoff(contract.contract_id)
+                )
+                prompt = prepared["prompt"]
+                self.assertNotIn("INDEX.md", prompt)
+                self.assertIn("読む、要約する、適用候補を挙げるだけでは実行と認めません", prompt)
+                self.assertIn("自然文、JSON、コード、ファイル", prompt)
+
+    def test_desktop_delivery_failure_retains_negative_evidence_without_skill_storage(self) -> None:
         engine = ActivationEngine(self.config, self.state)
         contract = engine.confirm(self._plan(engine), confirmed=True)
         with self.assertRaisesRegex(SkillMagnetError, "protocol rejected"):
@@ -660,16 +687,9 @@ class ActivationEndToEndTest(unittest.TestCase):
                 self.assertIn("説明、一覧、準備確認だけで終了", prompt)
                 self.assertIn("API key", prompt)
                 self.assertNotIn("activation-complete", prompt)
-                materialized = Path(handoff["materialization"]["path"])
-                self.assertTrue((materialized / "INDEX.md").is_file())
-                self.assertEqual(
-                    sorted(
-                        path.name
-                        for path in materialized.iterdir()
-                        if (path / "SKILL.md").is_file()
-                    ),
-                    sorted(pack.skills),
-                )
+                self.assertEqual(handoff["skill_content_storage"], "github_only")
+                self.assertIn("raw.githubusercontent.com", prompt)
+                self.assertFalse((state / "desktop-materializations").exists())
             with self.subTest(platform=platform, runtime="claude"):
                 state = self.root / f"product-{platform}-claude"
                 engine = ActivationEngine(product_config, state)
@@ -719,8 +739,12 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertEqual(len(delivered), 1)
         prompt, url = delivered[0]
         self.assertEqual(url, "https://claude.ai/new")
-        self.assertIn(f"TARGET_PROJECT={self.project.resolve()}", prompt)
+        self.assertIn(self.project.resolve().as_posix(), prompt)
         self.assertIn("bounded-answer", prompt)
+        self.assertIn("読む、要約する、適用候補を挙げるだけでは実行と認めません", prompt)
+        self.assertIn("自然文、JSON、コード、ファイル", prompt)
+        self.assertNotIn("Return only the JSON evidence envelope", prompt)
+        self.assertNotIn("PROVENANCE=", prompt)
         self.assertNotIn("UNUSED_SENTINEL", prompt)
         self.assertNotIn("prompt", result)
         with self.assertRaisesRegex(SafetyError, "already used"):
@@ -800,19 +824,16 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertIn("適用スキルID: bounded-answer", prompt)
         self.assertIn("実際の依頼:", prompt)
         self.assertIn("Produce a machine-verifiable bounded decision.", prompt)
-        materialized_skill = (
-            Path(result["materialization"]["path"])
-            / "bounded-answer"
-            / "SKILL.md"
+        remote_skill = (
+            f"https://raw.githubusercontent.com/my-owner/separate-skill-repo/"
+            f"{self.commit}/bounded-answer/SKILL.md"
         )
-        self.assertIn(f"`{materialized_skill.resolve().as_posix()}`", prompt)
-        original_materialized = materialized_skill.read_bytes()
+        self.assertIn(remote_skill, prompt)
         source_skill = self.repo / "bounded-answer" / "SKILL.md"
         source_skill.write_text(
             source_skill.read_text(encoding="utf-8") + "\nSOURCE_MUTATED_AFTER_HANDOFF\n",
             encoding="utf-8",
         )
-        self.assertEqual(materialized_skill.read_bytes(), original_materialized)
         self.assertNotIn("SOURCE_MUTATED_AFTER_HANDOFF", prompt)
         self.assertNotIn("Always set result.decision to bounded.", prompt)
         self.assertNotIn("PROVENANCE=", prompt)
@@ -821,7 +842,7 @@ class ActivationEndToEndTest(unittest.TestCase):
         evidence = self.state / "evidence" / f"{result['contract_id']}-desktop-handoff.json"
         self.assertTrue(evidence.is_file())
 
-    def test_codex_materialization_rejects_index_change_after_validation(self) -> None:
+    def test_codex_handoff_rejects_source_change_after_validation(self) -> None:
         engine = ActivationEngine(self.config, self.state)
         plan = engine.plan(
             platform="windows",
@@ -833,25 +854,14 @@ class ActivationEndToEndTest(unittest.TestCase):
         contract = engine.confirm(plan, confirmed=True)
         index = self.repo / "INDEX.md"
         original_index = index.read_bytes()
-        real_copy2 = shutil.copy2
-
-        def replace_index_before_copy(source: object, destination: object, *args: object, **kwargs: object):
-            source_path = Path(source)
-            if source_path.name == "INDEX.md":
-                index.write_text("# injected after validation\n", encoding="utf-8")
-            return real_copy2(source, destination, *args, **kwargs)
-
         try:
-            with (
-                mock.patch("skill_magnet.activation.shutil.copy2", side_effect=replace_index_before_copy),
-                self.assertRaisesRegex(SafetyError, "INDEX changed"),
+            index.write_text("# injected after validation\n", encoding="utf-8")
+            with self.assertRaisesRegex(
+                SafetyError, "content changed|uncommitted changes"
             ):
                 engine.prepare_codex_desktop_handoff(contract.contract_id)
         finally:
             index.write_bytes(original_index)
-        self.assertFalse(
-            (engine.materialization_dir / contract.contract_id).exists()
-        )
         stored_contract = json.loads(
             (engine.contract_dir / f"{contract.contract_id}.json").read_text(
                 encoding="utf-8"
@@ -859,7 +869,7 @@ class ActivationEndToEndTest(unittest.TestCase):
         )
         self.assertEqual(stored_contract["index_digest"], plan["index_digest"])
 
-    def test_any_cli_entry_removes_expired_desktop_materialization(self) -> None:
+    def test_any_cli_entry_removes_all_legacy_desktop_skill_storage(self) -> None:
         expired = self.state / "desktop-materializations" / ("a" * 32)
         expired.mkdir(parents=True)
         (expired / "materialization.json").write_text(
@@ -956,7 +966,7 @@ class ActivationEndToEndTest(unittest.TestCase):
             engine.confirm(self._plan(engine), confirmed=False)
         self.assertFalse(self.state.exists())
 
-    def test_legacy_persistent_sync_is_unreachable_by_default_cli(self) -> None:
+    def test_legacy_persistent_sync_is_permanently_unreachable_by_cli(self) -> None:
         error = io.StringIO()
         with redirect_stderr(error):
             exit_code = cli_main(
@@ -969,7 +979,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                 ]
             )
         self.assertEqual(exit_code, 2)
-        self.assertIn("disabled by default", error.getvalue())
+        self.assertIn("permanently disabled", error.getvalue())
         self.assertFalse((self.root / "must-not-install-codex").exists())
         self.assertFalse((self.root / "must-not-install-claude").exists())
 
@@ -1660,19 +1670,20 @@ class ActivationEndToEndTest(unittest.TestCase):
             source=source,
             skills=("left-skill", "right-skill"),
         )
-        relations = ActivationEngine._pack_relations(pack)
+        relation_engine = ActivationEngine(self.config, self.state)
+        relations = relation_engine._pack_relations(pack)
         self.assertEqual(
             relations["composes-with"], {("left-skill", "right-skill")}
         )
         with self.assertRaisesRegex(
             SafetyError, "composition has no relationship evidence"
         ):
-            ActivationEngine._verify_pack_relations(
+            relation_engine._verify_pack_relations(
                 pack,
                 ["left-skill", "right-skill"],
                 ["left-skill: applied", "right-skill: applied"],
             )
-        ActivationEngine._verify_pack_relations(
+        relation_engine._verify_pack_relations(
             pack,
             ["left-skill", "right-skill"],
             [
@@ -3616,9 +3627,29 @@ class ActivationEndToEndTest(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Skill Magnet", result.stdout)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Skill Magnet", result.stdout)
 
+    def test_modern_menu_does_not_use_selected_project_as_process_cwd(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "native"
+            / "windows-modern-context-menu"
+            / "SkillMagnetCommand.cpp"
+        ).read_text(encoding="utf-8")
+        create_process = source[source.index("if (!CreateProcessW"):]
+        create_process = create_process[: create_process.index("&startup, &process)")]
+        self.assertNotIn("project.c_str()", create_process)
+        self.assertIn(
+            "CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW, nullptr,\n"
+            "                            nullptr,",
+            create_process,
+        )
+
+    def test_confirmation_ui_treats_index_as_optional_and_requires_application(self) -> None:
+        message = context_ui_text("ja", "verification")
+        self.assertIn("存在する場合のINDEX関係", message)
+        self.assertIn("実作業へ適用", message)
     def test_windows_installer_failure_rolls_back_context_entries(self) -> None:
         calls: list[list[str]] = []
         add_count = 0

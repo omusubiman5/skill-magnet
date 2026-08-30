@@ -8,10 +8,10 @@
 - GitHubのユーザー所有保管庫を唯一の正本とする。
 - Skill Magnetはスキルの目的に沿って、必要なパックだけを明示選択して呼び出す。
 - Codex/Claudeへの全件・常設・暗黙同期を既定にしない。
-- 一時ローカル展開が技術的に必要な場合も、対象・理由・期限・cleanupを明示し、検証後に片付ける。
+- skillの保管は該当するユーザー所有GitHub repositoryだけとし、ローカルへskill contentを保存・複製・materializeしない。
 - 保管庫の版・来歴・承認を保持する。
 - ローカル配置の成功を、スキルの読み込み成功または使用成功とみなさない。
-- 選択したpackとversionをタスクへ明示し、全skillの読了と最低1つの適用をpromptで必須にする。
+- 選択したpackとversionをタスクへ明示し、全skillの読了、最低1つの実作業への適用、存在する場合だけINDEX関係の適用をpromptで必須にする。読了や要約だけを実行完了とみなさない。
 - Codex/Claudeの既存利用プランを使い、API key、従量課金API、追加支払いを製品経路で要求しない。
 - 公式に確認できる経路または必要な証拠がない場合はfail-closedで停止し、保証外であることを明示する。
 - 起動はユーザーの右クリックメニューからの明示選択を条件とし、自動提案・自動配布・自動有効化をしない。
@@ -20,7 +20,7 @@
 
 ## 目的・成果物・完了条件
 
-目的は、ユーザー所有GitHub保管庫の固定commitから目的に合うskill packを一つ選び、INDEXで関係づけられた全skillの指示とactual requestをCodex Desktop appの新規taskへ一体でhandoffし、全skillを読んだうえでtrigger/boundaryに合う必要最小集合だけを組み合わせることです。
+目的は、ユーザー所有GitHub保管庫の固定commitから目的に合うskill packを一つ選び、全skillの指示とactual requestをCodex DesktopまたはClaudeの新規taskへ一体でhandoffし、trigger/boundaryに合う必要最小集合の規則を実作業へ適用した完成成果を得ることです。INDEXは存在するpackだけで読了・適用します。skillの読了、要約、候補列挙だけでは完了ではありません。成果形式は実際の依頼とskillに従い、自然文、JSON、コード、ファイル等を一律に禁止しません。
 
 成果物は二つです。
 
@@ -31,16 +31,16 @@
 
 ## 最小アーキテクチャ
 
-1. Registry/Resolver: ユーザー所有GitHub保管庫、pack ID、目的、完全なcommit SHA、承認、skill固有acceptance checkを検証する。
+1. Registry/Resolver: ユーザー所有GitHub保管庫、pack ID、目的、完全なcommit SHA、承認、skill固有acceptance checkをGitHub固定commitからメモリ上で検証する。skill contentをローカルへ保存しない。
 2. Selection UI: Windowsでは通常右クリックの単一root `Skill Magnet` から日本語の利用者向け名称でskill packを一つ選ぶ。対象AIは次の画面でCodexまたはClaudeを明示選択する。
 3. Confirmation UI: 主画面には選択packの表示名、用途、対象project、対象AI、actual requestだけを表示する。pack ID、repository、commit、全skill ID、digest、承認は既定で閉じた「詳細」に格納し、起動の明示確認を取る。
 4. Launch contract: UIから共通CLIへ、選択内容、期限、nonce、確認時刻を機械可読形式で渡す。
-5. Desktop task prompt: pack ID、全skill ID、検証済みINDEX/SKILL.mdの絶対pathとdigest、actual request、非デモ実行、期待成果、contract/attemptを人が読める形で含める。全instructionをURLへ展開して長さ上限を超えさせず、Codexへ参照ファイルの全文読了、最低1つのskill適用、INDEX関係の遵守、実依頼の完了を要求する。skillの説明・一覧・準備確認だけで終了することを禁止する。
+5. LLM task prompt: pack ID、全skill ID、GitHub固定commitのSKILL.md URLとdigest、存在する場合だけINDEX URLとdigest、actual request、非デモ実行、期待成果、contract/attemptを人が読める形で含める。CodexとClaudeへ参照ファイルの全文読了とdigest照合だけでなく、最低1つのskillの手順・判断基準・境界を実作業と完成成果へ反映するよう要求する。skillの説明・一覧・準備確認だけで終了することを禁止し、成果形式は依頼とskillに委ねる。
 6. Codex Desktop adapter: `codex://threads/new?path=...&prompt=...` で新規taskへ送る。Codex CLI/TUIは製品targetにしない。
 7. Handoff state: deep linkをOSへ渡した段階を `desktop_handoff_ready` とし、`handoff_completed: true`、`answer_completion_claimed: false`を記録する。completion receipt、callback、Desktop output schemaは作らない。
 8. Journal/cleanup: source、承認、launch contract、証拠、一時物、期限を記録し、終了・失敗・中断・期限到来後に残留ゼロへ戻す。
 
-GitHubのclone/cacheは正本ではなく、commitから再生成できる検証済み一時物です。
+skill repositoryのclone/cacheは作成しません。固定commitから取得したbytesはprocess memory内だけで検証し、diskへ保存しません。
 
 ## UIとCLIの分離
 
@@ -64,17 +64,17 @@ Codexの製品targetはCodex Desktop appです。スキルを常設配置した�
 既定候補は次の通りです。
 
 1. Resolverが固定commitの選択packを検証し、pack ID、repository URL、commit SHA、全skill ID、instruction digestを固定する。
-2. actual request、検証済みINDEX/SKILL.mdの絶対pathとdigest、非デモ実行、期待成果、contract/attempt、instruction/acceptance digestを自然文promptへ束縛し、参照ファイルの全文読了後、trigger/boundaryと `depends-on` / `composes-with` / `contrasts-with` に従う必要最小集合の選定を要求する。
+2. actual request、検証済みSKILL.mdの固定GitHub URLとdigest、存在する場合だけINDEX URLとdigest、非デモ実行、期待成果、contract/attemptをpromptへ束縛する。参照ファイルの全文読了後、trigger/boundaryと任意INDEXの関係に従う必要最小集合を選び、その規則を実作業と成果へ反映するよう要求する。
 3. `path`と`prompt`を独立してURL encodeし、`codex://threads/new` の新規taskへ渡す。
 4. OSがprotocol handoffを受理した事実とprompt hashを保存する。この状態は `desktop_handoff_ready` であり回答完了ではない。
-5. Desktop taskには利用者へ自然文成果を直接返すよう要求する。内部JSON、Skill Magnet用receipt、callback、検証JSONは作らせず、既存Desktop利用枠以外のAPI keyや追加支払いも要求しない。
+5. taskには利用者の実際の依頼を完了した成果を直接返すよう要求する。成果形式は依頼とskillに従い、JSON等を一律禁止しない。既存Desktop利用枠以外のAPI keyや追加支払いは要求しない。
 6. deep link生成・起動に失敗した場合はerrorを表示し、CLI、既存task resume、ChatGPT webへfallbackしない。
 
 deep linkの受理はモデル挙動や回答完了の保証ではありません。その制約を状態名へ明示し、実Desktop taskの回答確認と分離します。
 
 ## Claude
 
-WindowsとmacOSの製品経路は、検証済みpackとactual requestを一つのpromptへ束縛し、`https://claude.ai/new`の新規conversationへprefillします。clipboard、既存conversation、常設plugin、headless `claude --print`へfallbackしません。Web handoffはtask deliveryの境界であり、Claudeが全skillを読み、INDEXに従って適用し、回答を完了した証拠へは昇格させません。CLIのstructured-output adapterは回帰試験用であり、context-menu製品経路から到達させません。
+WindowsとmacOSの製品経路は、検証済みpackとactual requestを一つのpromptへ束縛し、`https://claude.ai/new`の新規conversationへprefillします。Claudeには全skillを読むだけで終わらず、選んだskillの手順・判断基準・境界を実際の分析、編集、生成、検証と最終成果へ具体的に反映するよう明示します。INDEXは存在する場合だけ関係を適用します。clipboard、既存conversation、常設plugin、headless `claude --print`へfallbackしません。Web handoffはtask deliveryの境界であり、回答完了の証拠へは昇格させません。CLIのstructured-output adapterは回帰試験用であり、context-menu製品経路から到達させません。
 
 ## テスト可能な受入条件
 
@@ -85,8 +85,8 @@ WindowsとmacOSの製品経路は、検証済みpackとactual requestを一つ�
 - WindowsとmacOSで同じ入力から同じlaunch contract意味論とfail-closed結果になるcontract testが通る。
 - 片方のアダプターが未実装・skip・失敗なら製品完成判定が失敗する。
 - ユーザー所有保管庫、完全commit SHA、来歴、承認、acceptance check不足を拒否する。
-- Desktop promptへ選択packの全skill、actual request、検証済みINDEX/SKILL.md参照、contract/digest、必要最小集合の選定規則が入り、prompt hashが一致する。
-- promptがパック全件を読込対象として列挙し、実依頼へ最低1つを適用すること、未適用skillの受入固定値を成果へ加えないことを明記する。
+- promptへ選択packの全skill、actual request、検証済みSKILL.md参照、任意INDEX参照、contract/digest、必要最小集合の選定規則が入り、prompt hashが一致する。
+- promptがパック全件を読込対象として列挙し、読了・要約だけではなく最低1つのskill規則を実作業と成果へ反映すること、未適用skillの条件を成果へ混入させないことを明記する。
 - 日本語、改行、空白、`&`、`#`、長文をdeep linkの`path`/`prompt`で損失なく往復できる。
 - Codex target pathから `codex exec`、`codex resume`、CLI/TUI、cmd、Terminalを起動しない。
 - handoff受理は `desktop_handoff_ready` とし、回答完了やskill適用完了をSkill Magnetが主張しない。

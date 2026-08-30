@@ -6,16 +6,23 @@ import os
 import re
 import shutil
 import subprocess
-import stat
 import sys
 import tempfile
 import uuid
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from .core import Config, Engine, Pack, SafetyError, SkillMagnetError, _is_link, hash_directory
+from .core import (
+    Config,
+    Engine,
+    Pack,
+    SafetyError,
+    SkillMagnetError,
+    _is_link,
+    _parse_github_repo,
+)
 
 
 CODEX_PROCESS_CONFIG_OVERRIDES = (
@@ -193,102 +200,18 @@ class ActivationEngine:
         self.evidence_dir = self.state_dir / "evidence"
         self.events_dir = self.state_dir / "events"
         self.process_dir = self.state_dir / "process-markers"
-        self.materialization_dir = self.state_dir / "desktop-materializations"
+        self.legacy_materialization_dir = self.state_dir / "desktop-materializations"
         self.now = now
 
-    @staticmethod
-    def _make_tree_writable(root: Path) -> None:
+    def _purge_legacy_materializations(self) -> bool:
+        """Remove skill copies created by releases before GitHub-only storage."""
+        root = self.legacy_materialization_dir
         if not root.exists():
-            return
-        for path in root.rglob("*"):
-            if path.is_file():
-                path.chmod(stat.S_IREAD | stat.S_IWRITE)
-
-    def _cleanup_expired_materializations(self) -> list[str]:
-        removed: list[str] = []
-        if not self.materialization_dir.is_dir():
-            return removed
-        for root in sorted(self.materialization_dir.iterdir()):
-            if (
-                root.is_dir()
-                and not _is_link(root)
-                and re.fullmatch(r"[0-9a-f]{32}-[a-z0-9_]+", root.name)
-            ):
-                self._make_tree_writable(root)
-                shutil.rmtree(root)
-                removed.append(root.name)
-                continue
-            if not root.is_dir() or not re.fullmatch(r"[0-9a-f]{32}", root.name):
-                raise SafetyError("Unexpected Desktop materialization entry")
-            manifest_path = root / "materialization.json"
-            try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                expires_at = datetime.fromisoformat(str(manifest["expires_at"]))
-            except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
-                raise SafetyError("Invalid Desktop materialization metadata") from exc
-            if self.now() >= expires_at:
-                self._make_tree_writable(root)
-                shutil.rmtree(root)
-                removed.append(root.name)
-        return removed
-
-    def _materialize_desktop_pack(
-        self,
-        contract: LaunchContract,
-        pack: Pack,
-        expected_hashes: dict[str, str],
-        expected_index_digest: str | None,
-    ) -> tuple[Pack, dict[str, Any]]:
-        self._cleanup_expired_materializations()
-        self.materialization_dir.mkdir(parents=True, exist_ok=True)
-        final = self.materialization_dir / contract.contract_id
-        if final.exists():
-            raise SafetyError("Desktop materialization already exists")
-        temporary = Path(
-            tempfile.mkdtemp(
-                prefix=f"{contract.contract_id}-", dir=self.materialization_dir
-            )
-        )
-        try:
-            index_source = pack.source / "INDEX.md"
-            index_digest = None
-            if index_source.is_file():
-                shutil.copy2(index_source, temporary / "INDEX.md")
-                index_digest = hashlib.sha256(
-                    (temporary / "INDEX.md").read_bytes()
-                ).hexdigest()
-            if index_digest != expected_index_digest:
-                raise SafetyError("Pack INDEX changed during Desktop materialization")
-            copied_hashes: dict[str, str] = {}
-            for skill_id in contract.skill_ids:
-                shutil.copytree(pack.source / skill_id, temporary / skill_id)
-                copied_hash = hash_directory(temporary / skill_id)
-                if copied_hash != expected_hashes[skill_id]:
-                    raise SafetyError(
-                        f"Pack changed during Desktop materialization: {skill_id}"
-                    )
-                copied_hashes[skill_id] = copied_hash
-            manifest = {
-                "version": 1,
-                "contract_id": contract.contract_id,
-                "commit_sha": contract.commit_sha,
-                "expires_at": contract.expires_at,
-                "index_sha256": index_digest,
-                "skill_hashes": copied_hashes,
-            }
-            (temporary / "materialization.json").write_text(
-                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
-            for path in temporary.rglob("*"):
-                if path.is_file():
-                    path.chmod(stat.S_IREAD)
-            os.replace(temporary, final)
-        except Exception:
-            self._make_tree_writable(temporary)
-            shutil.rmtree(temporary, ignore_errors=True)
-            raise
-        return replace(pack, source=final), {**manifest, "path": str(final)}
+            return False
+        if not root.is_dir() or _is_link(root):
+            raise SafetyError("Unsafe legacy Desktop materialization path")
+        shutil.rmtree(root)
+        return True
 
     def _write_terminal_lifecycle(
         self,
@@ -327,7 +250,7 @@ class ActivationEngine:
 
     def recover_interrupted_attempts(self) -> list[str]:
         """Finalize abandoned runtime attempts exactly once on a new public entry."""
-        self._cleanup_expired_materializations()
+        self._purge_legacy_materializations()
         recovered: list[str] = []
         if not self.process_dir.is_dir():
             return recovered
@@ -431,67 +354,41 @@ class ActivationEngine:
             raise SafetyError(f"Pack {pack_id} approval timestamp requires a timezone")
         if approved_at > self.now():
             raise SafetyError(f"Pack {pack_id} approval timestamp is in the future")
-        index = pack.source / "INDEX.md"
-        index_digest = (
-            hashlib.sha256(index.read_bytes()).hexdigest()
-            if index.is_file()
-            else None
-        )
+        try:
+            index_digest = hashlib.sha256(
+                self.engine.pack_bytes(pack, "INDEX.md")
+            ).hexdigest()
+        except SafetyError:
+            index_digest = None
         return pack, commit, hashes, index_digest
 
-    @staticmethod
-    def _acceptance_path(pack: Pack, skill: str) -> Path:
-        return pack.source / skill / "acceptance.json"
-
-    @staticmethod
-    def approved_blob_digest(pack: Pack, skill: str, filename: str) -> str:
-        if (pack.source / ".skill-magnet-snapshot.json").is_file():
-            path = pack.source / skill / filename
-            if not path.is_file():
-                raise SafetyError(
-                    f"Cannot read approved skill artifact: {skill}/{filename}"
-                )
-            return hashlib.sha256(path.read_bytes()).hexdigest()
-        result = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(pack.source),
-                "show",
-                f"{pack.expected_commit}:{skill}/{filename}",
-            ],
-            capture_output=True,
-        )
-        if result.returncode != 0:
-            raise SafetyError(
-                f"Cannot read approved skill artifact: {skill}/{filename}"
-            )
-        return hashlib.sha256(result.stdout).hexdigest()
+    def approved_blob_digest(self, pack: Pack, skill: str, filename: str) -> str:
+        return hashlib.sha256(
+            self.engine.pack_bytes(pack, f"{skill}/{filename}")
+        ).hexdigest()
 
     def _load_acceptance(
         self, pack: Pack, skill_ids: tuple[str, ...] | None = None
     ) -> dict[str, dict[str, Any]]:
         checks: dict[str, dict[str, Any]] = {}
         for skill in skill_ids or pack.skills:
-            path = self._acceptance_path(pack, skill)
-            if not path.is_file():
-                raise SafetyError(f"Skill-specific acceptance check is required: {path}")
+            relative = f"{skill}/acceptance.json"
             try:
-                value = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                raise SafetyError(f"Invalid acceptance check: {path}: {exc}") from exc
+                value = json.loads(self.engine.pack_text(pack, relative))
+            except (SafetyError, json.JSONDecodeError) as exc:
+                raise SafetyError(f"Invalid acceptance check: {relative}: {exc}") from exc
             if not isinstance(value, dict) or value.get("version") != 1:
-                raise SafetyError(f"Unsupported acceptance check: {path}")
+                raise SafetyError(f"Unsupported acceptance check: {relative}")
             assertions = value.get("assertions")
             if not isinstance(assertions, list) or not assertions:
-                raise SafetyError(f"Acceptance assertions are required: {path}")
+                raise SafetyError(f"Acceptance assertions are required: {relative}")
             for assertion in assertions:
                 if (
                     not isinstance(assertion, dict)
                     or not isinstance(assertion.get("path"), str)
                     or "equals" not in assertion
                 ):
-                    raise SafetyError(f"Invalid acceptance assertion: {path}")
+                    raise SafetyError(f"Invalid acceptance assertion: {relative}")
                 field_path = assertion["path"].split(".")
                 if (
                     len(field_path) != 2
@@ -499,11 +396,11 @@ class ActivationEngine:
                     or not field_path[1].replace("-", "_").isidentifier()
                 ):
                     raise SafetyError(
-                        f"MVP acceptance path must be result.<field>: {path}"
+                        f"MVP acceptance path must be result.<field>: {relative}"
                     )
                 if isinstance(assertion["equals"], (dict, list)):
                     raise SafetyError(
-                        f"MVP acceptance equals must be a JSON primitive: {path}"
+                        f"MVP acceptance equals must be a JSON primitive: {relative}"
                     )
             checks[skill] = value
         return checks
@@ -570,37 +467,34 @@ class ActivationEngine:
             "local_skill_placement": False,
         }
 
-    @staticmethod
     def _instructions(
-        pack: Pack, skill_ids: tuple[str, ...] | None = None
+        self, pack: Pack, skill_ids: tuple[str, ...] | None = None
     ) -> str:
         parts: list[str] = []
         for skill in skill_ids or pack.skills:
-            content = (pack.source / skill / "SKILL.md").read_text(encoding="utf-8-sig")
+            content = self.engine.pack_text(pack, f"{skill}/SKILL.md")
             parts.append(f"<skill id={json.dumps(skill)}>\n{content}\n</skill>")
         return "\n\n".join(parts)
 
-    @staticmethod
-    def _pack_index(pack: Pack, selection_kind: str) -> str:
+    def _pack_index(self, pack: Pack, selection_kind: str) -> str:
         """Return the reviewed composition map for complete-package execution."""
         if selection_kind != "pack":
             return ""
-        path = pack.source / "INDEX.md"
-        if not path.is_file():
+        try:
+            return self.engine.pack_text(pack, "INDEX.md")
+        except SafetyError:
             return ""
-        return path.read_text(encoding="utf-8-sig")
 
-    @staticmethod
-    def _pack_relations(pack: Pack) -> dict[str, set[tuple[str, str]]]:
+    def _pack_relations(self, pack: Pack) -> dict[str, set[tuple[str, str]]]:
         """Parse enforceable INDEX Mermaid relationship edges."""
-        path = pack.source / "INDEX.md"
-        if not path.is_file():
+        try:
+            content = self.engine.pack_text(pack, "INDEX.md")
+        except SafetyError:
             return {
                 "depends-on": set(),
                 "composes-with": set(),
                 "contrasts-with": set(),
             }
-        content = path.read_text(encoding="utf-8-sig")
         aliases: dict[str, str] = {}
 
         def resolve(short_id: str) -> str | None:
@@ -631,15 +525,14 @@ class ActivationEngine:
                 relations[relation].add((source, target))
         return relations
 
-    @classmethod
     def _verify_pack_relations(
-        cls,
+        self,
         pack: Pack,
         completed_skill_ids: list[str],
         applied_rules: list[str],
     ) -> None:
         applied = set(completed_skill_ids)
-        relations = cls._pack_relations(pack)
+        relations = self._pack_relations(pack)
         for source, dependency in relations["depends-on"]:
             if source in applied and dependency not in applied:
                 raise _AcceptanceFailed(
@@ -786,6 +679,13 @@ class ActivationEngine:
         index_section = (
             f"\n\n<pack-index>\n{pack_index}\n</pack-index>" if pack_index else ""
         )
+        index_instruction = " and the pack INDEX" if pack_index else ""
+        relation_instruction = (
+            " Close depends-on relations; add composes-with skills only when the "
+            "request needs them; do not combine contrasts-with skills."
+            if pack_index
+            else ""
+        )
         return (
             "Skill Magnet verified task envelope.\n"
             f"PROVENANCE={json.dumps(provenance, ensure_ascii=False, sort_keys=True)}\n"
@@ -793,10 +693,11 @@ class ActivationEngine:
             f"TARGET_PROJECT={contract.project}\n"
             "The PURPOSE field is the user's actual request. Complete that request, "
             "not a demonstration or readiness exercise. Read every supplied skill "
-            "instruction and the pack INDEX, then select the smallest applicable skill "
-            "set from each skill's triggers and boundaries. Close depends-on relations; "
-            "add composes-with skills only when the request needs them; do not combine "
-            "contrasts-with skills. Put the concrete user-facing "
+            f"instruction{index_instruction}, then select the smallest applicable skill "
+            f"set from each skill's triggers and boundaries.{relation_instruction} "
+            "Reading, summarizing, or listing candidate skills is not execution. Apply "
+            "the selected skill procedures, decision rules, and boundaries to the actual "
+            "analysis, edits, generation, verification, and final deliverable. Put the concrete user-facing "
             "deliverable in result.task_output. "
             "If files were saved or project content changed, report user-facing relative "
             "paths in result.saved_paths and short descriptions in result.changes. "
@@ -819,62 +720,78 @@ class ActivationEngine:
         self,
         contract: LaunchContract,
         pack: Pack,
+        runtime_name: str = "Codex Desktop",
     ) -> str:
-        """Build the human-readable Codex Desktop task bound to one contract."""
+        """Build a human-readable Desktop/Web task bound to one contract."""
         actual_request_sha256 = hashlib.sha256(
             contract.purpose.encode("utf-8")
         ).hexdigest()
-        acceptance_lines: list[str] = []
-        for skill_id, check in self._load_acceptance(pack, contract.skill_ids).items():
-            for assertion in check["assertions"]:
-                if contract.selection_kind == "pack":
-                    acceptance_lines.append(
-                        f"- {skill_id}: {assertion['path']}へ依頼に適合する値を記述する"
-                        f"（固定値ではない。形式例: "
-                        f"{json.dumps(assertion['equals'], ensure_ascii=False)}）"
-                    )
-                else:
-                    acceptance_lines.append(
-                        f"- {skill_id}: {assertion['path']} = "
-                        f"{json.dumps(assertion['equals'], ensure_ascii=False)}"
-                    )
+        owner, repository = _parse_github_repo(pack.repo_url)
+        raw_root = (
+            f"https://raw.githubusercontent.com/{owner}/{repository}/"
+            f"{contract.commit_sha}"
+        )
         instruction_refs = [
             "- "
             + skill_id
-            + ": `"
-            + (pack.source / skill_id / "SKILL.md").resolve().as_posix()
-            + "`"
+            + ": "
+            + raw_root
+            + "/"
+            + skill_id
+            + "/SKILL.md"
             + " (SHA-256: "
             + hashlib.sha256(
-                (pack.source / skill_id / "SKILL.md").read_bytes()
+                self.engine.pack_bytes(pack, f"{skill_id}/SKILL.md")
             ).hexdigest()
             + ")"
             for skill_id in contract.skill_ids
         ]
-        index_path = (pack.source / "INDEX.md").resolve()
         index_section = ""
-        if contract.selection_kind == "pack" and index_path.is_file():
-            index_digest = hashlib.sha256(index_path.read_bytes()).hexdigest()
-            index_section = (
-                "\nパックINDEX（最初に全文を読む）:\n"
-                f"`{index_path.as_posix()}` (SHA-256: {index_digest})\n"
-            )
+        index_available = False
+        if contract.selection_kind == "pack":
+            try:
+                index_bytes = self.engine.pack_bytes(pack, "INDEX.md")
+            except SafetyError:
+                pass
+            else:
+                index_available = True
+                index_digest = hashlib.sha256(index_bytes).hexdigest()
+                index_section = (
+                    "\nパックINDEX（存在するため、最初に全文を読む）:\n"
+                    f"{raw_root}/INDEX.md (SHA-256: {index_digest})\n"
+                )
         skill_label = (
             f"適用スキルID: {', '.join(contract.skill_ids)}\n"
             if contract.selection_kind == "skill"
             else f"パック収録スキルID: {', '.join(contract.skill_ids)}\n"
         )
+        selection_basis = (
+            "各スキルのtrigger/boundaryとINDEXの関係"
+            if index_available
+            else "各スキルのtrigger/boundary"
+        )
+        relation_rules = (
+            "depends-onは依存先を含め、composes-withは依頼に必要な場合だけ加え、"
+            "contrasts-withは同時採用しないでください。"
+            if index_available
+            else ""
+        )
+        reference_target = (
+            "全SKILL.mdと、存在するINDEX" if index_available else "全SKILL.md"
+        )
+        reference_relations = "INDEXの関係と" if index_available else ""
         return (
             "Skill Magnetからの実行依頼です。\n"
             "これはデモ、準備確認、実行可否の説明ではありません。選択したパックの"
-            "全スキルを読み、INDEXの関係と各スキルのtrigger/boundaryから必要最小限の"
+            f"全スキルを読み、{selection_basis}から必要最小限の"
             "集合を選んで、最低1つのスキルを必ず実際の依頼へ適用し、この新規タスクで"
-            "依頼を完了してください。skillの説明、一覧、準備確認だけで終了してはいけません。"
-            "depends-onは"
-            "依存先を含め、composes-withは必要な場合だけ加え、contrasts-withは同時採用"
-            "しないでください。各スキルを個別の回答生成依頼として扱わず、一つの実行方法へ"
-            "統合してください。OpenAIまたはAnthropicのAPI key、従量課金API、追加支払いを"
-            "要求せず、このCodex Desktopタスクの既存利用枠だけで実行してください。\n\n"
+            "依頼を完了してください。skillを読む、要約する、適用候補を挙げるだけでは実行と"
+            "認めません。選んだskillの手順、判断基準、境界を、実際の分析・編集・生成・検証と"
+            "最終成果へ具体的に反映してください。skillの説明、一覧、準備確認だけで終了しては"
+            f"いけません。{relation_rules}"
+            "各スキルを個別の回答生成依頼として扱わず、一つの実行方法へ統合してください。"
+            "OpenAIまたはAnthropicのAPI key、従量課金API、追加支払いを要求せず、この"
+            f"{runtime_name}の既存利用枠だけで実行してください。\n\n"
             f"対象プロジェクト: `{Path(contract.project).resolve().as_posix()}`\n"
             f"選択パックID: {contract.pack_id}\n"
             f"{skill_label}"
@@ -885,18 +802,18 @@ class ActivationEngine:
             "\n実際の依頼:\n"
             f"{contract.purpose}\n"
             "\n期待する成果:\n"
-            "上記依頼へ直接答える具体的な自然文の最終回答を返してください。"
-            "内部の契約JSONや検証用JSONを回答として表示しないでください。\n"
-            "\n受入条件候補（実際に適用したスキルの条件だけが必須）:\n"
-            f"{'\n'.join(acceptance_lines)}\n"
+            "上記依頼そのものを完了した具体的な成果を返してください。成果の形式は実際の依頼と"
+            "適用したskillに従い、自然文、JSON、コード、ファイルその他の形式を一律に禁止"
+            "しません。\n"
             f"{index_section}"
             "\n選択スキルの検証済み指示ファイル:\n"
             f"{'\n'.join(instruction_refs)}\n"
-            "上記INDEXと全SKILL.mdをツールで省略せず読み終えてから、INDEXの関係と"
-            "各スキルのtrigger/boundaryに従って必要なものを最低1つ必ず実際の依頼へ適用して"
-            "ください。適用しなかったスキルの受入固定値を成果へ追加しないでください。"
-            "Skill Magnet用のreceipt、callback、検証JSONは作成せず、利用者への自然文成果を"
-            "このタスクの最終回答として返してください。"
+            f"上記GitHub固定commitの{reference_target}をツールで省略せず取得し、"
+            f"各SHA-256を照合してから、{reference_relations}各スキルのtrigger/boundaryに"
+            "従って必要なものを最低1つ必ず実際の依頼へ適用して"
+            "ください。適用しなかったスキルの条件を成果へ混入させないでください。"
+            "選んだskillが成果のどの判断・操作・検証に影響したかを自分で確認し、skillの読了"
+            "報告ではなく、完成した成果をこのタスクの最終回答として返してください。"
         )
 
     def prepare_codex_desktop_handoff(self, contract_id: str) -> dict[str, Any]:
@@ -918,11 +835,8 @@ class ActivationEngine:
             or index_digest != contract.index_digest
         ):
             raise SafetyError("Pack content changed after confirmation")
-        materialized_pack, materialization = self._materialize_desktop_pack(
-            contract, pack, contract.skill_hashes, contract.index_digest
-        )
         self.evidence_dir.mkdir(parents=True, exist_ok=True)
-        prompt = self._desktop_task_prompt(contract, materialized_pack)
+        prompt = self._desktop_task_prompt(contract, pack)
         prompt_digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
         self._consume(contract)
         return {
@@ -944,7 +858,7 @@ class ActivationEngine:
             "acceptance_digests": dict(contract.acceptance_digests),
             "prompt": prompt,
             "prompt_sha256": prompt_digest,
-            "materialization": materialization,
+            "skill_content_storage": "github_only",
         }
 
     def record_codex_desktop_handoff(
@@ -993,10 +907,6 @@ class ActivationEngine:
             raise SafetyError("Invalid Codex Desktop handoff state")
         contract_id = str(prepared["contract_id"])
         attempt_id = str(prepared["attempt_id"])
-        materialization = self.materialization_dir / contract_id
-        if materialization.is_dir() and not _is_link(materialization):
-            self._make_tree_writable(materialization)
-            shutil.rmtree(materialization)
         terminal_event = self._write_terminal_lifecycle(
             attempt_id=attempt_id,
             contract_id=contract_id,
@@ -1036,7 +946,7 @@ class ActivationEngine:
         pack, commit, _, _ = self._validated_pack(contract.pack_id)
         if commit != contract.commit_sha or pack.repo_url != contract.repository_url:
             raise SafetyError("Pack provenance changed after confirmation")
-        prompt = self._task_envelope(contract, pack)
+        prompt = self._desktop_task_prompt(contract, pack, runtime_name="Claude")
         prompt_digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
         self._consume(contract)
         return {

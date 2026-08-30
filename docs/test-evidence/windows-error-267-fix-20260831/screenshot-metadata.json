@@ -1,0 +1,13 @@
+{
+  "captured_at_utc": "2026-08-30T16:16:19.363463+00:00",
+  "window_handle": 7014622,
+  "window_pid": 29876,
+  "window_title": "Skill Magnet — 実行確認",
+  "window_rect": [
+    104,
+    104,
+    649,
+    420
+  ],
+  "capture_method": "Win32 PrintWindow(PW_RENDERFULLCONTENT), window rectangle only"
+}

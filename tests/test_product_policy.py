@@ -51,19 +51,26 @@ class ProductPolicyTest(unittest.TestCase):
                 "automatic_distribution",
                 "automatic_activation",
                 "local_placement_as_activation",
+                "temporary_skill_materialization",
                 "unverified_skill_use",
             },
         )
 
-    def test_temporary_materialization_requires_expiry_and_cleanup(self) -> None:
-        temporary = self.policy["temporary_materialization"]
-        self.assertTrue(temporary["allowed_only_when_runtime_requires"])
+    def test_skill_content_is_stored_only_in_the_configured_github_repository(self) -> None:
+        storage = self.policy["skill_content_storage"]
         self.assertEqual(
-            set(temporary["required_fields"]),
-            {"target", "reason", "expires_at", "cleanup_plan"},
+            storage["allowed_location"],
+            "configured_user_owned_github_repository_only",
         )
-        self.assertEqual(temporary["required_final_state"], "no_residue")
+        self.assertEqual(storage["local_storage"], "prohibited")
+        self.assertEqual(storage["runtime_verification"], "bounded_in_memory_bytes_only")
+        self.assertEqual(storage["local_metadata_json"], "allowed_without_skill_content")
         self.assertFalse(self.policy["legacy_persistent_sync"]["default_enabled"])
+        self.assertEqual(
+            self.policy["legacy_persistent_sync"]["production_use"],
+            "permanently_prohibited",
+        )
+        self.assertFalse(self.policy["legacy_persistent_sync"]["cli_override"])
 
     def test_version_provenance_and_approval_are_required(self) -> None:
         provenance = self.policy["provenance"]
@@ -78,11 +85,13 @@ class ProductPolicyTest(unittest.TestCase):
         self.assertEqual(
             set(handoff["prompt_requires"]),
             {
-                "read_index_and_all_skill_files",
+                "read_all_skill_files_and_index_if_present",
                 "apply_at_least_one_applicable_skill",
+                "apply_selected_skill_rules_to_actual_work_and_deliverable",
                 "obey_index_relationships_and_skill_boundaries",
                 "complete_actual_request_in_one_unified_answer",
-                "do_not_finish_with_skill_explanation_or_preparation_only",
+                "do_not_finish_with_skill_reading_summary_or_preparation_only",
+                "do_not_restrict_output_format_beyond_request_and_skill",
             },
         )
         self.assertEqual(

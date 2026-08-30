@@ -1,5 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <shlobj_core.h>
 #include <shobjidl.h>
 
 #include <iostream>
@@ -14,6 +15,8 @@ static const CLSID CLSID_SkillMagnetCommand = {
 
 int wmain(int argc, wchar_t** argv) {
     if (argc != 2) return 2;
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    if (FAILED(com)) return 11;
     wchar_t temporary_root[MAX_PATH]{};
     if (!GetTempPathW(MAX_PATH, temporary_root)) return 8;
     const std::wstring local_app_data =
@@ -75,11 +78,42 @@ int wmain(int argc, wchar_t** argv) {
     const bool hierarchy = child_titles(command) == expected_titles;
     const bool enumeration_is_silent =
         GetFileAttributesW(invoke_log.c_str()) == INVALID_FILE_ATTRIBUTES;
+
+    // Invoke a real child with a filesystem *file* as the selected path. The
+    // selected path is a --project argument, not a safe process working
+    // directory. Passing it as lpCurrentDirectory reproduces Windows error 267.
+    const std::wstring selected_file = local_app_data + L"\\selected-file.txt";
+    HANDLE selected_handle = CreateFileW(
+        selected_file.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (selected_handle == INVALID_HANDLE_VALUE) return 12;
+    CloseHandle(selected_handle);
+    IShellItem* selected_item = nullptr;
+    IShellItemArray* selected_items = nullptr;
+    IEnumExplorerCommand* invoke_children = nullptr;
+    IExplorerCommand* invoke_child = nullptr;
+    ULONG fetched = 0;
+    bool invoke_succeeded = false;
+    if (SUCCEEDED(SHCreateItemFromParsingName(
+            selected_file.c_str(), nullptr, IID_PPV_ARGS(&selected_item))) &&
+        SUCCEEDED(SHCreateShellItemArrayFromShellItem(
+            selected_item, IID_PPV_ARGS(&selected_items))) &&
+        SUCCEEDED(command->EnumSubCommands(&invoke_children)) && invoke_children &&
+        invoke_children->Next(1, &invoke_child, &fetched) == S_OK &&
+        fetched == 1 && invoke_child) {
+        invoke_succeeded = SUCCEEDED(invoke_child->Invoke(selected_items, nullptr));
+    }
+    if (invoke_child) invoke_child->Release();
+    if (invoke_children) invoke_children->Release();
+    if (selected_items) selected_items->Release();
+    if (selected_item) selected_item->Release();
+    DeleteFileW(selected_file.c_str());
     command->Release();
     const bool unloadable = can_unload() == S_OK;
     FreeLibrary(module);
     RemoveDirectoryW(local_app_data.c_str());
-    if (!valid || !hierarchy || !enumeration_is_silent || !unloadable) return 7;
+    CoUninitialize();
+    if (!valid || !hierarchy || !enumeration_is_silent || !invoke_succeeded || !unloadable) return 7;
     std::wcout << L"SkillMagnet IExplorerCommand contract PASS\n";
     return 0;
 }

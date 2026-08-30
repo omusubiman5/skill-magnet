@@ -3,14 +3,18 @@ from __future__ import annotations
 import copy
 import base64
 import hashlib
+import io
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import uuid
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,17 +69,11 @@ def _expand_path(value: str, base: Path) -> Path:
 
 
 def _pack_source(value: str, base: Path) -> Path:
-    prefix = "package://"
-    if not value.startswith(prefix):
-        return _expand_path(value, base)
-    name = value[len(prefix) :]
-    if not SKILL_NAME.fullmatch(name):
-        raise SkillMagnetError(f"Invalid packaged source name: {value}")
-    packaged = Path(__file__).resolve().parent / "_packs" / name
-    if packaged.is_dir():
-        return packaged.resolve()
-    source_checkout = base / ".approved-snapshots" / name
-    return source_checkout.resolve()
+    if value.startswith("package://"):
+        raise SkillMagnetError(
+            "Packaged skill sources are prohibited; use the pinned GitHub repository"
+        )
+    return _expand_path(value, base)
 
 
 def _parse_github_repo(url: str) -> tuple[str, str]:
@@ -172,7 +170,7 @@ class Pack:
     pack_id: str
     repo_url: str
     expected_commit: str
-    source: Path
+    source: Path | None
     skills: tuple[str, ...]
     approved_by: str = ""
     approved_at: str = ""
@@ -274,11 +272,16 @@ class Config:
                     "display_name": display_name,
                     "purpose": purpose,
                 }
+            source_value = raw.get("source")
             self.packs[pack_id] = Pack(
                 pack_id=pack_id,
                 repo_url=str(raw.get("repo_url", "")),
                 expected_commit=str(raw.get("expected_commit", "")).lower(),
-                source=_pack_source(str(raw.get("source", "")), self.base),
+                source=(
+                    _pack_source(str(source_value), self.base)
+                    if source_value is not None
+                    else None
+                ),
                 skills=skills,
                 approved_by=str(raw.get("approved_by", "")).strip(),
                 approved_at=str(raw.get("approved_at", "")).strip(),
@@ -317,6 +320,144 @@ class Engine:
         self.state_dir = (state_dir or config.state_dir).resolve()
         self.state_file = self.state_dir / "state.json"
         self.pending_file = self.state_dir / "pending-transaction.json"
+        self._remote_pack_files: dict[str, dict[str, bytes]] = {}
+
+    @staticmethod
+    def _github_archive_url(pack: Pack) -> str:
+        owner, repository = _parse_github_repo(pack.repo_url)
+        return (
+            f"https://codeload.github.com/{owner}/{repository}/tar.gz/"
+            f"{pack.expected_commit}"
+        )
+
+    def _load_remote_pack(self, pack: Pack) -> dict[str, bytes]:
+        cached = self._remote_pack_files.get(pack.pack_id)
+        if cached is not None:
+            return cached
+        archive_url = self._github_archive_url(pack)
+        request = urllib.request.Request(
+            archive_url,
+            headers={"User-Agent": "Skill-Magnet/0.5"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                if response.geturl() != archive_url:
+                    raise SafetyError(
+                        "Pinned GitHub skill archive redirected to an unexpected URL"
+                    )
+                archive = response.read(16 * 1024 * 1024 + 1)
+        except (OSError, urllib.error.URLError) as exc:
+            raise SkillMagnetError(
+                f"Cannot read pinned GitHub skill repository: {exc}"
+            ) from exc
+        if len(archive) > 16 * 1024 * 1024:
+            raise SafetyError("Pinned GitHub skill archive exceeds 16 MiB")
+        files: dict[str, bytes] = {}
+        total = 0
+        try:
+            with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as bundle:
+                members = bundle.getmembers()
+                if len(members) > 5000:
+                    raise SafetyError("Pinned GitHub skill archive has too many entries")
+                for member in members:
+                    parts = Path(member.name).parts
+                    if len(parts) < 2:
+                        continue
+                    relative_parts = parts[1:]
+                    if any(part in {"", ".", ".."} for part in relative_parts):
+                        raise SafetyError("Unsafe path in pinned GitHub skill archive")
+                    relative = "/".join(relative_parts)
+                    if member.isdir():
+                        continue
+                    if not member.isfile() or member.issym() or member.islnk():
+                        raise SafetyError("Links are not allowed in a GitHub skill pack")
+                    if relative in files:
+                        raise SafetyError("Duplicate path in pinned GitHub skill archive")
+                    extracted = bundle.extractfile(member)
+                    if extracted is None:
+                        raise SafetyError("Cannot read pinned GitHub skill archive entry")
+                    content = extracted.read(4 * 1024 * 1024 + 1)
+                    if len(content) > 4 * 1024 * 1024:
+                        raise SafetyError(f"GitHub skill file exceeds 4 MiB: {relative}")
+                    total += len(content)
+                    if total > 32 * 1024 * 1024:
+                        raise SafetyError("Expanded GitHub skill pack exceeds 32 MiB")
+                    files[relative] = content
+        except (tarfile.TarError, OSError) as exc:
+            raise SafetyError(f"Invalid pinned GitHub skill archive: {exc}") from exc
+        self._remote_pack_files[pack.pack_id] = files
+        return files
+
+    def pack_bytes(self, pack: Pack, relative: str) -> bytes:
+        if pack.source is not None:
+            path = pack.source.joinpath(*Path(relative).parts)
+            if not path.is_file() or _is_link(path):
+                raise SafetyError(f"Cannot read approved skill artifact: {relative}")
+            return path.read_bytes()
+        try:
+            return self._load_remote_pack(pack)[relative]
+        except KeyError as exc:
+            raise SafetyError(f"Cannot read approved skill artifact: {relative}") from exc
+
+    def pack_text(self, pack: Pack, relative: str) -> str:
+        try:
+            return self.pack_bytes(pack, relative).decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise SafetyError(f"Approved skill artifact is not UTF-8: {relative}") from exc
+
+    def _remote_skill_hash(self, pack: Pack, skill: str) -> str:
+        files = self._load_remote_pack(pack)
+        prefix = f"{skill}/"
+        selected = sorted(
+            (path[len(prefix):], content)
+            for path, content in files.items()
+            if path.startswith(prefix)
+        )
+        if not selected:
+            raise SkillMagnetError(f"Invalid GitHub skill directory: {skill}")
+        digest = hashlib.sha256()
+        for relative, content in selected:
+            digest.update(relative.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(content)
+            digest.update(b"\0")
+        return digest.hexdigest()
+
+    def _validate_remote_pack(self, pack: Pack) -> tuple[str, dict[str, str]]:
+        files = self._load_remote_pack(pack)
+        hashes: dict[str, str] = {}
+        for skill in pack.skills:
+            skill_file = f"{skill}/SKILL.md"
+            content = self.pack_text(pack, skill_file)
+            lines = content.splitlines()
+            if not lines or lines[0].strip() != "---":
+                raise SkillMagnetError(f"SKILL.md is missing YAML frontmatter: {skill}")
+            metadata: dict[str, str] = {}
+            for line in lines[1:]:
+                if line.strip() == "---":
+                    break
+                match = re.match(r"^([A-Za-z0-9_-]+):\s*(.*?)\s*$", line)
+                if match:
+                    metadata[match.group(1)] = match.group(2).strip("'\"")
+            else:
+                raise SkillMagnetError(f"SKILL.md frontmatter is not closed: {skill}")
+            if metadata.get("name") != skill or not metadata.get("description"):
+                raise SafetyError(f"Invalid GitHub skill metadata: {skill}")
+            prefix = f"{skill}/"
+            for relative, value in files.items():
+                if not relative.startswith(prefix):
+                    continue
+                name = relative.rsplit("/", 1)[-1]
+                if any(pattern.fullmatch(name) for pattern in SECRET_FILE_NAMES):
+                    raise SafetyError(
+                        f"Secret-like file is not allowed in a skill pack: {relative}"
+                    )
+                if any(pattern.search(value) for pattern in SECRET_CONTENT):
+                    raise SafetyError(
+                        f"Secret-like content is not allowed in a skill pack: {relative}"
+                    )
+            hashes[skill] = self._remote_skill_hash(pack, skill)
+        return pack.expected_commit, hashes
 
     def _pack(self, pack_id: str) -> Pack:
         try:
@@ -330,6 +471,8 @@ class Engine:
             raise SafetyError(
                 f"Repository owner {expected_owner} is not in allowed_github_owners"
             )
+        if pack.source is None:
+            return self._validate_remote_pack(pack)
         if not pack.source.is_dir():
             raise SkillMagnetError(f"Pack source does not exist: {pack.source}")
         snapshot_path = pack.source / ".skill-magnet-snapshot.json"

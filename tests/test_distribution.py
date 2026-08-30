@@ -14,22 +14,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DistributionArtifactTest(unittest.TestCase):
-    def test_wheel_is_standalone_and_validates_bundled_runtime_assets(self) -> None:
+    def test_wheel_is_standalone_and_contains_no_local_skill_content(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             temporary_path = Path(temporary)
             wheels = temporary_path / "wheels"
             wheels.mkdir()
-            stale_member = (
-                ROOT
-                / "build"
-                / "lib"
-                / "skill_magnet"
-                / "_packs"
-                / "obsolete-pack-from-prior-build"
-                / "SKILL.md"
-            )
-            stale_member.parent.mkdir(parents=True, exist_ok=True)
-            stale_member.write_text("must not enter the wheel\n", encoding="utf-8")
             built = subprocess.run(
                 [
                     sys.executable,
@@ -48,38 +37,15 @@ class DistributionArtifactTest(unittest.TestCase):
             wheel = next(wheels.glob("skill_magnet-*.whl"))
             with zipfile.ZipFile(wheel) as archive:
                 names = set(archive.namelist())
+                prohibited = ("/_packs/", "/SKILL.md", "/acceptance.json", "/INDEX.md")
                 self.assertFalse(
-                    any("obsolete-pack-from-prior-build" in name for name in names),
-                    "wheel retained runtime assets from a prior build",
+                    any(any(marker in f"/{name}" for marker in prohibited) for name in names),
+                    "wheel must not contain local skill content",
                 )
-                skill_member = next(
-                    name
-                    for name in names
-                    if name.endswith(
-                        "skill_magnet/_packs/codex-delivery-assurance-8f12af5/"
-                        "codex-sandbox-approval-boundary/SKILL.md"
-                    )
-                )
-                bundled_skill = archive.read(skill_member)
-            canonical_skill = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(ROOT / ".approved-snapshots" / "codex-delivery-assurance-8f12af5"),
-                    "show",
-                    "8f12af5ddfdd3b985f26d33dad09d6061d675342:"
-                    "codex-sandbox-approval-boundary/SKILL.md",
-                ],
-                check=True,
-                capture_output=True,
-            ).stdout
-            self.assertEqual(bundled_skill, canonical_skill)
             expected_suffixes = (
                 "skill_magnet/skill-magnet.json",
                 "skill_magnet/_native/windows-modern-context-menu/build.ps1",
                 "skill_magnet/_native/windows-modern-context-menu/package.ps1",
-                "skill_magnet/_packs/codex-delivery-assurance-8f12af5/INDEX.md",
-                "skill_magnet/_packs/codex-delivery-assurance-8f12af5/.skill-magnet-snapshot.json",
             )
             for suffix in expected_suffixes:
                 self.assertTrue(any(name.endswith(suffix) for name in names), suffix)

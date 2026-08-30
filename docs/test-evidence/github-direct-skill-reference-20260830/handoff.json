@@ -1,0 +1,38 @@
+{
+  "timestamp_utc": "2026-08-30T14:29:08.511899+00:00",
+  "status": "desktop_handoff_ready",
+  "desktop_result_verification": "not_claimed_by_design",
+  "handoff_completed": true,
+  "answer_completion_claimed": false,
+  "billing_boundary": "existing_desktop_plan_no_api_key",
+  "contract_id": "b5b31ec7b7cb4b9b88253999a56fafb0",
+  "attempt_id": "759e21b8a26a4c7cb8696298f83000a9",
+  "skill_ids": [
+    "codex-auth-boundary-selection",
+    "codex-bounded-subagents",
+    "codex-ci-patch-handoff",
+    "codex-context-entry-routing",
+    "codex-egress-surface-governance",
+    "codex-exec-io-contract",
+    "codex-execution-mode-routing",
+    "codex-mcp-control-plane",
+    "codex-sandbox-approval-boundary"
+  ],
+  "project": "C:\\Projects\\skill-magnet",
+  "actual_request": "このプロジェクトの未完了リリースをCIで監査して修正patchを安全に引き渡す計画を、実行mode、sandboxとapproval、egress、MCP、bounded subagents、CI patch handoffの観点をINDEXに従って必要なものだけ組み合わせ、日本語で具体化してください。この実機受入ではファイルを変更せず、採用したskillと組合せ理由も自然文で説明してください。",
+  "actual_request_sha256": "794376db294d42afde79bbc15822d97e6d02518e49eecc605db5900a42691fc1",
+  "prompt_sha256": "ae9e32fcae5dc99e6f316a1b349a5e638e441f7a4dfebc3ed4d487070f313867",
+  "instruction_digest": "173ac0c356945337e1eaf05f52d5a3e005426da495775f757b52338b764d49e3",
+  "acceptance_digests": {
+    "codex-auth-boundary-selection": "a993d08c8dfd9e4739bd9e6150772e2c45a67c40778d0051a35ceecdad27d92d",
+    "codex-bounded-subagents": "da393eec33b11f8d32dfb5fc68b744847f996e69d29cc9921708272d7eea1e47",
+    "codex-ci-patch-handoff": "8b888999ad3cda87853e1f346a5386ac2adeca1230ab0cc00da70ab618e2a4b8",
+    "codex-context-entry-routing": "414b8020359e9524c99b6f33fcb90e97149fb8fff5ec936576acff0bd8ccdea6",
+    "codex-egress-surface-governance": "928ab2a7112a4e3620fe373e170d64b2dc9490afcfe0822d66687bd404c178db",
+    "codex-exec-io-contract": "4df5b00136f7456a67761f910cc93e31b57cf6b9fc7621b607dc2a3ac765862d",
+    "codex-execution-mode-routing": "f63c268df7677d9f051d47aec7476961e55694d50a7b738dbc02236cf838fea8",
+    "codex-mcp-control-plane": "4decbc6a5661eba06007372c0969a88c61afc15fa57f7471c11b63b6c8f1483e",
+    "codex-sandbox-approval-boundary": "b4df1deeebf2a0cfa03e93c19a59a90457f39279c51bf56d3ecc5003592e386d"
+  },
+  "destination": "codex://threads/new"
+}
