@@ -591,10 +591,14 @@ class ActivationEngine:
 
     @staticmethod
     def _pack_relations(pack: Pack) -> dict[str, set[tuple[str, str]]]:
-        """Parse enforceable depends-on/contrasts-with edges from INDEX Mermaid."""
+        """Parse enforceable INDEX Mermaid relationship edges."""
         path = pack.source / "INDEX.md"
         if not path.is_file():
-            return {"depends-on": set(), "contrasts-with": set()}
+            return {
+                "depends-on": set(),
+                "composes-with": set(),
+                "contrasts-with": set(),
+            }
         content = path.read_text(encoding="utf-8-sig")
         aliases: dict[str, str] = {}
 
@@ -608,7 +612,11 @@ class ActivationEngine:
             resolved = resolve(short_id)
             if resolved is not None:
                 aliases[alias] = resolved
-        relations = {"depends-on": set(), "contrasts-with": set()}
+        relations = {
+            "depends-on": set(),
+            "composes-with": set(),
+            "contrasts-with": set(),
+        }
         edge_pattern = re.compile(
             r"^\s*(\w+)(?:\[\"[^\"]+\"\])?\s+[-.=]+>\|([^|]+)\|\s+"
             r"(\w+)(?:\[\"[^\"]+\"\])?",
@@ -624,7 +632,10 @@ class ActivationEngine:
 
     @classmethod
     def _verify_pack_relations(
-        cls, pack: Pack, completed_skill_ids: list[str]
+        cls,
+        pack: Pack,
+        completed_skill_ids: list[str],
+        applied_rules: list[str],
     ) -> None:
         applied = set(completed_skill_ids)
         relations = cls._pack_relations(pack)
@@ -637,6 +648,17 @@ class ActivationEngine:
             if left in applied and right in applied:
                 raise _AcceptanceFailed(
                     f"Contrasting skills cannot both be applied: {left}, {right}"
+                )
+        for left, right in relations["composes-with"]:
+            if left not in applied or right not in applied:
+                continue
+            if not any(
+                "composes-with" in rule and left in rule and right in rule
+                for rule in applied_rules
+            ):
+                raise _AcceptanceFailed(
+                    "Applied composition has no relationship evidence: "
+                    f"{left} composes-with {right}"
                 )
 
     def confirm(self, plan: dict[str, Any], *, confirmed: bool) -> LaunchContract:
@@ -779,7 +801,9 @@ class ActivationEngine:
             f"evidence.actual_request_sha256 to {actual_request_sha256}. "
             "In evidence.applied_rules, include at least one concrete applied rule for "
             "each applied skill and begin that rule with the exact skill ID followed "
-            "by a colon. "
+            "by a colon. If both endpoints of a composes-with INDEX edge are applied, "
+            "include one rule containing both exact skill IDs, the text composes-with, "
+            "and the request-specific reason for combining them. "
             "Return only the JSON evidence envelope requested by the output schema.\n\n"
             f"{self._instructions(pack, contract.skill_ids)}"
             f"{index_section}"
@@ -793,10 +817,17 @@ class ActivationEngine:
         acceptance_lines: list[str] = []
         for skill_id, check in self._load_acceptance(pack, contract.skill_ids).items():
             for assertion in check["assertions"]:
-                acceptance_lines.append(
-                    f"- {skill_id}: {assertion['path']} = "
-                    f"{json.dumps(assertion['equals'], ensure_ascii=False)}"
-                )
+                if contract.selection_kind == "pack":
+                    acceptance_lines.append(
+                        f"- {skill_id}: {assertion['path']}へ依頼に適合する値を記述する"
+                        f"（固定値ではない。形式例: "
+                        f"{json.dumps(assertion['equals'], ensure_ascii=False)}）"
+                    )
+                else:
+                    acceptance_lines.append(
+                        f"- {skill_id}: {assertion['path']} = "
+                        f"{json.dumps(assertion['equals'], ensure_ascii=False)}"
+                    )
         instruction_refs = [
             "- "
             + skill_id
@@ -993,6 +1024,28 @@ class ActivationEngine:
         return {"type": value_type, "const": value}
 
     @staticmethod
+    def _request_aware_schema(example: Any) -> dict[str, Any]:
+        """Keep an acceptance field's JSON shape without freezing its decision."""
+        rule = ActivationEngine._const_schema(example)
+        return {key: value for key, value in rule.items() if key != "const"}
+
+    @staticmethod
+    def _same_json_type(expected: Any, actual: Any) -> bool:
+        if isinstance(expected, bool):
+            return isinstance(actual, bool)
+        if isinstance(expected, int):
+            return isinstance(actual, int) and not isinstance(actual, bool)
+        if isinstance(expected, float):
+            return isinstance(actual, (int, float)) and not isinstance(actual, bool)
+        if expected is None:
+            return actual is None
+        if isinstance(expected, list):
+            return isinstance(actual, list) and all(
+                isinstance(item, str) for item in actual
+            )
+        return isinstance(actual, str)
+
+    @staticmethod
     def _output_schema(
         contract: LaunchContract, checks: dict[str, dict[str, Any]]
     ) -> dict[str, Any]:
@@ -1018,7 +1071,12 @@ class ActivationEngine:
                 previous = result_properties.get(field)
                 const_rule = ActivationEngine._const_schema(expected)
                 rule = (
-                    {"anyOf": [const_rule, {"type": "null"}]}
+                    {
+                        "anyOf": [
+                            ActivationEngine._request_aware_schema(expected),
+                            {"type": "null"},
+                        ]
+                    }
                     if package_selection
                     else const_rule
                 )
@@ -1128,7 +1186,9 @@ class ActivationEngine:
             raise _AcceptanceFailed("Completed skill IDs do not match the selection")
         if contract.selection_kind == "pack":
             self._verify_pack_relations(
-                self.config.packs[contract.pack_id], completed_skill_ids
+                self.config.packs[contract.pack_id],
+                completed_skill_ids,
+                applied_rules,
             )
         for skill in completed_skill_ids:
             if not any(item.startswith(f"{skill}:") for item in applied_rules):
@@ -1153,11 +1213,29 @@ class ActivationEngine:
                     actual = self._value_at(output, assertion["path"])
                 except SafetyError as exc:
                     raise _AcceptanceFailed(str(exc)) from exc
-                if skill in completed_skill_ids and actual != assertion["equals"]:
-                    raise _AcceptanceFailed(
-                        f"Skill-specific acceptance failed for {skill}: "
-                        f"{assertion['path']}"
-                    )
+                if skill in completed_skill_ids:
+                    if contract.selection_kind == "pack":
+                        if actual is None or not self._same_json_type(
+                            assertion["equals"], actual
+                        ):
+                            raise _AcceptanceFailed(
+                                f"Request-aware acceptance failed for {skill}: "
+                                f"{assertion['path']}"
+                            )
+                        if not any(
+                            item.startswith(f"{skill}:")
+                            and assertion["path"] in item
+                            for item in applied_rules
+                        ):
+                            raise _AcceptanceFailed(
+                                f"Request-aware acceptance has no applied rule for {skill}: "
+                                f"{assertion['path']}"
+                            )
+                    elif actual != assertion["equals"]:
+                        raise _AcceptanceFailed(
+                            f"Skill-specific acceptance failed for {skill}: "
+                            f"{assertion['path']}"
+                        )
                 if skill not in completed_skill_ids and actual is not None:
                     raise _AcceptanceFailed(
                         f"Unapplied skill claimed an acceptance value: {skill}"

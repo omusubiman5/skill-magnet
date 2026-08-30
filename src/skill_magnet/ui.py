@@ -421,8 +421,6 @@ def web_claude_prefill_url(prompt: str, destination: str) -> str:
 
 def deliver_web_claude_prompt(prompt: str, destination: str) -> None:
     """Open a new Web Claude conversation prefilled with the complete prompt."""
-    if os.name != "nt":
-        raise SkillMagnetError("Web Claude Explorer handoff is only implemented on Windows")
     url = web_claude_prefill_url(prompt, destination)
     try:
         if not webbrowser.open(url, new=2):

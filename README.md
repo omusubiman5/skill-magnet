@@ -4,7 +4,7 @@ Skill Magnetは、ユーザー自身のGitHub保管庫でスキルを保存・�
 
 ## 現在の状態
 
-GitHub中心の手動activation経路は、スキルパックを一つ選ぶUXです。通常右クリックの正規入口は `Skill Magnet` 一つで、対象パックを選び、確認画面でCodexまたはClaudeと依頼内容を明示します。Codexを選ぶと、CLI/TUIではなくCodex Desktop appの新規taskへ、INDEXで関係づけられたパック内の全スキルと依頼が渡されます。Desktop promptは、確認時のINDEX/SKILL.mdをcontract専用の期限付きmaterializationへ固定し、digestを束縛します。Codexには全ファイルの読了と、trigger/boundary・INDEX関係に基づく必要最小集合の選定を要求します。パック全件は利用候補であり、全件の強制適用ではありません。Desktop appがdeep linkを受理した時点の製品状態は `desktop_handoff_ready` であり、回答完了を意味しません。過去のCLI `verified_applied` / `verified_completed`やterminal画像はDesktop版の完成証拠には使用しません。macOS版はcommunity betaです。
+GitHub中心の手動activation経路は、スキルパックを一つ選ぶUXです。通常右クリックの正規入口は `Skill Magnet` 一つで、対象パックを選び、確認画面でCodexまたはClaudeと依頼内容を明示します。Codexを選ぶと、CLI/TUIではなくCodex Desktop appの新規taskへ、INDEXで関係づけられたパック内の全スキルと依頼が渡されます。Desktop promptは、確認時のINDEX/SKILL.mdをcontract専用の期限付きmaterializationへ固定し、digestを束縛します。Codexには全ファイルの読了と、trigger/boundary・INDEX関係に基づく必要最小集合の選定を要求します。パック全件は利用候補であり、全件の強制適用ではありません。Desktop appがdeep linkを受理した時点の製品状態は `desktop_handoff_ready` であり、回答完了を意味しません。過去のCLI `verified_applied` / `verified_completed`やterminal画像はDesktop版の完成証拠には使用しません。Windows ExplorerとmacOS Finderは規範policy上のsupported adapterであり、両方のsemantic E2Eが通るまで製品完成ではありません。現時点の製品全体はNO-GOです。
 
 旧MVPの `sync` は `~/.agents/skills` と `~/.claude/skills` への常設コピーを前提とし、現在の製品ポリシーに適合しません。CLIでも既定無効です。本番 `sync` は実施していません。
 
@@ -217,7 +217,7 @@ python -m skill_magnet activation-plan --platform windows --project C:\path\to\t
 
 ## 実行先の現状
 
-- Claude Code: 一時プラグインを作成し、`claude --plugin-dir <temporary-plugin>` でそのセッションだけ読み込む案を第一候補とします。スキルは `/pack-name:skill-name` で明示呼び出しできます。
+- Claude: WindowsとmacOSの製品経路は、検証済みpackと依頼を一つのpromptに束縛し、`https://claude.ai/new`の新規conversationへprefillします。clipboard、既存conversation、常設plugin、headless `claude --print`へfallbackしません。handoffは回答完了を意味しません。
 - Codex: `codex://threads/new?path=...&prompt=...` を使い、Codex Desktop appの新規taskへhandoffします。`path`と`prompt`は別々にURL encodeし、日本語、改行、空白、`&`、`#`を保持します。Skill MagnetのCodex実行先として `codex exec`、`codex resume`、CLI/TUI、cmd、Windows Terminalは起動しません。
 
 Codex Desktopのpromptには、選択pack ID、全skill ID、contract専用materialization内のINDEX/SKILL.mdの絶対pathとdigest、actual request、非デモ実行の指示、期待成果、contract/attemptを人が読める形で含めます。Codexには参照ファイルを全文読むよう要求し、内部JSONは利用者への回答形式にしません。deep linkをOSへ渡した事実は記録しますが、Desktop taskの結果を製品が機械取得できないため、その時点で `verified_completed` を作りません。詳細は [`docs/mvp-redesign.md`](docs/mvp-redesign.md) にあります。
@@ -242,7 +242,7 @@ Codex Desktopのpromptには、選択pack ID、全skill ID、contract専用mater
 python -m unittest discover -s tests -v
 ```
 
-再設計後MVPの完了条件は、別保管庫の固定commitからの単一pack選択、全skillの読込とINDEXに基づく必要部分集合の適用、Desktop新規taskへの正確なprompt binding、CLI/terminal非起動、実Codex Desktop appでの自然文回答、Windows Explorerの実入口を確認することです。Desktopの回答を機械検証できない現状では、handoff後を自動的に `verified_completed` としません。Finder実機操作はcommunity betaの追加検証です。
+再設計後MVPの完了条件は、別保管庫の固定commitからの単一pack選択、全skillの読込とINDEXに基づく必要部分集合の適用、Desktop新規taskへの正確なprompt binding、CLI/terminal非起動、実Codex Desktop appでの自然文回答、Windows ExplorerとmacOS Finderの両実入口を確認することです。Desktopの回答を機械検証できない現状では、handoff後を自動的に `verified_completed` としません。どちらか一方のadapterだけの成功を完成扱いにしません。
 
 GitHub ActionsはWindowsとmacOSの両jobを必須の同一テストsuiteとして定義しています。片方だけの成功を完成扱いにしません。
 

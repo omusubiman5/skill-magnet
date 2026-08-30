@@ -71,9 +71,9 @@ Codexの製品targetはCodex Desktop appです。スキルを常設配置した�
 
 deep linkの受理はモデル挙動や回答完了の保証ではありません。その制約を状態名へ明示し、実Desktop taskの回答確認と分離します。
 
-## Claude Code
+## Claude
 
-Claude Codeは `--plugin-dir` でpluginをインストールせずセッションだけ読み込み、`/plugin-name:skill-name` で明示呼び出しできます。ただしClaude側も配置・読込だけを適用成功とせず、同じ三段階の証拠とacceptance checkを要求します。
+WindowsとmacOSの製品経路は、検証済みpackとactual requestを一つのpromptへ束縛し、`https://claude.ai/new`の新規conversationへprefillします。clipboard、既存conversation、常設plugin、headless `claude --print`へfallbackしません。Web handoffはtask deliveryの境界であり、Claudeが全skillを読み、INDEXに従って適用し、回答を完了した証拠へは昇格させません。CLIのstructured-output adapterは回帰試験用であり、context-menu製品経路から到達させません。
 
 ## テスト可能な受入条件
 
@@ -97,7 +97,6 @@ Claude Codeは `--plugin-dir` でpluginをインストールせずセッショ�
 
 - [OpenAI: Build skills](https://learn.chatgpt.com/docs/build-skills) — Codexの明示・暗黙呼び出し、progressive disclosure、repository/user/admin/systemの探索位置。
 - 成功比較実装 `C:\Projects\news-obsidian-pipeline` — `codex://threads/new?path=...&prompt=...` の新規task handoff。
-- [Anthropic: Create plugins](https://code.claude.com/docs/en/plugins) — `--plugin-dir`、plugin名前空間、明示呼び出し。
-- [Anthropic: Plugins reference](https://code.claude.com/docs/en/plugins-reference) — session-only pluginとinstalled pluginの違い。
+- [Claude](https://claude.ai/new) — 製品が新規conversation prefillに用いる固定destination。
 
 過去のCodex CLI検証はDesktop targetの完成証拠には使用しません。

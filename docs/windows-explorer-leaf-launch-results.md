@@ -9,19 +9,19 @@
 <!-- explorer-results-ledger:start
 {
   "release_scope": "one-package-leaf",
-  "full_test_count": 125,
+  "full_test_count": 127,
   "menu_leaf_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
   "release_code_sha": "df8e15f72924166a99c360e2280c36f281eeaa79",
   "wheel_payload_sha256": "de2be0d0415e398369ae1464f0b8759f401863ac3f07c56da0df95b4bbd52a86",
-  "automated_status": "PASS_RUN_33259524623",
+  "automated_status": "NOT_RUN_AFTER_COMPLETION_REMEDIATION",
   "windows_explorer_field_status": "PASS_INSTALLED_MENU_MANIFEST_DELIVERY_ASSURANCE_8F12AF5",
   "codex_desktop_result_status": "NOT_RETESTED_AFTER_PACK_UPDATE"
 }
 explorer-results-ledger:end -->
 
-- 統合テスト: `python -m unittest discover -s tests -v` — 125 tests PASS
+- 統合テスト: `python -m unittest discover -s tests -v` — 127 tests PASS、環境依存1件skip
 - menu contract: 1 package leaf / selection kind `package` / pack内9 skills
 - 自動証拠: contract固定、INDEX/全SKILL materialization、source改変耐性、deep-link binding、CLI非起動、rollback、残留物回収
 - 実機証拠: 更新wheelをWindowsへ再installし、modern context menuのstatusが`usable_installed_state: true`、`menu_contract_matches_config: true`を返した。実際のTSVはpack ID `codex-delivery-assurance`、表示名`Delivery Assurance`、固定commit `8f12af5ddfdd3b985f26d33dad09d6061d675342`を記録した。
