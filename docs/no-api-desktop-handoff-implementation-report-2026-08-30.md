@@ -35,5 +35,6 @@ Skill MagnetのCodex製品経路を、外部APIを呼ぶ実行器ではなく、
 - 0.4.0 wheelを独立した2 directoryでbuildし、論理payload SHA-256 `c9a0ffe8f542fd475144ac8fecd284175a46863d69d1d44ec5be78ed901ba38f`が一致した。
 - 上記wheelをWindowsへ`--force-reinstall`し、既存0.3.6から0.4.0へ更新した。
 - Windows modern context menuを再登録し、package `SkillMagnet.ContextMenu_0.4.0.0_x64__byy1sc3mfzfz4`、1 package leaf、Directory/Background、署名済みcommand target、`menu_contract_matches_config: true`、`usable_installed_state: true`を確認した。
+- GitHub Actions run [`33310087151`](https://github.com/omusubiman5/skill-magnet/actions/runs/33310087151): Windows/macOSともgreen。両OS129 test、standalone wheel payload gate、macOS Finder Quick Action lifecycle、Windows certificate/native build/MSIX install・update・rollback・uninstall lifecycleがPASSした。
 
-clean環境でのWindows update/rollback/uninstallとWindows/macOS CIについては、この報告書の最終更新時に実測結果を追記する。既存利用中installを破壊するlifecycle testはローカルでは強制せず、clean CI runnerで実行する。
+既存利用中installを破壊するlifecycle testはローカルでは強制せず、clean CI runnerで完遂した。Skill Magnetが保証するのは検証済みpromptの新規task handoffまでであり、Desktopモデルの回答完了・品質を機械検証したとは主張しない。

@@ -15,7 +15,7 @@
   "pack_skill_count": 9,
   "release_code_sha": "d6ea6777a269cea85d03061270ef7b1527ee24c7",
   "wheel_payload_sha256": "c9a0ffe8f542fd475144ac8fecd284175a46863d69d1d44ec5be78ed901ba38f",
-  "automated_status": "LOCAL_WINDOWS_GREEN_129_PASS_CI_PENDING",
+  "automated_status": "CI_33310087151_WINDOWS_MACOS_GREEN_129_PASS",
   "windows_explorer_field_status": "PASS_INSTALLED_MENU_MANIFEST_DELIVERY_ASSURANCE_8F12AF5",
   "codex_desktop_result_status": "HANDOFF_READY_ANSWER_COMPLETION_NOT_CLAIMED"
 }
@@ -46,3 +46,5 @@ macOS Finderは製品policy上のsupported adapterです。以前のrun `3325952
 0.3.3 candidateのrun [`33306460511`](https://github.com/omusubiman5/skill-magnet/actions/runs/33306460511)は過去設計の参考記録であり、0.4.0のrelease証拠には使用しない。
 
 terminal cleanup hardeningを含む0.3.6 candidateのrun [`33307964947`](https://github.com/omusubiman5/skill-magnet/actions/runs/33307964947)も過去版の証拠である。0.4.0ではno-API handoff契約、129 test、standalone wheel、macOS Finder lifecycle、Windows certificate/native/MSIX lifecycleを改めて実行する。
+
+0.4.0 candidateのrun [`33310087151`](https://github.com/omusubiman5/skill-magnet/actions/runs/33310087151)はWindows/macOSともgreenである。両OSで129 testとstandalone wheel payload gateがPASSした。macOSでは実Quick Action install、Automator実行、Codex/Claude handoff意味論、uninstall、残留ゼロを確認した。Windowsではcertificate state、installed wheelからのnative build、MSIX install/update/rollback/uninstall lifecycleを確認した。
