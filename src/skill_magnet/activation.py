@@ -1257,7 +1257,13 @@ class ActivationEngine:
             verified_path = self.evidence_dir / f"{contract_id}-verified.json"
             verified["user_result"]["details"]["evidence_file"] = str(verified_path)
             self.engine._write_json_atomic(verified_path, verified)
-            self._cleanup_temporary_artifacts((lock_path,))
+            try:
+                self._cleanup_temporary_artifacts((lock_path,))
+            except _CleanupFailed:
+                # Success is already the exclusive atomic terminal.  A stale
+                # claim lock is recoverable garbage and must never create a
+                # contradictory negative terminal.
+                pass
             return verified
         except Exception:
             try:

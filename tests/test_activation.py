@@ -26,6 +26,7 @@ from skill_magnet.activation import (
     CODEX_PROCESS_CONFIG_OVERRIDES,
     ActivationEngine,
     _AcceptanceFailed,
+    _CleanupFailed,
     _LaunchFailed,
     _OutputFailed,
     _RuntimeFailed,
@@ -707,6 +708,39 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertFalse(
             (self.state / "evidence" / f"{contract.contract_id}-not-guaranteed.json").exists()
         )
+
+    def test_desktop_completion_lock_cleanup_failure_never_creates_second_terminal(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        contract = engine.confirm(self._plan(engine), confirmed=True)
+        engine.prepare_codex_desktop_handoff(contract.contract_id)
+        (
+            self.state / "evidence" / f"{contract.contract_id}-desktop-output.json"
+        ).write_text(
+            json.dumps(self._desktop_completion_output(contract)), encoding="utf-8"
+        )
+        original_cleanup = engine._cleanup_temporary_artifacts
+        lock_path = (
+            self.state / "desktop-completion-receipts" / f"{contract.contract_id}.lock"
+        )
+
+        def fail_only_lock(paths: tuple[Path, ...]) -> None:
+            if paths == (lock_path,):
+                raise _CleanupFailed(paths)
+            original_cleanup(paths)
+
+        with mock.patch.object(
+            engine, "_cleanup_temporary_artifacts", side_effect=fail_only_lock
+        ):
+            verified = engine.complete_codex_desktop_handoff(contract.contract_id)
+
+        self.assertEqual(verified["status"], "verified_completed")
+        self.assertTrue(
+            (self.state / "evidence" / f"{contract.contract_id}-verified.json").is_file()
+        )
+        self.assertFalse(
+            (self.state / "evidence" / f"{contract.contract_id}-not-guaranteed.json").exists()
+        )
+        self.assertTrue(lock_path.is_file())
 
     def test_desktop_completion_cli_uses_original_config_and_returns_sanitized_status(self) -> None:
         engine = ActivationEngine(self.config, self.state)
