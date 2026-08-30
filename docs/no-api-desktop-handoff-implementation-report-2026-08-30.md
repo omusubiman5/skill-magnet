@@ -33,5 +33,7 @@ Skill MagnetのCodex製品経路を、外部APIを呼ぶ実行器ではなく、
 - product policy、README、MVP設計文書の規範principle一致テスト: PASS。
 - Python/MSIX version同期テスト: PASS。
 - 0.4.0 wheelを独立した2 directoryでbuildし、論理payload SHA-256 `c9a0ffe8f542fd475144ac8fecd284175a46863d69d1d44ec5be78ed901ba38f`が一致した。
+- 上記wheelをWindowsへ`--force-reinstall`し、既存0.3.6から0.4.0へ更新した。
+- Windows modern context menuを再登録し、package `SkillMagnet.ContextMenu_0.4.0.0_x64__byy1sc3mfzfz4`、1 package leaf、Directory/Background、署名済みcommand target、`menu_contract_matches_config: true`、`usable_installed_state: true`を確認した。
 
-Windows実install/update/rollback/uninstallとWindows/macOS CIについては、この報告書の最終更新時に実測結果を追記する。
+clean環境でのWindows update/rollback/uninstallとWindows/macOS CIについては、この報告書の最終更新時に実測結果を追記する。既存利用中installを破壊するlifecycle testはローカルでは強制せず、clean CI runnerで実行する。
