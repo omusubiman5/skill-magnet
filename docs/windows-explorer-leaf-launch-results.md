@@ -13,8 +13,8 @@
   "menu_leaf_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
-  "release_code_sha": "e52c04e3d8e1b8a5ef842cc77e5745d31d74c4e9",
-  "wheel_payload_sha256": "82238c81583a38149f1877f46b43154ee73033e2774d66b81af35526966a451e",
+  "release_code_sha": "d6ea6777a269cea85d03061270ef7b1527ee24c7",
+  "wheel_payload_sha256": "c9a0ffe8f542fd475144ac8fecd284175a46863d69d1d44ec5be78ed901ba38f",
   "automated_status": "LOCAL_WINDOWS_GREEN_129_PASS_CI_PENDING",
   "windows_explorer_field_status": "PASS_INSTALLED_MENU_MANIFEST_DELIVERY_ASSURANCE_8F12AF5",
   "codex_desktop_result_status": "HANDOFF_READY_ANSWER_COMPLETION_NOT_CLAIMED"
@@ -24,6 +24,7 @@ explorer-results-ledger:end -->
 - 統合テスト: `python -m unittest discover -s tests -v` — 129 tests PASS、環境依存1件skip
 - menu contract: 1 package leaf / selection kind `package` / pack内9 skills
 - 自動証拠: contract固定、INDEX/全SKILL materialization、source改変耐性、deep-link binding、CLI非起動、rollback、残留物回収
+- wheel再現性: 独立した2 directoryで0.4.0 wheelをbuildし、論理payload SHA-256が両方`c9a0ffe8f542fd475144ac8fecd284175a46863d69d1d44ec5be78ed901ba38f`で一致した。
 - 実機証拠: 更新wheelをWindowsへ再installし、modern context menuのstatusが`usable_installed_state: true`、`menu_contract_matches_config: true`を返した。実際のTSVはpack ID `codex-delivery-assurance`、表示名`Delivery Assurance`、固定commit `8f12af5ddfdd3b985f26d33dad09d6061d675342`を記録した。
 - Desktop handoff契約: promptはINDEX/全SKILL.mdの全文読了、最低1つのskill適用、実依頼の完了を必須化し、説明・一覧・準備確認だけでの終了を禁止する。
 - Desktop完了の扱い: 製品証拠の状態名はhandoffまでを表し、回答完了へ偽装しない。completion receiptやcallbackは使わない。

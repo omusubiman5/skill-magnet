@@ -32,5 +32,6 @@ Skill MagnetのCodex製品経路を、外部APIを呼ぶ実行器ではなく、
 - `python -m unittest discover -s tests -v`: 129 tests PASS、環境依存1件skip。旧receiptテストを削除し、新しいhandoff契約テストへ置換した。
 - product policy、README、MVP設計文書の規範principle一致テスト: PASS。
 - Python/MSIX version同期テスト: PASS。
+- 0.4.0 wheelを独立した2 directoryでbuildし、論理payload SHA-256 `c9a0ffe8f542fd475144ac8fecd284175a46863d69d1d44ec5be78ed901ba38f`が一致した。
 
-最終のwheel再現性、Windows実install/update/rollback/uninstall、Windows/macOS CIについては、この報告書の最終更新時に実測結果とartifact hashを追記する。
+Windows実install/update/rollback/uninstallとWindows/macOS CIについては、この報告書の最終更新時に実測結果を追記する。
