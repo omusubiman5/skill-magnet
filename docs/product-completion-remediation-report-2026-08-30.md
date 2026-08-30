@@ -7,7 +7,7 @@
 
 **NO-GO / 実装継続中**
 
-Smart App Control 4551修正、full MSIX、wheel単独性、125テスト、Windows/macOS component CIはPASSしている。しかし、これは製品完成ゲートの一部にすぎない。
+Smart App Control 4551修正、full MSIX、wheel単独性、127テストはローカルでPASSしている。しかし、これは製品完成ゲートの一部にすぎない。現行candidateのWindows/macOS CIは再試験中である。
 
 ## 再監査で確認した未達
 
@@ -24,8 +24,8 @@ Smart App Control 4551修正、full MSIX、wheel単独性、125テスト、Windo
 ## 今回実施した検証
 
 - `python -m unittest discover -s tests -v`: 127件PASS、環境依存1件skip。
-- candidate artifact-input commit: `6b67796bff695c9fe37e956c7a6ffdd56ed4ced4`。
-- canonical wheel physical SHA-256: `e901004060abfe1e66ab34da245b3a368ea102c37bef92282858b99e4c93e42e`、logical payload SHA-256: `a4e1b843f0ca57a053bfb7b5f53325bb812ebb3a086073fbda4f0ea6a0522837`。
+- candidate artifact-input commit: `4061de4832ca9495ffcf3baa5c059c9f937249e2`。
+- canonical wheel logical payload SHA-256: `5f6972b6cef9fa1e6d9f4658a8b5aee19e0fa03f103b3687b584618bd287a625`。独立したローカル2buildと先行CIのWindows/macOS buildで一致した。
 - 現行policy、MVP設計、Explorer正本台帳、Finder lifecycle、Claude adapter、INDEX parserを再読した。
 - 独立鬼レビュー: P0 3件、P1 4件、P2 3件、P3 0件、NO-GO。
 
@@ -38,6 +38,13 @@ Smart App Control 4551修正、full MSIX、wheel単独性、125テスト、Windo
 - package acceptanceの固定equalsを、同じJSON型の依頼固有値＋該当`result.*`を示すapplied ruleへ変更した。個別skill選択では従来どおり固定equalsを維持する。
 - 実configと独立Delivery Assurance packを使い、Windows/macOS×Codex/Claudeのcontract、materialization、handoff境界を通す自動E2Eを追加した。
 - README、MVP設計、Windows modern menu設計、Smart App Control報告書のscope矛盾を訂正した。
+- `build/lib`を再利用したwheelへ廃止済みpackが残る欠陥を修正した。package出力を毎回初期化し、意図的に古いpackを置いてもwheelへ混入しない回帰試験を追加した。
+
+## CI再現性障害と修正
+
+run `33295357619`ではWindows/macOSの127 testがPASSした一方、wheel gateが失敗した。ローカルwheelだけに旧`codex-pmo-skills-c7747bba`が残っており、CIのclean buildには存在しなかった。原因はcustom `build_py`が既存`build/lib/skill_magnet`を消さずに再利用したことだった。
+
+修正後はpackage rootを先に削除してから現在のsource、固定pack、native assetsだけを構築する。独立した2回のローカルbuildは、先行CIのWindows/macOSと同じlogical payload SHA-256 `5f6972b6…a625`になった。現行candidateのCI結果がgreenになるまではrelease証拠に昇格しない。
 
 ## 現行pack Desktop実機再試験
 

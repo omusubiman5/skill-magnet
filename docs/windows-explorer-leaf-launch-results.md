@@ -13,9 +13,9 @@
   "menu_leaf_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
-  "release_code_sha": "6b67796bff695c9fe37e956c7a6ffdd56ed4ced4",
-  "wheel_payload_sha256": "a4e1b843f0ca57a053bfb7b5f53325bb812ebb3a086073fbda4f0ea6a0522837",
-  "automated_status": "NOT_RUN_AFTER_COMPLETION_REMEDIATION",
+  "release_code_sha": "4061de4832ca9495ffcf3baa5c059c9f937249e2",
+  "wheel_payload_sha256": "5f6972b6cef9fa1e6d9f4658a8b5aee19e0fa03f103b3687b584618bd287a625",
+  "automated_status": "LOCAL_DETERMINISM_PASS_CI_RETEST_PENDING",
   "windows_explorer_field_status": "PASS_INSTALLED_MENU_MANIFEST_DELIVERY_ASSURANCE_8F12AF5",
   "codex_desktop_result_status": "NOT_RETESTED_AFTER_PACK_UPDATE"
 }
@@ -38,4 +38,4 @@ Windows 0.3.2候補の最終受入では、次を新しい証拠として追記�
 2. package leafからCodex Desktop新規タスクを開き、materialized INDEX/全SKILLを読み、依頼に必要な部分集合だけを適用した自然文回答。
 3. update、rollback、uninstall後のAppx・証明書・ContextMenu/rollback残留ゼロ。CIでは旧自己署名trust 2世代のupgrade cleanupも含めて確認済み。
 
-macOS Finderはcommunity betaです。固定artifact-input commit `df8e15f…`とcanonical wheel payload `de2be0d…`に対し、run `33259524623`で125 test、wheel gate、実Quick Action install、`/usr/bin/automator`実行、製品adapter到達、uninstall、残留ゼロがgreenです。Finderのメニュー表示そのものは人手UX受入であり、このWindows証拠を転用しません。
+macOS Finderは製品policy上のsupported adapterです。以前のrun `33259524623`は旧release probeに対するcomponent証拠であり、現行semantic E2Eの合格証拠へ転用しません。現行candidateでは実Quick Action install、`/usr/bin/automator`実行、pack検証、contract、INDEX/全skill materialization、Codex/Claude delivery境界、uninstall、残留ゼロをCIで再試験します。Finderのメニュー表示そのものは人手UX受入として別途必要です。
