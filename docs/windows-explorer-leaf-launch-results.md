@@ -15,7 +15,7 @@
   "pack_skill_count": 9,
   "release_code_sha": "404ce8c3b8757e7dd2e7646606818b0eb72be887",
   "wheel_payload_sha256": "1c1ab2914220d4f468614efd9f8a70a845d336c91864f75480c47a584cd2feb1",
-  "automated_status": "LOCAL_132_PASS_DETERMINISTIC_WHEEL_CI_PENDING",
+  "automated_status": "CI_33306460511_WINDOWS_MACOS_GREEN_132_PASS",
   "windows_explorer_field_status": "PASS_INSTALLED_MENU_MANIFEST_DELIVERY_ASSURANCE_8F12AF5",
   "codex_desktop_result_status": "RETESTED_HANDOFF_NO_DISTINCT_TASK_OBSERVED"
 }
@@ -40,4 +40,4 @@ Windows 0.3.3候補の最終受入では、次を新しい証拠として追記�
 
 macOS Finderは製品policy上のsupported adapterです。以前のrun `33259524623`は旧release probeに対するcomponent証拠であり、現行semantic E2Eの合格証拠へ転用しません。現行candidateでは実Quick Action install、`/usr/bin/automator`実行、pack検証、contract、INDEX/全skill materialization、Codex/Claude delivery境界、uninstall、残留ゼロをCIで再試験します。Finderのメニュー表示そのものは人手UX受入として別途必要です。
 
-現行candidateのrun `33295723849`はWindows/macOSともgreenである。macOS jobは現行Finder semantic lifecycleを通過し、Windows jobは127 test、wheel payload gate、証明書state test、standalone wheelからのnative build、MSIX install/update/rollback/uninstall lifecycleを通過した。このCI成功はDesktop自然文結果や人手Finderメニュー表示の代替ではない。
+completion receiptを含む0.3.3 candidateのrun [`33306460511`](https://github.com/omusubiman5/skill-magnet/actions/runs/33306460511)はWindows/macOSともgreenである。両OSで132 testとstandalone wheel payload gateがPASSした。macOS jobは現行Finder semantic lifecycle、Windows jobは証明書state test、standalone wheelからのnative build、MSIX install/update/rollback/uninstall lifecycleまで通過した。このCI成功はDesktop自然文結果や人手Finderメニュー表示の代替ではない。

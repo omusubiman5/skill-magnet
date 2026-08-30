@@ -7,7 +7,7 @@
 
 **NO-GO / 実装継続中**
 
-Smart App Control 4551修正、full MSIX、wheel単独性、132テストはローカルでPASSしている。直前candidateのWindows/macOS CIもPASSしているが、completion receipt追加後のCIは未実行である。これは製品完成ゲートの一部にすぎない。
+Smart App Control 4551修正、full MSIX、wheel単独性、132テストはローカルでPASSしている。completion receipt追加後のcandidateもWindows/macOS CIでPASSした。これは製品完成ゲートの一部にすぎず、実Desktop自然文結果などの未達を埋めない。
 
 ## 再監査で確認した未達
 
@@ -25,7 +25,8 @@ Smart App Control 4551修正、full MSIX、wheel単独性、132テストはロ�
 
 - `python -m unittest discover -s tests -v`: 132件PASS、環境依存1件skip。
 - candidate artifact-input commit: `404ce8c3b8757e7dd2e7646606818b0eb72be887`。
-- 0.3.3 canonical wheel logical payload SHA-256: `1c1ab2914220d4f468614efd9f8a70a845d336c91864f75480c47a584cd2feb1`。独立したローカル2buildで一致した。CI照合は未実行。
+- 0.3.3 canonical wheel logical payload SHA-256: `1c1ab2914220d4f468614efd9f8a70a845d336c91864f75480c47a584cd2feb1`。独立したローカル2buildで一致し、CIのstandalone wheel payload gateもPASSした。
+- completion receipt追加後のCI run [`33306460511`](https://github.com/omusubiman5/skill-magnet/actions/runs/33306460511): Windows/macOSともgreen。両OSで132 test、standalone wheel install、candidate SHAとwheel payload gateがPASSした。Windowsは証明書state、native build、MSIX install/update/rollback/uninstall lifecycle、macOSはFinder semantic lifecycleもPASSした。
 - 現行policy、MVP設計、Explorer正本台帳、Finder lifecycle、Claude adapter、INDEX parserを再読した。
 - 独立鬼再レビュー: P0 3件、P1 4件、P2 1件、P3 0件、NO-GO。
 
@@ -47,7 +48,7 @@ run `33295357619`ではWindows/macOSの127 testがPASSした一方、wheel gate�
 
 修正後はpackage rootを先に削除してから現在のsource、固定pack、native assetsだけを構築する。独立した2回のローカルbuildは、先行CIのWindows/macOSと同じlogical payload SHA-256 `5f6972b6…a625`になった。
 
-現行candidateのCI run `33295723849`はWindows/macOSともgreen。macOSは現行Finder semantic lifecycle、Windowsは127 test、wheel payload gate、証明書state test、standalone wheelからのnative build、MSIX install/update/rollback/uninstall lifecycleまで通過した。ただし実Desktop自然文結果と人手UI受入はCIの範囲外であり、製品GOには昇格しない。
+completion receiptを含む現行0.3.3 candidateのCI run [`33306460511`](https://github.com/omusubiman5/skill-magnet/actions/runs/33306460511)はWindows/macOSともgreen。両OSで132 test、standalone wheel install、candidate SHAとwheel payload gateを通過した。macOSは現行Finder semantic lifecycle、Windowsは証明書state test、standalone wheelからのnative build、MSIX install/update/rollback/uninstall lifecycleまで通過した。ただし実Desktop自然文結果と人手UI受入はCIの範囲外であり、製品GOには昇格しない。
 
 ## 現行pack Desktop実機再試験
 
