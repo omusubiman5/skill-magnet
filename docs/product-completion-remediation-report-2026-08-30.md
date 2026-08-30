@@ -7,23 +7,23 @@
 
 **NO-GO / 実装継続中**
 
-Smart App Control 4551修正、full MSIX、wheel単独性、127テスト、現行candidateのWindows/macOS CIはPASSしている。しかし、これは製品完成ゲートの一部にすぎない。
+Smart App Control 4551修正、full MSIX、wheel単独性、132テストはローカルでPASSしている。直前candidateのWindows/macOS CIもPASSしているが、completion receipt追加後のCIは未実行である。これは製品完成ゲートの一部にすぎない。
 
 ## 再監査で確認した未達
 
 - 現行`Delivery Assurance / 8f12af5…`へ更新後のCodex Desktop自然文結果がない。
 - 再試験ではOSへのhandoffまで成功したが、distinctな新規taskを観測できず、結果は`verified_completed=false`である。
 - Finder CIはpack検証、contract、materialization、delivery境界まで通るが、release probe専用分岐で通常のpack/runtime選択、確認UI、実AI起動を通らない。
-- CIはSkill Magnet本体＋独立pack→実runtime task→INDEX適用部分集合→非空成果→acceptanceという必須E2Eを実行しない。
+- 自動E2EはSkill Magnet本体＋独立pack→handoff→completion receipt→INDEX適用部分集合→非空成果→acceptanceまで通るようになったが、runtime成果はfixtureであり、実Desktop taskの証拠ではない。
 - 現行packで複数skillをINDEXに従って組み合わせた実行証拠がない。
-- Desktop handoffは正しく`verified_completed=false`だが、従ってpolicyの三段階成功条件も未達である。
+- Desktop handoff単独は正しく`verified_completed=false`であり、現行実機試験はcompletion receipt導入前なので三段階成功条件も未達である。
 - Web Claudeは製品経路として統一済みだが、実conversationへのprompt反映、全skill読了、INDEX適用、自然文結果の証拠がない。
 - request-aware acceptanceはJSON型と自己申告ruleを検査するだけで、依頼に対する意味的妥当性を独立検証できない。
 - Finderの通常UIフロー、公開署名・notarization、配布元・更新経路が未受入である。
 
 ## 今回実施した検証
 
-- `python -m unittest discover -s tests -v`: 127件PASS、環境依存1件skip。
+- `python -m unittest discover -s tests -v`: 132件PASS、環境依存1件skip。
 - candidate artifact-input commit: `4061de4832ca9495ffcf3baa5c059c9f937249e2`。
 - canonical wheel logical payload SHA-256: `5f6972b6cef9fa1e6d9f4658a8b5aee19e0fa03f103b3687b584618bd287a625`。独立したローカル2buildと先行CIのWindows/macOS buildで一致した。
 - 現行policy、MVP設計、Explorer正本台帳、Finder lifecycle、Claude adapter、INDEX parserを再読した。
@@ -39,6 +39,7 @@ Smart App Control 4551修正、full MSIX、wheel単独性、127テスト、現�
 - 実configと独立Delivery Assurance packを使い、Windows/macOS×Codex/Claudeのcontract、materialization、handoff境界を通す自動E2Eを追加した。
 - README、MVP設計、Windows modern menu設計、Smart App Control報告書のscope矛盾を訂正した。
 - `build/lib`を再利用したwheelへ廃止済みpackが残る欠陥を修正した。package出力を毎回初期化し、意図的に古いpackを置いてもwheelへ混入しない回帰試験を追加した。
+- Codex Desktop task用の期限付きcompletion receiptを追加した。handoff時にschemaと一回限りreceiptを作り、task完了後にcontract、challenge nonce、request hash、pack provenance、INDEX関係、適用部分集合、acceptanceを検証して初めて`verified_completed`へ遷移する。改ざん、再利用、期限切れ、OS起動失敗ではreceipt、schema、output、materializationを回収し、成功証拠を作らない。
 
 ## CI再現性障害と修正
 

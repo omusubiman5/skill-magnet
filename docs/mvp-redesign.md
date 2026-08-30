@@ -26,7 +26,7 @@
 1. Skill Magnet本体。共通コア、CLI、Windows/macOS UIアダプター、検証・証拠機構を含む。
 2. Skill Magnetとは別の、ユーザー所有スキル保管庫。pack metadata、skill、version、skill固有acceptance checkを保持する。
 
-自動テストはcontract、prompt binding、URL encoding、CLI非起動、fail-closedを検証します。Codex Desktop appの回答を製品から機械取得できない間、handoff受理を回答完了と同一視しません。完成には自動テストに加え、実Desktop taskの依頼と自然文回答の実機証拠が必要です。
+自動テストはcontract、prompt binding、URL encoding、handoff、期限付きcompletion receipt、fail-closedを検証します。handoff受理を回答完了と同一視せず、Desktop taskがschemaに適合する一回限りreceiptを提出し、provenance、nonce、適用部分集合、INDEX関係、acceptanceが通った場合だけ`verified_completed`へ遷移します。完成には自動テストに加え、実Desktop taskの依頼と自然文回答の実機証拠が必要です。
 
 ## 最小アーキテクチャ
 
@@ -36,7 +36,7 @@
 4. Launch contract: UIから共通CLIへ、選択内容、期限、nonce、確認時刻を機械可読形式で渡す。
 5. Desktop task prompt: pack ID、全skill ID、検証済みINDEX/SKILL.mdの絶対pathとdigest、actual request、非デモ実行、期待成果、contract/attemptを人が読める形で含める。全instructionをURLへ展開して長さ上限を超えさせず、Codexへ参照ファイルの全文読了とINDEXによる適用部分集合の選定を要求する。未適用skillの受入固定値は要求しない。内部JSONを回答として要求しない。
 6. Codex Desktop adapter: `codex://threads/new?path=...&prompt=...` で新規taskへ送る。Codex CLI/TUIは製品targetにしない。
-7. Handoff evidence: deep linkをOSへ渡した段階を `desktop_handoff_ready` として記録し、Desktop回答を取得できない限り `verified_completed` を記録しない。
+7. Completion receipt: deep linkをOSへ渡した段階を `desktop_handoff_ready` とし、Desktop taskが期限内に一回限りreceiptを提出して検証を通過した場合だけ `verified_completed` を記録する。
 8. Journal/cleanup: source、承認、launch contract、証拠、一時物、期限を記録し、終了・失敗・中断・期限到来後に残留ゼロへ戻す。
 
 GitHubのclone/cacheは正本ではなく、commitから再生成できる検証済み一時物です。
@@ -66,7 +66,7 @@ Codexの製品targetはCodex Desktop appです。スキルを常設配置した�
 2. actual request、検証済みINDEX/SKILL.mdの絶対pathとdigest、非デモ実行、期待成果、contract/attempt、instruction/acceptance digestを自然文promptへ束縛し、参照ファイルの全文読了後、trigger/boundaryと `depends-on` / `composes-with` / `contrasts-with` に従う必要最小集合の選定を要求する。
 3. `path`と`prompt`を独立してURL encodeし、`codex://threads/new` の新規taskへ渡す。
 4. OSがprotocol handoffを受理した事実とprompt hashを保存する。この状態は `desktop_handoff_ready` であり回答完了ではない。
-5. Desktop taskの結果を機械取得できない間は、`verified_completed`、skill適用成功、保存完了を自動生成しない。
+5. Desktop taskは利用者へ自然文成果を返す一方、内部JSONを表示せず、別経路でschema適合receiptを保存して一回限りの検証commandを実行する。receiptがない、改変された、再利用された、期限切れの場合は`verified_completed`を生成しない。
 6. deep link生成・起動に失敗した場合はerrorを表示し、CLI、既存task resume、ChatGPT webへfallbackしない。
 
 deep linkの受理はモデル挙動や回答完了の保証ではありません。その制約を状態名へ明示し、実Desktop taskの回答確認と分離します。
@@ -88,7 +88,7 @@ WindowsとmacOSの製品経路は、検証済みpackとactual requestを一つ�
 - CLI検証では `evidence.skill_ids` をパック全件の読込対象、`evidence.completed_skill_ids` を実際の適用部分集合として区別し、適用skillだけacceptanceが通り、未適用skillの固定値が `null` である。
 - 日本語、改行、空白、`&`、`#`、長文をdeep linkの`path`/`prompt`で損失なく往復できる。
 - Codex target pathから `codex exec`、`codex resume`、CLI/TUI、cmd、Terminalを起動しない。
-- handoff受理は `desktop_handoff_ready` で、`verified_completed` にならない。
+- handoff受理だけなら `desktop_handoff_ready` のままで、一回限りreceiptの検証後だけ `verified_completed` になる。
 - deep link生成・起動不能、契約不一致、期限切れはfail-closedになる。
 - 正常終了、途中失敗、強制終了、期限切れ後に一時物とjournalの残留がない。
 - Skill Magnet本体と独立スキル保管庫を使うend-to-endテストが全件成功する。

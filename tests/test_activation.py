@@ -504,6 +504,158 @@ class ActivationEndToEndTest(unittest.TestCase):
             ttl_minutes=30,
         )
 
+    @staticmethod
+    def _desktop_completion_output(contract: object) -> dict[str, object]:
+        return {
+            "evidence": {
+                "pack_id": contract.pack_id,
+                "repository_url": contract.repository_url,
+                "commit_sha": contract.commit_sha,
+                "approved_by": contract.approved_by,
+                "approved_at": contract.approved_at,
+                "skill_ids": list(contract.skill_ids),
+                "instruction_digest": contract.instruction_digest,
+                "challenge_nonce": contract.nonce,
+                "applied_rules": ["bounded-answer:result.decision=bounded"],
+                "completed_skill_ids": list(contract.skill_ids),
+                "skill_execution_status": "completed",
+                "actual_request_sha256": hashlib.sha256(
+                    contract.purpose.encode("utf-8")
+                ).hexdigest(),
+            },
+            "result": {
+                "task_output": "Make a bounded decision",
+                "saved_paths": [],
+                "changes": [],
+                "decision": "bounded",
+            },
+        }
+
+    def test_desktop_completion_receipt_verifies_once_and_cleans_runtime_material(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        contract = engine.confirm(self._plan(engine), confirmed=True)
+        prepared = engine.prepare_codex_desktop_handoff(contract.contract_id)
+        engine.record_codex_desktop_handoff(prepared)
+        self.assertIn("activation-complete", prepared["prompt"])
+        output_path = (
+            self.state
+            / "evidence"
+            / f"{contract.contract_id}-desktop-output.json"
+        )
+        output_path.write_text(
+            json.dumps(self._desktop_completion_output(contract)), encoding="utf-8"
+        )
+
+        verified = engine.complete_codex_desktop_handoff(contract.contract_id)
+
+        self.assertEqual(verified["status"], "verified_completed")
+        self.assertEqual(
+            verified["interactive_handoff"]["state"], "desktop_result_verified"
+        )
+        self.assertFalse(output_path.exists())
+        self.assertFalse(
+            (self.state / "desktop-materializations" / contract.contract_id).exists()
+        )
+        self.assertFalse(
+            (self.state / "desktop-completion-receipts" / f"{contract.contract_id}.json").exists()
+        )
+        with self.assertRaises(SafetyError):
+            engine.complete_codex_desktop_handoff(contract.contract_id)
+
+    def test_desktop_completion_receipt_rejects_tampering(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        contract = engine.confirm(self._plan(engine), confirmed=True)
+        engine.prepare_codex_desktop_handoff(contract.contract_id)
+        receipt_path = (
+            self.state / "desktop-completion-receipts" / f"{contract.contract_id}.json"
+        )
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["output_path"] = str(self.root / "attacker-controlled.json")
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        with self.assertRaisesRegex(SafetyError, "receipt mismatch"):
+            engine.complete_codex_desktop_handoff(contract.contract_id)
+
+    def test_desktop_completion_cli_uses_original_config_and_returns_sanitized_status(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        contract = engine.confirm(self._plan(engine), confirmed=True)
+        prepared = engine.prepare_codex_desktop_handoff(contract.contract_id)
+        engine.record_codex_desktop_handoff(prepared)
+        self.assertIn(str(self.config_path.resolve()), prepared["prompt"])
+        (
+            self.state / "evidence" / f"{contract.contract_id}-desktop-output.json"
+        ).write_text(
+            json.dumps(self._desktop_completion_output(contract)), encoding="utf-8"
+        )
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            exit_code = cli_main(
+                [
+                    "--config",
+                    str(self.config_path),
+                    "--state-dir",
+                    str(self.state),
+                    "activation-complete",
+                    "--contract",
+                    contract.contract_id,
+                ]
+            )
+        self.assertEqual(exit_code, 0)
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(result["status"], "verified_completed")
+        self.assertEqual(result["completed_skill_ids"], ["bounded-answer"])
+        self.assertNotIn("output", result)
+        self.assertNotIn("challenge_nonce", stdout.getvalue())
+
+    def test_desktop_delivery_failure_closes_receipt_and_retains_negative_evidence(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        contract = engine.confirm(self._plan(engine), confirmed=True)
+        with self.assertRaisesRegex(SkillMagnetError, "protocol rejected"):
+            deliver_prepared_codex_handoff(
+                engine,
+                contract.contract_id,
+                delivery=lambda *_args: (_ for _ in ()).throw(
+                    SkillMagnetError("protocol rejected")
+                ),
+            )
+        failure_path = (
+            self.state / "evidence" / f"{contract.contract_id}-not-guaranteed.json"
+        )
+        failure = json.loads(failure_path.read_text(encoding="utf-8"))
+        self.assertEqual(failure["status"], "launch_failed")
+        self.assertFalse(
+            (self.state / "desktop-completion-receipts" / f"{contract.contract_id}.json").exists()
+        )
+        self.assertFalse(
+            (self.state / "evidence" / f"{contract.contract_id}-desktop-schema.json").exists()
+        )
+        self.assertFalse(
+            (self.state / "desktop-materializations" / contract.contract_id).exists()
+        )
+
+    def test_expired_desktop_completion_receipt_removes_schema_output_and_pack(self) -> None:
+        clock = [datetime(2026, 8, 30, 0, 0, tzinfo=timezone.utc)]
+        engine = ActivationEngine(self.config, self.state, now=lambda: clock[0])
+        contract = engine.confirm(self._plan(engine), confirmed=True)
+        engine.prepare_codex_desktop_handoff(contract.contract_id)
+        output_path = (
+            self.state / "evidence" / f"{contract.contract_id}-desktop-output.json"
+        )
+        output_path.write_text("untrusted partial output", encoding="utf-8")
+        clock[0] += timedelta(minutes=31)
+
+        engine.recover_interrupted_attempts()
+
+        self.assertFalse(output_path.exists())
+        self.assertFalse(
+            (self.state / "evidence" / f"{contract.contract_id}-desktop-schema.json").exists()
+        )
+        self.assertFalse(
+            (self.state / "desktop-completion-receipts" / f"{contract.contract_id}.json").exists()
+        )
+        self.assertFalse(
+            (self.state / "desktop-materializations" / contract.contract_id).exists()
+        )
+
     def test_cross_platform_manual_selection_to_verified_application_e2e(self) -> None:
         self.assertFalse(self.state.exists())
         for platform in ("windows", "macos"):
@@ -595,6 +747,79 @@ class ActivationEndToEndTest(unittest.TestCase):
                         if (path / "SKILL.md").is_file()
                     ),
                     sorted(pack.skills),
+                )
+                applied = [
+                    "codex-ci-patch-handoff",
+                    "codex-egress-surface-governance",
+                    "codex-exec-io-contract",
+                    "codex-execution-mode-routing",
+                    "codex-mcp-control-plane",
+                    "codex-sandbox-approval-boundary",
+                ]
+                acceptance_fields = {
+                    "codex-auth-boundary-selection": ("auth_boundary", None),
+                    "codex-bounded-subagents": ("subagent_boundary", None),
+                    "codex-ci-patch-handoff": ("ci_handoff", "separate signed patch write job"),
+                    "codex-context-entry-routing": ("context_entry", None),
+                    "codex-egress-surface-governance": ("egress_control", "deny undeclared CI egress"),
+                    "codex-exec-io-contract": ("exec_io", "jsonl progress plus final artifact"),
+                    "codex-execution-mode-routing": ("execution_mode", "non-interactive CI execution"),
+                    "codex-mcp-control-plane": ("mcp_control", "no MCP required for this job"),
+                    "codex-sandbox-approval-boundary": ("sandbox_boundary", "read-only generation then isolated write"),
+                }
+                applied_rules = [
+                    f"{skill}:result.{acceptance_fields[skill][0]} is derived from the CI request"
+                    for skill in applied
+                ]
+                applied_rules.extend(
+                    [
+                        "codex-execution-mode-routing composes-with codex-exec-io-contract because non-interactive execution needs structured progress and final output",
+                        "codex-ci-patch-handoff composes-with codex-exec-io-contract because patch handoff needs a machine-readable final artifact",
+                        "codex-sandbox-approval-boundary composes-with codex-egress-surface-governance because the CI job needs both filesystem and network limits",
+                        "codex-egress-surface-governance composes-with codex-mcp-control-plane because MCP is an independently denied egress surface",
+                    ]
+                )
+                output = {
+                    "evidence": {
+                        "pack_id": contract.pack_id,
+                        "repository_url": contract.repository_url,
+                        "commit_sha": contract.commit_sha,
+                        "approved_by": contract.approved_by,
+                        "approved_at": contract.approved_at,
+                        "skill_ids": list(contract.skill_ids),
+                        "instruction_digest": contract.instruction_digest,
+                        "challenge_nonce": contract.nonce,
+                        "applied_rules": applied_rules,
+                        "completed_skill_ids": applied,
+                        "skill_execution_status": "completed",
+                        "actual_request_sha256": hashlib.sha256(
+                            contract.purpose.encode("utf-8")
+                        ).hexdigest(),
+                    },
+                    "result": {
+                        "task_output": "CI境界とpatch handoffを統合した実行計画",
+                        "saved_paths": [],
+                        "changes": [],
+                        **{
+                            field: value
+                            for field, value in acceptance_fields.values()
+                        },
+                    },
+                }
+                (
+                    state
+                    / "evidence"
+                    / f"{contract.contract_id}-desktop-output.json"
+                ).write_text(json.dumps(output), encoding="utf-8")
+                verified = engine.complete_codex_desktop_handoff(
+                    contract.contract_id
+                )
+                self.assertEqual(verified["status"], "verified_completed")
+                self.assertEqual(
+                    verified["skill_execution_completion_evidence"][
+                        "completed_skill_ids"
+                    ],
+                    applied,
                 )
 
             with self.subTest(platform=platform, runtime="claude"):

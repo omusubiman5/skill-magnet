@@ -397,11 +397,15 @@ def deliver_prepared_codex_handoff(
     """Deliver one prepared prompt and record only handoff readiness."""
     prepared = engine.prepare_codex_desktop_handoff(contract_id)
     opener = delivery or deliver_codex_desktop_prompt
-    opener(
-        str(prepared["prompt"]),
-        str(prepared["project"]),
-        str(prepared["destination"]),
-    )
+    try:
+        opener(
+            str(prepared["prompt"]),
+            str(prepared["project"]),
+            str(prepared["destination"]),
+        )
+    except Exception:
+        engine.record_codex_desktop_launch_failure(prepared)
+        raise
     return engine.record_codex_desktop_handoff(prepared)
 
 
