@@ -24,8 +24,9 @@ Smart App Control 4551修正、full MSIX、wheel単独性、terminal CAS hardeni
 ## 今回実施した検証
 
 - `python -m unittest discover -s tests -v`: 138件PASS、環境依存1件skip。
-- 0.3.4 candidate artifact-input commit: `76397228e453fda6329dde50356b4e313594e538`。
-- 0.3.4 canonical wheel logical payload SHA-256: `3d8b21f4397194c8908a1059511ca2676468ff93cf8dbc9cfd598cf8b1b12a9b`。独立したローカル2buildで一致した。CI照合は未実行。
+- 0.3.5 candidate artifact-input commit: `5700c90d7ba0a63ce2a0e627eb91e8535e827786`。
+- 0.3.5 canonical wheel logical payload SHA-256: `2b902feab25b61f1568def13059353fab72579874ffe860a679ddd07b88fc568`。独立したローカル2buildで一致した。CI照合は未実行。
+- 0.3.4 CI run [`33307128048`](https://github.com/omusubiman5/skill-magnet/actions/runs/33307128048): Windows/macOSともgreen。両OS136 test、wheel payload gate、macOS Finder lifecycle、Windows certificate/native/MSIX lifecycleがPASSした。
 - 0.3.3 canonical wheel logical payload SHA-256: `1c1ab2914220d4f468614efd9f8a70a845d336c91864f75480c47a584cd2feb1`。独立したローカル2buildで一致し、CIのstandalone wheel payload gateもPASSした。
 - completion receipt追加後のCI run [`33306460511`](https://github.com/omusubiman5/skill-magnet/actions/runs/33306460511): Windows/macOSともgreen。両OSで132 test、standalone wheel install、candidate SHAとwheel payload gateがPASSした。Windowsは証明書state、native build、MSIX install/update/rollback/uninstall lifecycle、macOSはFinder semantic lifecycleもPASSした。
 - 現行policy、MVP設計、Explorer正本台帳、Finder lifecycle、Claude adapter、INDEX parserを再読した。
@@ -49,9 +50,9 @@ Smart App Control 4551修正、full MSIX、wheel単独性、terminal CAS hardeni
 
 run `33295357619`ではWindows/macOSの127 testがPASSした一方、wheel gateが失敗した。ローカルwheelだけに旧`codex-pmo-skills-c7747bba`が残っており、CIのclean buildには存在しなかった。原因はcustom `build_py`が既存`build/lib/skill_magnet`を消さずに再利用したことだった。
 
-0.3.2の再現性修正ではpackage rootを先に削除してから現在のsource、固定pack、native assetsだけを構築した。当時の独立した2回のローカルbuildは、当時のCIと同じlogical payload SHA-256 `5f6972b6…a625`になった。これは現行0.3.4のhashではない。
+0.3.2の再現性修正ではpackage rootを先に削除してから現在のsource、固定pack、native assetsだけを構築した。当時の独立した2回のローカルbuildは、当時のCIと同じlogical payload SHA-256 `5f6972b6…a625`になった。これは現行0.3.5のhashではない。
 
-completion receiptを含む現行0.3.3 candidateのCI run [`33306460511`](https://github.com/omusubiman5/skill-magnet/actions/runs/33306460511)はWindows/macOSともgreen。両OSで132 test、standalone wheel install、candidate SHAとwheel payload gateを通過した。macOSは現行Finder semantic lifecycle、Windowsは証明書state test、standalone wheelからのnative build、MSIX install/update/rollback/uninstall lifecycleまで通過した。ただし実Desktop自然文結果と人手UI受入はCIの範囲外であり、製品GOには昇格しない。
+履歴candidate 0.3.3のCI run [`33306460511`](https://github.com/omusubiman5/skill-magnet/actions/runs/33306460511)と0.3.4のrun [`33307128048`](https://github.com/omusubiman5/skill-magnet/actions/runs/33307128048)はWindows/macOSともgreen。ただし実Desktop自然文結果と人手UI受入はCIの範囲外であり、製品GOには昇格しない。
 
 ## 現行pack Desktop実機再試験
 
