@@ -9,37 +9,38 @@
 <!-- explorer-results-ledger:start
 {
   "release_scope": "one-package-leaf",
-  "full_test_count": 139,
+  "full_test_count": 129,
   "menu_leaf_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
   "release_code_sha": "e52c04e3d8e1b8a5ef842cc77e5745d31d74c4e9",
   "wheel_payload_sha256": "82238c81583a38149f1877f46b43154ee73033e2774d66b81af35526966a451e",
-  "automated_status": "CI_33307964947_WINDOWS_MACOS_GREEN_139_PASS",
+  "automated_status": "LOCAL_WINDOWS_GREEN_129_PASS_CI_PENDING",
   "windows_explorer_field_status": "PASS_INSTALLED_MENU_MANIFEST_DELIVERY_ASSURANCE_8F12AF5",
-  "codex_desktop_result_status": "RETESTED_HANDOFF_NO_DISTINCT_TASK_OBSERVED"
+  "codex_desktop_result_status": "HANDOFF_READY_ANSWER_COMPLETION_NOT_CLAIMED"
 }
 explorer-results-ledger:end -->
 
-- 統合テスト: `python -m unittest discover -s tests -v` — 139 tests PASS、環境依存1件skip
+- 統合テスト: `python -m unittest discover -s tests -v` — 129 tests PASS、環境依存1件skip
 - menu contract: 1 package leaf / selection kind `package` / pack内9 skills
 - 自動証拠: contract固定、INDEX/全SKILL materialization、source改変耐性、deep-link binding、CLI非起動、rollback、残留物回収
 - 実機証拠: 更新wheelをWindowsへ再installし、modern context menuのstatusが`usable_installed_state: true`、`menu_contract_matches_config: true`を返した。実際のTSVはpack ID `codex-delivery-assurance`、表示名`Delivery Assurance`、固定commit `8f12af5ddfdd3b985f26d33dad09d6061d675342`を記録した。
-- Desktop結果証拠: pack更新後にhandoffを再試験したが、試験後のtask一覧でdistinctな新規taskを観測できず、自然文回答も取得できなかった。以前の別名称・別固定commitの結果を転用しない。
-- Desktop完了の扱い: 製品証拠の状態名はhandoffまでを表し、回答完了へ偽装しない。
+- Desktop handoff契約: promptはINDEX/全SKILL.mdの全文読了、最低1つのskill適用、実依頼の完了を必須化し、説明・一覧・準備確認だけでの終了を禁止する。
+- Desktop完了の扱い: 製品証拠の状態名はhandoffまでを表し、回答完了へ偽装しない。completion receiptやcallbackは使わない。
+- 課金境界: OpenAI/Anthropic API key、従量課金API、追加支払いを要求せず、既存のCodex Desktop/Claude利用プランへ渡す。
 
 ## リリースゲート
 
 `integration/explorer_results_gate.py`は、この台帳のtest count・leaf数・selection kind・pack skill数を、現在のテストsuiteと`skill-magnet.json`から得た値へ照合します。また、旧個別leaf仕様の文言が正本へ再混入した場合に失敗します。
 
-Windows 0.3.6候補の最終受入では、次を新しい証拠として追記します。
+Windows 0.4.0候補の最終受入では、次を新しい証拠として追記します。
 
 1. wheelからのnative build、MSIX署名・install、Directory/Backgroundの単一`Delivery Assurance`表示。
-2. package leafからCodex Desktop新規タスクを開き、materialized INDEX/全SKILLを読み、依頼に必要な部分集合だけを適用した自然文回答。
+2. package leafからCodex Desktop新規タスクを開き、INDEX/全SKILLの読了と最低1つの適用を必須にしたpromptが損失なく渡ること。
 3. update、rollback、uninstall後のAppx・証明書・ContextMenu/rollback残留ゼロ。CIでは旧自己署名trust 2世代のupgrade cleanupも含めて確認済み。
 
 macOS Finderは製品policy上のsupported adapterです。以前のrun `33259524623`は旧release probeに対するcomponent証拠であり、現行semantic E2Eの合格証拠へ転用しません。現行candidateでは実Quick Action install、`/usr/bin/automator`実行、pack検証、contract、INDEX/全skill materialization、Codex/Claude delivery境界、uninstall、残留ゼロをCIで再試験します。Finderのメニュー表示そのものは人手UX受入として別途必要です。
 
-completion receiptを含む0.3.3 candidateのrun [`33306460511`](https://github.com/omusubiman5/skill-magnet/actions/runs/33306460511)はWindows/macOSともgreenである。両OSで132 testとstandalone wheel payload gateがPASSした。macOS jobは現行Finder semantic lifecycle、Windows jobは証明書state test、standalone wheelからのnative build、MSIX install/update/rollback/uninstall lifecycleまで通過した。このCI成功はDesktop自然文結果や人手Finderメニュー表示の代替ではない。
+0.3.3 candidateのrun [`33306460511`](https://github.com/omusubiman5/skill-magnet/actions/runs/33306460511)は過去設計の参考記録であり、0.4.0のrelease証拠には使用しない。
 
-terminal cleanup hardeningを含む0.3.6 candidateのrun [`33307964947`](https://github.com/omusubiman5/skill-magnet/actions/runs/33307964947)もWindows/macOSともgreenである。両OS139 testとstandalone wheel payload gate、macOS Finder lifecycle、Windows certificate/native/MSIX lifecycleがPASSした。このCI成功も実Desktop自然文結果、callback provenance、人手Finder UIの代替ではない。
+terminal cleanup hardeningを含む0.3.6 candidateのrun [`33307964947`](https://github.com/omusubiman5/skill-magnet/actions/runs/33307964947)も過去版の証拠である。0.4.0ではno-API handoff契約、129 test、standalone wheel、macOS Finder lifecycle、Windows certificate/native/MSIX lifecycleを改めて実行する。

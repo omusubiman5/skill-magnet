@@ -1,5 +1,7 @@
 # Skill Magnet 製品完成 NO-GO 是正報告
 
+> この文書は0.3.x設計の履歴記録です。completion receiptを含む記述は0.4.0で廃止されました。現行設計と結果は[`no-api-desktop-handoff-implementation-plan-2026-08-30.md`](no-api-desktop-handoff-implementation-plan-2026-08-30.md)と[`no-api-desktop-handoff-implementation-report-2026-08-30.md`](no-api-desktop-handoff-implementation-report-2026-08-30.md)を参照してください。
+
 日付: 2026-08-30  
 計画: [`product-completion-remediation-plan-2026-08-30.md`](product-completion-remediation-plan-2026-08-30.md)
 

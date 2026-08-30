@@ -100,11 +100,6 @@ def _parser() -> argparse.ArgumentParser:
                 action="store_true",
                 help="Confirm the displayed target, version, purpose and Desktop handoff.",
             )
-    complete = commands.add_parser(
-        "activation-complete",
-        help="Verify a one-shot completion receipt from a Codex Desktop task.",
-    )
-    complete.add_argument("--contract", required=True)
     context = commands.add_parser("context")
     context.add_argument("--platform", required=True, choices=("windows", "macos"))
     context.add_argument("--project", required=True, type=Path)
@@ -202,16 +197,6 @@ def main(argv: list[str] | None = None) -> int:
                 result = deliver_prepared_codex_handoff(
                     activation, contract.contract_id
                 )
-        elif args.command == "activation-complete":
-            activation = ActivationEngine(config, args.state_dir)
-            verified = activation.complete_codex_desktop_handoff(args.contract)
-            result = {
-                "status": verified["status"],
-                "contract_id": verified["contract_id"],
-                "completed_skill_ids": verified[
-                    "skill_execution_completion_evidence"
-                ]["completed_skill_ids"],
-            }
         elif args.command == "context":
             if args.release_probe is not None:
                 if args.platform != "macos":
@@ -254,7 +239,9 @@ def main(argv: list[str] | None = None) -> int:
                         delivery=capture_delivery,
                     )
                     result_verification = handoff["desktop_result_verification"]
-                    verified_completed = handoff["verified_completed"]
+                    answer_completion_claimed = handoff[
+                        "answer_completion_claimed"
+                    ]
                 else:
                     handoff = activation.prepare_web_handoff(contract.contract_id)
                     capture_delivery(
@@ -262,8 +249,8 @@ def main(argv: list[str] | None = None) -> int:
                         str(handoff["project"]),
                         str(handoff["destination"]),
                     )
-                    result_verification = "not_available"
-                    verified_completed = False
+                    result_verification = "not_claimed_by_design"
+                    answer_completion_claimed = False
                 record = {
                     "schema_version": 1,
                     "adapter": "macos_finder_quick_action",
@@ -283,7 +270,9 @@ def main(argv: list[str] | None = None) -> int:
                     "prompt_sha256": handoff["prompt_sha256"],
                     "status": handoff["status"],
                     "result_verification": result_verification,
-                    "verified_completed": verified_completed,
+                    "handoff_completed": True,
+                    "answer_completion_claimed": answer_completion_claimed,
+                    "billing_boundary": "existing_plan_no_api_key",
                     "delivery": {
                         "project": delivered.get("project"),
                         "destination": delivered.get("destination"),

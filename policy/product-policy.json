@@ -9,7 +9,8 @@
     "一時ローカル展開が技術的に必要な場合も、対象・理由・期限・cleanupを明示し、検証後に片付ける。",
     "保管庫の版・来歴・承認を保持する。",
     "ローカル配置の成功を、スキルの読み込み成功または使用成功とみなさない。",
-    "選択したpackとversionをタスクへ明示し、読み込み証拠とスキル固有の適用証拠を検証する。",
+    "選択したpackとversionをタスクへ明示し、全skillの読了と最低1つの適用をpromptで必須にする。",
+    "Codex/Claudeの既存利用プランを使い、API key、従量課金API、追加支払いを製品経路で要求しない。",
     "公式に確認できる経路または必要な証拠がない場合はfail-closedで停止し、保証外であることを明示する。",
     "起動はユーザーの右クリックメニューからの明示選択を条件とし、自動提案・自動配布・自動有効化をしない。",
     "Windows ExplorerとmacOS Finderで同じ選択・確認・起動の意味と安全ポリシーを提供する。"
@@ -38,7 +39,7 @@
   "temporary_materialization": {
     "allowed_only_when_runtime_requires": true,
     "required_fields": ["target", "reason", "expires_at", "cleanup_plan"],
-    "cleanup_trigger": "after_runtime_verification_or_expiry",
+    "cleanup_trigger": "after_handoff_failure_or_expiry",
     "required_final_state": "no_residue"
   },
   "provenance": {
@@ -50,7 +51,7 @@
       "skill_magnet_application",
       "separate_user_owned_skill_repository"
     ],
-    "objective": "select_an_exact_repository_version_and_obtain_evidence_that_target_codex_read_and_applied_it"
+    "objective": "select_an_exact_repository_version_and_handoff_one_task_that_requires_skill_application"
   },
   "launch_ui": {
     "entrypoint": "operating_system_context_menu",
@@ -79,28 +80,19 @@
       ]
     }
   },
-  "skill_use_verification": {
-    "success_requires_all": [
-      "task_delivery_evidence",
-      "skill_read_evidence",
-      "skill_execution_completion_evidence"
+  "skill_use_handoff": {
+    "success_state": "desktop_handoff_ready",
+    "success_proves_only": "prompt_delivery_to_new_desktop_task",
+    "prompt_requires": [
+      "read_index_and_all_skill_files",
+      "apply_at_least_one_applicable_skill",
+      "obey_index_relationships_and_skill_boundaries",
+      "complete_actual_request_in_one_unified_answer",
+      "do_not_finish_with_skill_explanation_or_preparation_only"
     ],
-    "completion_contract": {
-      "actual_request_field": "contract.purpose",
-      "pack_skill_ids_field": "evidence.skill_ids",
-      "applied_skill_ids_field": "evidence.completed_skill_ids",
-      "applied_skill_ids_must_be_nonempty_subset": true,
-      "completed_status_field": "evidence.skill_execution_status",
-      "required_completed_status": "completed",
-      "actual_request_sha256_field": "evidence.actual_request_sha256",
-      "task_output_field": "result.task_output",
-      "task_output_must_be_non_empty": true,
-      "skill_specific_acceptance_must_pass": true
-    },
     "placement_is_not_evidence_of": ["skill_read", "skill_application"],
-    "self_report_alone_is_sufficient": false,
-    "missing_evidence_result": "fail_closed",
-    "unsupported_guarantee_label": "not_guaranteed"
+    "answer_completion_claimed": false,
+    "desktop_result_verification": "not_claimed_by_design"
   },
   "codex": {
     "default_route": "explicit_task_injection",
@@ -112,9 +104,10 @@
       "approved_at",
       "skill_ids",
       "instruction_digest",
-      "challenge_nonce",
       "actual_request_sha256"
     ],
+    "billing_boundary": "existing_desktop_plan_no_api_key_or_metered_api",
+    "completion_receipt": false,
     "temporary_native_skill_placement_default": false,
     "session_only_native_skill_addition_officially_confirmed": false
   },

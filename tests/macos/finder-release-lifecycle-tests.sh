@@ -48,8 +48,11 @@ assert record["runtime"] == runtime
 assert record["status"] == (
     "desktop_handoff_ready" if runtime == "codex" else "web_prompt_ready"
 )
-assert record["result_verification"] == "not_available"
-assert record["verified_completed"] is False
+assert record["result_verification"] == "not_claimed_by_design"
+assert record["handoff_completed"] is True
+assert record["answer_completion_claimed"] is False
+assert record["billing_boundary"] == "existing_plan_no_api_key"
+assert "verified_completed" not in record
 assert record["delivery"] == {
     "project": expected_path,
     "destination": (
