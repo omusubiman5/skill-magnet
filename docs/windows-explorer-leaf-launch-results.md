@@ -13,10 +13,10 @@
   "menu_leaf_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
-  "release_code_sha": "3d388e3feded3ed00f76bb28e6a768efe646617c",
-  "wheel_payload_sha256": "c8da150b48878b11dccb709902e93ebe05d8f360c83433787259aab9f921c2a1",
-  "automated_status": "LOCAL_GITHUB_ONLY_STORAGE_138_PASS_CI_PENDING",
-  "windows_explorer_field_status": "PASS_INSTALLED_MENU_MANIFEST_DELIVERY_ASSURANCE_8F12AF5",
+  "release_code_sha": "1e2d91bd71dd7c3a59a07c260e57b388ca3d90e2",
+  "wheel_payload_sha256": "7c2f2a75daf640ffb36c42a9840211b1dd82463e9673ade47223ab7becdff5f9",
+  "automated_status": "LOCAL_PRODUCTIZATION_GATE_PASS_138",
+  "windows_explorer_field_status": "PASS_REAL_RIGHT_CLICK_DELIVERY_ASSURANCE_CODEX_HANDOFF_0_5_0",
   "codex_desktop_result_status": "HANDOFF_READY_ANSWER_COMPLETION_NOT_CLAIMED"
 }
 explorer-results-ledger:end -->
@@ -26,10 +26,12 @@ explorer-results-ledger:end -->
 - 自動証拠: contract固定、GitHub固定commitのINDEX/全SKILL参照、archiveのメモリ内検証、deep-link binding、ローカルskill残留ゼロ
 - wheel再現性: 独立した2 directoryで0.4.0 wheelをbuildし、論理payload SHA-256が両方`c9a0ffe8f542fd475144ac8fecd284175a46863d69d1d44ec5be78ed901ba38f`で一致した。
 - 0.4.1 path修正版も独立した2 directoryでbuildし、論理payload SHA-256が両方`c8da150b48878b11dccb709902e93ebe05d8f360c83433787259aab9f921c2a1`で一致した。
+- 0.5.0 GitHub-only候補wheelの論理payload SHA-256は`7c2f2a75daf640ffb36c42a9840211b1dd82463e9673ade47223ab7becdff5f9`、wheel file SHA-256は`99addeeafde2933af9feab15848e90d835518fe5eba15ad1d0c714eba460eca4`である。
 - 実機証拠: 更新wheelをWindowsへ再installし、modern context menuのstatusが`usable_installed_state: true`、`menu_contract_matches_config: true`を返した。実際のTSVはpack ID `codex-delivery-assurance`、表示名`Delivery Assurance`、固定commit `8f12af5ddfdd3b985f26d33dad09d6061d675342`を記録した。
 - 0.4.0実install: package `SkillMagnet.ContextMenu_0.4.0.0_x64__byy1sc3mfzfz4`を登録し、1 package leaf、Directory/Background、署名済みcommand target、`usable_installed_state: true`を確認した。
 - 0.4.1実installのローカルskill path方式は廃止対象の過去実績であり、現行合格証拠には使用しない。現行版はGitHub固定commit URLとSHA-256だけをpromptへ出力する。
 - Desktop handoff契約: promptは全SKILL.mdと存在する場合だけINDEXの全文読了、最低1つのskill規則の実作業への適用、実依頼の完了を必須化し、読了・説明・一覧・準備確認だけでの終了を禁止する。
+- Windows実E2E: File Explorerで`C:\Projects\skill-magnet`を右クリックし、`Skill Magnet`→`Delivery Assurance`→Codex選択→依頼入力→起動確認→handoffまで完走した。contract `8119b643c2de4ae7b6d9375aff2e2116`、prompt SHA-256 `c6614823868c353d994fa7b08aec820c59044976758227cb426e39b65e639dc9`。
 - Desktop完了の扱い: 製品証拠の状態名はhandoffまでを表し、回答完了へ偽装しない。completion receiptやcallbackは使わない。
 - 課金境界: OpenAI/Anthropic API key、従量課金API、追加支払いを要求せず、既存のCodex Desktop/Claude利用プランへ渡す。
 

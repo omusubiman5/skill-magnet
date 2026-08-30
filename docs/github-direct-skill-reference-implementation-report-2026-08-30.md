@@ -97,13 +97,13 @@ Gitで管理されていたsubmodule削除はGitから復元可能であり、Re
 
 ## 2026-08-31 Windows実経路の最終E2E
 
-- installed DLLをCOMの `IExplorerCommand.Invoke` から実行し、選択対象 `C:\Projects\skill-magnet` を渡してSkill Magnetの実画面を開いた。
-- 実画面でAIにCodexを選び、依頼 `Skill Magnetの製品化準備をレビューし、重大な未完了事項を具体的に指摘してください。` を入力した。
+- Windows File Explorerで `C:\Projects\skill-magnet` を実際に右クリックし、modern context menuの `Skill Magnet` → `Delivery Assurance` を選択してSkill Magnetの実画面を開いた。
+- 実画面でAIにCodexを選び、依頼 `Skill Magnetの製品化チェックを実行し、重大な未完了事項を具体的に指摘してください。` を入力した。
 - 起動確認ダイアログにpack、Codex、project、依頼全文が保持されていることを確認してhandoffを確定した。Windows error 267は再発せず、Skill Magnet画面は正常終了した。
-- contract ID: `f13f744dd6b54b8c9b7c1fdcc6cd0bbe`
-- attempt ID: `0e2fe71db9494d4d96907868e6b49ed6`
+- contract ID: `8119b643c2de4ae7b6d9375aff2e2116`
+- attempt ID: `3f80fbfaa2054c04a22b4370e62fbec7`
 - handoff status: `desktop_handoff_ready`
-- prompt SHA-256: `98851a1a98b4b650da4ea6d29e11f0c4bdb37036ecf17f84599fab937b7de7a2`
+- prompt SHA-256: `c6614823868c353d994fa7b08aec820c59044976758227cb426e39b65e639dc9`
 - installed 0.5.0 packageからpromptを再構成し、handoff記録のhash、actual request、INDEX URL、9件の固定commit SKILL.md URL、最低1件の実適用必須文言、読了だけを未完了とする文言がすべて一致した。
 - Codex Desktop画面そのものは自動操作せず、製品仕様どおりhandoff受理までを記録した。LLM回答完了は主張しない。
 
