@@ -9,9 +9,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -574,6 +576,72 @@ class ActivationEndToEndTest(unittest.TestCase):
         receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
         with self.assertRaisesRegex(SafetyError, "receipt mismatch"):
             engine.complete_codex_desktop_handoff(contract.contract_id)
+        self.assertFalse(receipt_path.exists())
+        self.assertFalse(
+            (self.state / "desktop-materializations" / contract.contract_id).exists()
+        )
+        rejection = json.loads(
+            (
+                self.state
+                / "evidence"
+                / f"{contract.contract_id}-not-guaranteed.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(rejection["status"], "desktop_completion_rejected")
+        self.assertFalse(rejection["verified_completed"])
+
+    def test_desktop_completion_receipt_rejects_prompt_digest_tampering(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        contract = engine.confirm(self._plan(engine), confirmed=True)
+        engine.prepare_codex_desktop_handoff(contract.contract_id)
+        receipt_path = (
+            self.state / "desktop-completion-receipts" / f"{contract.contract_id}.json"
+        )
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["prompt_sha256"] = "0" * 64
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        (
+            self.state / "evidence" / f"{contract.contract_id}-desktop-output.json"
+        ).write_text(
+            json.dumps(self._desktop_completion_output(contract)), encoding="utf-8"
+        )
+
+        with self.assertRaisesRegex(SafetyError, "prompt_sha256"):
+            engine.complete_codex_desktop_handoff(contract.contract_id)
+
+        self.assertFalse(
+            (self.state / "evidence" / f"{contract.contract_id}-verified.json").exists()
+        )
+        self.assertFalse(receipt_path.exists())
+
+    def test_desktop_completion_receipt_has_atomic_concurrent_claim(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        contract = engine.confirm(self._plan(engine), confirmed=True)
+        engine.prepare_codex_desktop_handoff(contract.contract_id)
+        (
+            self.state / "evidence" / f"{contract.contract_id}-desktop-output.json"
+        ).write_text(
+            json.dumps(self._desktop_completion_output(contract)), encoding="utf-8"
+        )
+        entered_verify = threading.Event()
+        release_verify = threading.Event()
+        original_verify = engine._verify
+
+        def blocking_verify(*args: object, **kwargs: object) -> dict[str, object]:
+            entered_verify.set()
+            self.assertTrue(release_verify.wait(timeout=10))
+            return original_verify(*args, **kwargs)
+
+        with mock.patch.object(engine, "_verify", side_effect=blocking_verify):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                first = pool.submit(
+                    engine.complete_codex_desktop_handoff, contract.contract_id
+                )
+                self.assertTrue(entered_verify.wait(timeout=10))
+                with self.assertRaisesRegex(SafetyError, "already being consumed"):
+                    engine.complete_codex_desktop_handoff(contract.contract_id)
+                release_verify.set()
+                self.assertEqual(first.result(timeout=10)["status"], "verified_completed")
 
     def test_desktop_completion_cli_uses_original_config_and_returns_sanitized_status(self) -> None:
         engine = ActivationEngine(self.config, self.state)
@@ -652,6 +720,42 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertFalse(
             (self.state / "desktop-completion-receipts" / f"{contract.contract_id}.json").exists()
         )
+        self.assertFalse(
+            (self.state / "desktop-materializations" / contract.contract_id).exists()
+        )
+
+    def test_activation_complete_immediately_rejects_and_cleans_expired_receipt(self) -> None:
+        clock = [datetime(2026, 8, 30, 0, 0, tzinfo=timezone.utc)]
+        engine = ActivationEngine(self.config, self.state, now=lambda: clock[0])
+        contract = engine.confirm(self._plan(engine), confirmed=True)
+        engine.prepare_codex_desktop_handoff(contract.contract_id)
+        clock[0] += timedelta(minutes=31)
+
+        with self.assertRaisesRegex(SafetyError, "expired"):
+            engine.complete_codex_desktop_handoff(contract.contract_id)
+
+        self.assertFalse(
+            (self.state / "desktop-completion-receipts" / f"{contract.contract_id}.json").exists()
+        )
+        self.assertFalse(
+            (self.state / "desktop-materializations" / contract.contract_id).exists()
+        )
+        self.assertTrue(
+            (self.state / "evidence" / f"{contract.contract_id}-not-guaranteed.json").is_file()
+        )
+
+    def test_malformed_desktop_receipt_is_cleaned_without_blocking_recovery(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        contract = engine.confirm(self._plan(engine), confirmed=True)
+        engine.prepare_codex_desktop_handoff(contract.contract_id)
+        receipt_path = (
+            self.state / "desktop-completion-receipts" / f"{contract.contract_id}.json"
+        )
+        receipt_path.write_text("{not-json", encoding="utf-8")
+
+        engine.recover_interrupted_attempts()
+
+        self.assertFalse(receipt_path.exists())
         self.assertFalse(
             (self.state / "desktop-materializations" / contract.contract_id).exists()
         )

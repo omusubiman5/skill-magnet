@@ -245,16 +245,69 @@ class ActivationEngine:
                 receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
                 expires_at = datetime.fromisoformat(str(receipt["expires_at"]))
             except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
-                raise SafetyError("Invalid Desktop completion receipt metadata") from exc
+                self._cleanup_desktop_contract_artifacts(contract_id)
+                removed.append(contract_id)
+                continue
             if self.now() < expires_at:
                 continue
-            expected_schema = self.evidence_dir / f"{contract_id}-desktop-schema.json"
-            expected_output = self.evidence_dir / f"{contract_id}-desktop-output.json"
-            self._cleanup_temporary_artifacts(
-                (expected_schema, expected_output, receipt_path)
-            )
+            self._cleanup_desktop_contract_artifacts(contract_id)
             removed.append(contract_id)
         return removed
+
+    def _cleanup_desktop_contract_artifacts(self, contract_id: str) -> None:
+        """Remove only paths derived from a validated contract ID."""
+        if not re.fullmatch(r"[0-9a-f]{32}", contract_id):
+            raise SafetyError("Invalid Desktop cleanup contract ID")
+        self._cleanup_temporary_artifacts(
+            (
+                self.evidence_dir / f"{contract_id}-desktop-schema.json",
+                self.evidence_dir / f"{contract_id}-desktop-output.json",
+                self.desktop_receipt_dir / f"{contract_id}.json",
+                self.desktop_receipt_dir / f"{contract_id}.lock",
+            )
+        )
+        materialization = self.materialization_dir / contract_id
+        if materialization.is_dir() and not _is_link(materialization):
+            self._make_tree_writable(materialization)
+            shutil.rmtree(materialization)
+
+    def _record_desktop_completion_rejection(
+        self, contract_id: str, *, reason: str
+    ) -> None:
+        """Persist one terminal negative result after fail-closed cleanup."""
+        failure_path = self.evidence_dir / f"{contract_id}-not-guaranteed.json"
+        if failure_path.is_file():
+            return
+        record_path = self.contract_dir / f"{contract_id}.json"
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            attempt_id = str(record["attempt_id"])
+            pack_id = str(record["pack_id"])
+            commit_sha = str(record["commit_sha"])
+        except (OSError, KeyError, json.JSONDecodeError) as exc:
+            raise SafetyError("Cannot identify rejected Desktop completion") from exc
+        terminal_event = self._write_terminal_lifecycle(
+            attempt_id=attempt_id,
+            contract_id=contract_id,
+            status="desktop_completion_rejected",
+        )
+        self.engine._write_json_atomic(
+            failure_path,
+            {
+                "status": "desktop_completion_rejected",
+                "attempt_id": attempt_id,
+                "contract_id": contract_id,
+                "pack_id": pack_id,
+                "commit_sha": commit_sha,
+                "reason": reason,
+                "terminal_event_id": terminal_event["terminal_event_id"],
+                "terminal_event": {
+                    "status": "desktop_completion_rejected",
+                    "terminal": True,
+                },
+                "verified_completed": False,
+            },
+        )
 
     def _materialize_desktop_pack(
         self,
@@ -784,10 +837,14 @@ class ActivationEngine:
     def _read_contract(self, contract_id: str) -> LaunchContract:
         return self._read_contract_record(contract_id)
 
-    def _consume(self, contract: LaunchContract) -> None:
+    def _consume(
+        self, contract: LaunchContract, *, desktop_binding: dict[str, str] | None = None
+    ) -> None:
         path = self.contract_dir / f"{contract.contract_id}.json"
         value = contract.as_dict()
         value["consumed_at"] = self.now().isoformat()
+        if desktop_binding is not None:
+            value["desktop_binding"] = desktop_binding
         self.engine._write_json_atomic(path, value)
 
     def _task_envelope(self, contract: LaunchContract, pack: Pack) -> str:
@@ -996,7 +1053,13 @@ class ActivationEngine:
                 "expires_at": contract.expires_at,
             },
         )
-        self._consume(contract)
+        self._consume(
+            contract,
+            desktop_binding={
+                "prompt_sha256": prompt_digest,
+                "schema_sha256": _digest(schema),
+            },
+        )
         return {
             "status": "desktop_handoff_prepared",
             "runtime": "codex",
@@ -1105,73 +1168,89 @@ class ActivationEngine:
             raise SafetyError("Invalid Desktop completion contract ID")
         if (self.evidence_dir / f"{contract_id}-verified.json").is_file():
             raise SafetyError("Desktop completion receipt was already verified")
+        if (self.evidence_dir / f"{contract_id}-not-guaranteed.json").is_file():
+            raise SafetyError("Desktop completion was already rejected")
         receipt_path = self.desktop_receipt_dir / f"{contract_id}.json"
+        lock_path = self.desktop_receipt_dir / f"{contract_id}.lock"
         try:
-            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise SafetyError("Desktop completion receipt is missing or invalid") from exc
-        contract = self._read_contract_record(contract_id, allow_consumed=True)
-        contract_record = json.loads(
-            (self.contract_dir / f"{contract_id}.json").read_text(encoding="utf-8")
-        )
-        if not contract_record.get("consumed_at"):
-            raise SafetyError("Desktop handoff was not consumed")
-        expected_schema_path = self.evidence_dir / f"{contract_id}-desktop-schema.json"
-        expected_output_path = self.evidence_dir / f"{contract_id}-desktop-output.json"
-        expected_receipt = {
-            "version": 1,
-            "attempt_id": contract.attempt_id,
-            "contract_id": contract.contract_id,
-            "schema_path": str(expected_schema_path),
-            "output_path": str(expected_output_path),
-            "expires_at": contract.expires_at,
-        }
-        for key, expected in expected_receipt.items():
-            if receipt.get(key) != expected:
-                raise SafetyError(f"Desktop completion receipt mismatch: {key}")
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(lock_fd)
+        except FileExistsError as exc:
+            raise SafetyError("Desktop completion receipt is already being consumed") from exc
         try:
-            schema = json.loads(expected_schema_path.read_text(encoding="utf-8"))
-            output = json.loads(expected_output_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise _OutputFailed("Desktop task returned no valid evidence envelope") from exc
-        if receipt.get("schema_sha256") != _digest(schema):
-            raise SafetyError("Desktop completion schema integrity check failed")
-        prompt_digest = str(receipt.get("prompt_sha256", ""))
-        if not re.fullmatch(r"[0-9a-f]{64}", prompt_digest):
-            raise SafetyError("Desktop completion prompt digest is invalid")
-        pack, commit, _, _ = self._validated_pack(contract.pack_id)
-        if commit != contract.commit_sha or pack.repo_url != contract.repository_url:
-            raise SafetyError("Pack provenance changed after Desktop handoff")
-        checks = self._load_acceptance(pack, contract.skill_ids)
-        verified = self._verify(contract, output, checks, prompt_digest)
-        verified["user_result"] = self._user_result(contract, pack, output)
-        verified["interactive_handoff"] = {
-            "runtime": "codex",
-            "state": "desktop_result_verified",
-            "verification_session_resumed": False,
-        }
-        self._cleanup_temporary_artifacts(
-            (expected_schema_path, expected_output_path, receipt_path)
-        )
-        materialization = self.materialization_dir / contract_id
-        if materialization.is_dir() and not _is_link(materialization):
-            self._make_tree_writable(materialization)
-            shutil.rmtree(materialization)
-        terminal_event = self._write_terminal_lifecycle(
-            attempt_id=contract.attempt_id,
-            contract_id=contract.contract_id,
-            status="verified_completed",
-        )
-        verified["attempt_id"] = contract.attempt_id
-        verified["terminal_event_id"] = terminal_event["terminal_event_id"]
-        verified["terminal_event"] = {
-            "status": "verified_completed",
-            "terminal": True,
-        }
-        verified_path = self.evidence_dir / f"{contract_id}-verified.json"
-        verified["user_result"]["details"]["evidence_file"] = str(verified_path)
-        self.engine._write_json_atomic(verified_path, verified)
-        return verified
+            try:
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise SafetyError("Desktop completion receipt is missing or invalid") from exc
+            contract = self._read_contract_record(contract_id, allow_consumed=True)
+            contract_record = json.loads(
+                (self.contract_dir / f"{contract_id}.json").read_text(encoding="utf-8")
+            )
+            if not contract_record.get("consumed_at"):
+                raise SafetyError("Desktop handoff was not consumed")
+            binding = contract_record.get("desktop_binding")
+            if not isinstance(binding, dict):
+                raise SafetyError("Desktop handoff binding is missing")
+            expected_schema_path = self.evidence_dir / f"{contract_id}-desktop-schema.json"
+            expected_output_path = self.evidence_dir / f"{contract_id}-desktop-output.json"
+            expected_receipt = {
+                "version": 1,
+                "attempt_id": contract.attempt_id,
+                "contract_id": contract.contract_id,
+                "prompt_sha256": binding.get("prompt_sha256"),
+                "schema_sha256": binding.get("schema_sha256"),
+                "schema_path": str(expected_schema_path),
+                "output_path": str(expected_output_path),
+                "expires_at": contract.expires_at,
+            }
+            for key, expected in expected_receipt.items():
+                if receipt.get(key) != expected:
+                    raise SafetyError(f"Desktop completion receipt mismatch: {key}")
+            try:
+                schema = json.loads(expected_schema_path.read_text(encoding="utf-8"))
+                output = json.loads(expected_output_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise _OutputFailed("Desktop task returned no valid evidence envelope") from exc
+            if binding.get("schema_sha256") != _digest(schema):
+                raise SafetyError("Desktop completion schema integrity check failed")
+            prompt_digest = str(binding.get("prompt_sha256", ""))
+            if not re.fullmatch(r"[0-9a-f]{64}", prompt_digest):
+                raise SafetyError("Desktop completion prompt digest is invalid")
+            pack, commit, _, _ = self._validated_pack(contract.pack_id)
+            if commit != contract.commit_sha or pack.repo_url != contract.repository_url:
+                raise SafetyError("Pack provenance changed after Desktop handoff")
+            checks = self._load_acceptance(pack, contract.skill_ids)
+            verified = self._verify(contract, output, checks, prompt_digest)
+            verified["user_result"] = self._user_result(contract, pack, output)
+            verified["interactive_handoff"] = {
+                "runtime": "codex",
+                "state": "desktop_result_verified",
+                "verification_session_resumed": False,
+            }
+            self._cleanup_desktop_contract_artifacts(contract_id)
+            terminal_event = self._write_terminal_lifecycle(
+                attempt_id=contract.attempt_id,
+                contract_id=contract.contract_id,
+                status="verified_completed",
+            )
+            verified["attempt_id"] = contract.attempt_id
+            verified["terminal_event_id"] = terminal_event["terminal_event_id"]
+            verified["terminal_event"] = {
+                "status": "verified_completed",
+                "terminal": True,
+            }
+            verified_path = self.evidence_dir / f"{contract_id}-verified.json"
+            verified["user_result"]["details"]["evidence_file"] = str(verified_path)
+            self.engine._write_json_atomic(verified_path, verified)
+            return verified
+        except Exception:
+            try:
+                self._cleanup_desktop_contract_artifacts(contract_id)
+            finally:
+                self._record_desktop_completion_rejection(
+                    contract_id, reason="verification_failed"
+                )
+            raise
 
     def prepare_web_handoff(self, contract_id: str) -> dict[str, Any]:
         """Consume one verified selection and return its single Web Claude prompt.

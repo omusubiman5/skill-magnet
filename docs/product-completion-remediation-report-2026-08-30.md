@@ -7,7 +7,7 @@
 
 **NO-GO / 実装継続中**
 
-Smart App Control 4551修正、full MSIX、wheel単独性、132テストはローカルでPASSしている。completion receipt追加後のcandidateもWindows/macOS CIでPASSした。これは製品完成ゲートの一部にすぎず、実Desktop自然文結果などの未達を埋めない。
+Smart App Control 4551修正、full MSIX、wheel単独性、receipt hardeningを含む136テストはローカルでPASSしている。0.3.3 candidateはWindows/macOS CIでPASSしたが、0.3.4 hardening candidateのCIは未実行である。これは製品完成ゲートの一部にすぎず、実Desktop自然文結果などの未達を埋めない。
 
 ## 再監査で確認した未達
 
@@ -23,7 +23,7 @@ Smart App Control 4551修正、full MSIX、wheel単独性、132テストはロ�
 
 ## 今回実施した検証
 
-- `python -m unittest discover -s tests -v`: 132件PASS、環境依存1件skip。
+- `python -m unittest discover -s tests -v`: 136件PASS、環境依存1件skip。
 - candidate artifact-input commit: `404ce8c3b8757e7dd2e7646606818b0eb72be887`。
 - 0.3.3 canonical wheel logical payload SHA-256: `1c1ab2914220d4f468614efd9f8a70a845d336c91864f75480c47a584cd2feb1`。独立したローカル2buildで一致し、CIのstandalone wheel payload gateもPASSした。
 - completion receipt追加後のCI run [`33306460511`](https://github.com/omusubiman5/skill-magnet/actions/runs/33306460511): Windows/macOSともgreen。両OSで132 test、standalone wheel install、candidate SHAとwheel payload gateがPASSした。Windowsは証明書state、native build、MSIX install/update/rollback/uninstall lifecycle、macOSはFinder semantic lifecycleもPASSした。
@@ -41,12 +41,13 @@ Smart App Control 4551修正、full MSIX、wheel単独性、132テストはロ�
 - README、MVP設計、Windows modern menu設計、Smart App Control報告書のscope矛盾を訂正した。
 - `build/lib`を再利用したwheelへ廃止済みpackが残る欠陥を修正した。package出力を毎回初期化し、意図的に古いpackを置いてもwheelへ混入しない回帰試験を追加した。
 - Codex Desktop task用の期限付きcompletion receiptを追加した。handoff時にschemaと一回限りreceiptを作り、task完了後にcontract、challenge nonce、request hash、pack provenance、INDEX関係、適用部分集合、acceptanceを検証して初めて`verified_completed`へ遷移する。改ざん、再利用、期限切れ、OS起動失敗ではreceipt、schema、output、materializationを回収し、成功証拠を作らない。
+- 鬼再監査で実証された`prompt_sha256`改ざん、並行二重callback、期限切れ直撃、malformed receipt残留を0.3.4で修正した。prompt/schema digestは消費済みcontract recordのhandoff bindingとも照合し、callbackは原子的lockで一つだけclaimする。全verification failureをnegative terminalへ確定し、安全に導出したreceipt/schema/output/materializationだけを即時回収する回帰試験を追加した。
 
 ## CI再現性障害と修正
 
 run `33295357619`ではWindows/macOSの127 testがPASSした一方、wheel gateが失敗した。ローカルwheelだけに旧`codex-pmo-skills-c7747bba`が残っており、CIのclean buildには存在しなかった。原因はcustom `build_py`が既存`build/lib/skill_magnet`を消さずに再利用したことだった。
 
-修正後はpackage rootを先に削除してから現在のsource、固定pack、native assetsだけを構築する。独立した2回のローカルbuildは、先行CIのWindows/macOSと同じlogical payload SHA-256 `5f6972b6…a625`になった。
+0.3.2の再現性修正ではpackage rootを先に削除してから現在のsource、固定pack、native assetsだけを構築した。当時の独立した2回のローカルbuildは、当時のCIと同じlogical payload SHA-256 `5f6972b6…a625`になった。これは現行0.3.4のhashではない。
 
 completion receiptを含む現行0.3.3 candidateのCI run [`33306460511`](https://github.com/omusubiman5/skill-magnet/actions/runs/33306460511)はWindows/macOSともgreen。両OSで132 test、standalone wheel install、candidate SHAとwheel payload gateを通過した。macOSは現行Finder semantic lifecycle、Windowsは証明書state test、standalone wheelからのnative build、MSIX install/update/rollback/uninstall lifecycleまで通過した。ただし実Desktop自然文結果と人手UI受入はCIの範囲外であり、製品GOには昇格しない。
 

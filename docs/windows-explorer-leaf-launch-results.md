@@ -9,19 +9,19 @@
 <!-- explorer-results-ledger:start
 {
   "release_scope": "one-package-leaf",
-  "full_test_count": 132,
+  "full_test_count": 136,
   "menu_leaf_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
   "release_code_sha": "404ce8c3b8757e7dd2e7646606818b0eb72be887",
   "wheel_payload_sha256": "1c1ab2914220d4f468614efd9f8a70a845d336c91864f75480c47a584cd2feb1",
-  "automated_status": "CI_33306460511_WINDOWS_MACOS_GREEN_132_PASS",
+  "automated_status": "LOCAL_136_PASS_RECEIPT_HARDENING_CI_PENDING",
   "windows_explorer_field_status": "PASS_INSTALLED_MENU_MANIFEST_DELIVERY_ASSURANCE_8F12AF5",
   "codex_desktop_result_status": "RETESTED_HANDOFF_NO_DISTINCT_TASK_OBSERVED"
 }
 explorer-results-ledger:end -->
 
-- 統合テスト: `python -m unittest discover -s tests -v` — 132 tests PASS、環境依存1件skip
+- 統合テスト: `python -m unittest discover -s tests -v` — 136 tests PASS、環境依存1件skip
 - menu contract: 1 package leaf / selection kind `package` / pack内9 skills
 - 自動証拠: contract固定、INDEX/全SKILL materialization、source改変耐性、deep-link binding、CLI非起動、rollback、残留物回収
 - 実機証拠: 更新wheelをWindowsへ再installし、modern context menuのstatusが`usable_installed_state: true`、`menu_contract_matches_config: true`を返した。実際のTSVはpack ID `codex-delivery-assurance`、表示名`Delivery Assurance`、固定commit `8f12af5ddfdd3b985f26d33dad09d6061d675342`を記録した。
@@ -32,7 +32,7 @@ explorer-results-ledger:end -->
 
 `integration/explorer_results_gate.py`は、この台帳のtest count・leaf数・selection kind・pack skill数を、現在のテストsuiteと`skill-magnet.json`から得た値へ照合します。また、旧個別leaf仕様の文言が正本へ再混入した場合に失敗します。
 
-Windows 0.3.3候補の最終受入では、次を新しい証拠として追記します。
+Windows 0.3.4候補の最終受入では、次を新しい証拠として追記します。
 
 1. wheelからのnative build、MSIX署名・install、Directory/Backgroundの単一`Delivery Assurance`表示。
 2. package leafからCodex Desktop新規タスクを開き、materialized INDEX/全SKILLを読み、依頼に必要な部分集合だけを適用した自然文回答。
