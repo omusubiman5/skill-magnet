@@ -15,9 +15,10 @@ from skill_magnet.ui import deliver_prepared_codex_handoff
 
 
 ACTUAL_REQUEST = (
-    "このプロジェクトのSkill Magnet実装を、INDEXで関係づけられた"
-    "パック内全スキルを読み、INDEXに従って必要なスキルだけを組み合わせる要件に照らして監査し、"
-    "不適合を修正して、検証結果を日本語で報告してください。"
+    "このプロジェクトの未完了リリースをCIで監査して修正patchを安全に引き渡す計画を、"
+    "実行mode、sandboxとapproval、egress、MCP、bounded subagents、CI patch handoffの"
+    "観点をINDEXに従って必要なものだけ組み合わせ、日本語で具体化してください。"
+    "この実機受入ではファイルを変更せず、採用したskillと組合せ理由も自然文で説明してください。"
 )
 
 
@@ -46,7 +47,9 @@ def main() -> int:
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "status": result["status"],
         "desktop_result_verification": result["desktop_result_verification"],
-        "verified_completed": result["verified_completed"],
+        "handoff_completed": result["handoff_completed"],
+        "answer_completion_claimed": result["answer_completion_claimed"],
+        "billing_boundary": result["billing_boundary"],
         "contract_id": result["contract_id"],
         "attempt_id": result["attempt_id"],
         "skill_ids": list(contract.skill_ids),

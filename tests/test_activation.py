@@ -31,7 +31,7 @@ from skill_magnet.activation import (
     codex_process_config_args,
 )
 from skill_magnet.cli import exit_process, main as cli_main
-from skill_magnet.core import Config, SafetyError, SkillMagnetError
+from skill_magnet.core import Config, Pack, SafetyError, SkillMagnetError
 from skill_magnet.platforms import (
     context_menu_spec,
     install_context_menu,
@@ -63,6 +63,7 @@ from skill_magnet.ui import (
     context_ui_text,
     launch_context_leaf,
     deliver_codex_desktop_prompt,
+    deliver_prepared_codex_handoff,
     deliver_web_claude_prompt,
     web_claude_prefill_url,
 )
@@ -503,6 +504,74 @@ class ActivationEndToEndTest(unittest.TestCase):
             ttl_minutes=30,
         )
 
+    def test_desktop_handoff_requires_pack_skill_application_without_metered_api(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        contract = engine.confirm(self._plan(engine), confirmed=True)
+        prepared = engine.prepare_codex_desktop_handoff(contract.contract_id)
+        result = engine.record_codex_desktop_handoff(prepared)
+
+        prompt = prepared["prompt"]
+        self.assertIn("最低1つのスキルを必ず", prompt)
+        self.assertIn("説明、一覧、準備確認だけで終了", prompt)
+        self.assertIn("INDEX.md", prompt)
+        self.assertIn("SKILL.md", prompt)
+        self.assertIn("OpenAIまたはAnthropicのAPI key", prompt)
+        self.assertIn("追加支払い", prompt)
+        self.assertNotIn("activation-complete", prompt)
+        self.assertNotIn("desktop-output", prompt)
+        self.assertNotIn("JSON Schema", prompt)
+        self.assertEqual(result["status"], "desktop_handoff_ready")
+        self.assertTrue(result["handoff_completed"])
+        self.assertFalse(result["answer_completion_claimed"])
+        self.assertEqual(
+            result["billing_boundary"], "existing_desktop_plan_no_api_key"
+        )
+        self.assertNotIn("verified_completed", result)
+        self.assertFalse((self.state / "desktop-completion-receipts").exists())
+        self.assertEqual(list((self.state / "evidence").glob("*-desktop-schema.json")), [])
+        self.assertEqual(list((self.state / "evidence").glob("*-desktop-output.json")), [])
+
+    def test_desktop_prompt_preserves_hidden_windows_path_separator(self) -> None:
+        hidden_state = self.root / ".skill-magnet"
+        engine = ActivationEngine(self.config, hidden_state)
+        contract = engine.confirm(self._plan(engine), confirmed=True)
+        prepared = engine.prepare_codex_desktop_handoff(contract.contract_id)
+
+        materialized = (
+            hidden_state
+            / "desktop-materializations"
+            / contract.contract_id
+        ).resolve()
+        index_path = (materialized / "INDEX.md").as_posix()
+        skill_path = (
+            materialized / "bounded-answer" / "SKILL.md"
+        ).as_posix()
+        prompt = prepared["prompt"]
+        self.assertIn(f"`{index_path}`", prompt)
+        self.assertIn(f"`{skill_path}`", prompt)
+        self.assertIn("/.skill-magnet/desktop-materializations/", prompt)
+        self.assertNotIn(r"HOMEA\.skill-magnet", prompt)
+
+    def test_desktop_delivery_failure_removes_materialization_and_retains_negative_evidence(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        contract = engine.confirm(self._plan(engine), confirmed=True)
+        with self.assertRaisesRegex(SkillMagnetError, "protocol rejected"):
+            deliver_prepared_codex_handoff(
+                engine,
+                contract.contract_id,
+                delivery=lambda *_args: (_ for _ in ()).throw(
+                    SkillMagnetError("protocol rejected")
+                ),
+            )
+        failure_path = (
+            self.state / "evidence" / f"{contract.contract_id}-not-guaranteed.json"
+        )
+        failure = json.loads(failure_path.read_text(encoding="utf-8"))
+        self.assertEqual(failure["status"], "launch_failed")
+        self.assertFalse(
+            (self.state / "desktop-materializations" / contract.contract_id).exists()
+        )
+
     def test_cross_platform_manual_selection_to_verified_application_e2e(self) -> None:
         self.assertFalse(self.state.exists())
         for platform in ("windows", "macos"):
@@ -549,6 +618,74 @@ class ActivationEndToEndTest(unittest.TestCase):
                 )
         self.assertFalse((self.root / "must-not-install-codex").exists())
         self.assertFalse((self.root / "must-not-install-claude").exists())
+
+    def test_product_pack_cross_platform_runtime_handoff_e2e(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        product_config = Config.load(project_root / "skill-magnet.json")
+        pack = product_config.packs["codex-delivery-assurance"]
+        purpose = (
+            "Design a CI delivery workflow that combines execution mode, sandbox, "
+            "egress, MCP, bounded subagents, and patch handoff controls."
+        )
+        for platform in ("windows", "macos"):
+            with self.subTest(platform=platform, runtime="codex"):
+                state = self.root / f"product-{platform}-codex"
+                engine = ActivationEngine(product_config, state)
+                plan = engine.plan(
+                    platform=platform,
+                    project=self.project,
+                    pack_id=pack.pack_id,
+                    runtime="codex",
+                    purpose=purpose,
+                )
+                contract = engine.confirm(plan, confirmed=True)
+                delivered: list[tuple[str, str, str]] = []
+                handoff = deliver_prepared_codex_handoff(
+                    engine,
+                    contract.contract_id,
+                    delivery=lambda prompt, project, destination: delivered.append(
+                        (prompt, project, destination)
+                    ),
+                )
+                self.assertEqual(handoff["status"], "desktop_handoff_ready")
+                self.assertTrue(handoff["handoff_completed"])
+                self.assertFalse(handoff["answer_completion_claimed"])
+                self.assertNotIn("verified_completed", handoff)
+                self.assertEqual(len(delivered), 1)
+                prompt, delivered_project, destination = delivered[0]
+                self.assertEqual(delivered_project, str(self.project.resolve()))
+                self.assertEqual(destination, "codex://threads/new")
+                self.assertIn("composes-with", prompt)
+                self.assertIn("最低1つのスキルを必ず", prompt)
+                self.assertIn("説明、一覧、準備確認だけで終了", prompt)
+                self.assertIn("API key", prompt)
+                self.assertNotIn("activation-complete", prompt)
+                materialized = Path(handoff["materialization"]["path"])
+                self.assertTrue((materialized / "INDEX.md").is_file())
+                self.assertEqual(
+                    sorted(
+                        path.name
+                        for path in materialized.iterdir()
+                        if (path / "SKILL.md").is_file()
+                    ),
+                    sorted(pack.skills),
+                )
+            with self.subTest(platform=platform, runtime="claude"):
+                state = self.root / f"product-{platform}-claude"
+                engine = ActivationEngine(product_config, state)
+                plan = engine.plan(
+                    platform=platform,
+                    project=self.project,
+                    pack_id=pack.pack_id,
+                    runtime="claude",
+                    purpose=purpose,
+                )
+                contract = engine.confirm(plan, confirmed=True)
+                handoff = engine.prepare_web_handoff(contract.contract_id)
+                self.assertEqual(handoff["status"], "web_prompt_ready")
+                self.assertEqual(handoff["destination"], "https://claude.ai/new")
+                self.assertEqual(handoff["skill_ids"], list(pack.skills))
+                self.assertIn("composes-with", handoff["prompt"])
 
     def test_web_claude_leaf_unit_contract_hands_one_prompt_to_delivery_adapter(self) -> None:
         engine = ActivationEngine(self.config, self.state)
@@ -652,7 +789,9 @@ class ActivationEndToEndTest(unittest.TestCase):
                 ),
             )
         self.assertEqual(result["status"], "desktop_handoff_ready")
-        self.assertFalse(result["verified_completed"])
+        self.assertTrue(result["handoff_completed"])
+        self.assertFalse(result["answer_completion_claimed"])
+        self.assertNotIn("verified_completed", result)
         self.assertEqual(len(delivered), 1)
         prompt, project, destination = delivered[0]
         self.assertEqual(project, str(self.project.resolve()))
@@ -666,7 +805,7 @@ class ActivationEndToEndTest(unittest.TestCase):
             / "bounded-answer"
             / "SKILL.md"
         )
-        self.assertIn(str(materialized_skill.resolve()), prompt)
+        self.assertIn(f"`{materialized_skill.resolve().as_posix()}`", prompt)
         original_materialized = materialized_skill.read_bytes()
         source_skill = self.repo / "bounded-answer" / "SKILL.md"
         source_skill.write_text(
@@ -1359,8 +1498,8 @@ class ActivationEndToEndTest(unittest.TestCase):
             ),
             (
                 "skill acceptance",
-                "Skill-specific acceptance failed",
-                lambda value: value["result"].update(decision="wrong"),
+                "Request-aware acceptance failed",
+                lambda value: value["result"].update(decision=42),
             ),
             (
                 "applied rule identity",
@@ -1437,6 +1576,10 @@ class ActivationEndToEndTest(unittest.TestCase):
             {"type": "null"},
             schema["properties"]["result"]["properties"]["unused"]["anyOf"],
         )
+        self.assertNotIn(
+            "const",
+            schema["properties"]["result"]["properties"]["decision"]["anyOf"][0],
+        )
         output = {
             "evidence": {
                 "pack_id": contract.pack_id,
@@ -1471,6 +1614,15 @@ class ActivationEndToEndTest(unittest.TestCase):
             engine._user_result(contract, pack, output)["executed_skill"],
             "bounded-answer",
         )
+        output["result"]["decision"] = "request-specific-alternative"
+        output["evidence"]["applied_rules"] = [
+            "bounded-answer:result.decision=request-specific-alternative"
+        ]
+        engine._verify(contract, output, checks, "prompt-digest")
+        output["result"]["decision"] = "bounded"
+        output["evidence"]["applied_rules"] = [
+            "bounded-answer:result.decision=bounded"
+        ]
         output["result"]["unused"] = True
         with self.assertRaisesRegex(SafetyError, "Unapplied skill claimed"):
             engine._verify(contract, output, checks, "prompt-digest")
@@ -1490,6 +1642,45 @@ class ActivationEndToEndTest(unittest.TestCase):
         output["result"]["decision"] = "bounded"
         with self.assertRaisesRegex(SafetyError, "Contrasting skills"):
             engine._verify(contract, output, checks, "prompt-digest")
+
+    def test_package_composition_requires_request_specific_relationship_evidence(self) -> None:
+        source = self.root / "composition-relations"
+        source.mkdir()
+        (source / "INDEX.md").write_text(
+            "```mermaid\n"
+            "graph LR\n"
+            'LEFT["left-skill"] ===>|composes-with| RIGHT["right-skill"]\n'
+            "```\n",
+            encoding="utf-8",
+        )
+        pack = Pack(
+            pack_id="relations",
+            repo_url="https://github.com/my-owner/relations.git",
+            expected_commit="0" * 40,
+            source=source,
+            skills=("left-skill", "right-skill"),
+        )
+        relations = ActivationEngine._pack_relations(pack)
+        self.assertEqual(
+            relations["composes-with"], {("left-skill", "right-skill")}
+        )
+        with self.assertRaisesRegex(
+            SafetyError, "composition has no relationship evidence"
+        ):
+            ActivationEngine._verify_pack_relations(
+                pack,
+                ["left-skill", "right-skill"],
+                ["left-skill: applied", "right-skill: applied"],
+            )
+        ActivationEngine._verify_pack_relations(
+            pack,
+            ["left-skill", "right-skill"],
+            [
+                "left-skill: applied",
+                "right-skill: applied",
+                "left-skill composes-with right-skill: needed for this request",
+            ],
+        )
 
     def test_wrong_challenge_nonce_is_not_read_evidence(self) -> None:
         script = self.root / "wrong_nonce_codex.py"
@@ -1718,7 +1909,9 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "")
         self.assertEqual(stderr.getvalue(), "")
         self.assertEqual(result["status"], "desktop_handoff_ready")
-        self.assertFalse(result["verified_completed"])
+        self.assertTrue(result["handoff_completed"])
+        self.assertFalse(result["answer_completion_claimed"])
+        self.assertNotIn("verified_completed", result)
         self.assertEqual(result["skill_ids"], ["bounded-answer"])
         self.assertEqual(
             result["terminal_event"],
@@ -3577,6 +3770,7 @@ class ActivationEndToEndTest(unittest.TestCase):
         probe_command = action["ActionParameters"]["COMMAND_STRING"]
         self.assertIn("finder probe.txt", probe_command)
         self.assertIn("--release-probe", probe_command)
+        self.assertIn("--release-probe-runtime", probe_command)
         self.assertNotIn("printf", probe_command)
         self.assertNotIn("exit 0", probe_command)
         selected = self.root / "selected by Finder"
@@ -3597,7 +3791,58 @@ class ActivationEndToEndTest(unittest.TestCase):
             ),
             0,
         )
-        self.assertEqual(probe.read_text(encoding="utf-8"), str(selected.resolve()))
+        probe_record = json.loads(probe.read_text(encoding="utf-8"))
+        self.assertEqual(probe_record["adapter"], "macos_finder_quick_action")
+        self.assertEqual(probe_record["selected_path"], str(selected.resolve()))
+        self.assertEqual(probe_record["pack_id"], "bounded-pack")
+        self.assertEqual(probe_record["selection_kind"], "pack")
+        self.assertEqual(probe_record["runtime"], "codex")
+        self.assertEqual(probe_record["status"], "desktop_handoff_ready")
+        self.assertEqual(
+            probe_record["result_verification"], "not_claimed_by_design"
+        )
+        self.assertTrue(probe_record["handoff_completed"])
+        self.assertFalse(probe_record["answer_completion_claimed"])
+        self.assertEqual(
+            probe_record["billing_boundary"], "existing_plan_no_api_key"
+        )
+        self.assertNotIn("verified_completed", probe_record)
+        self.assertEqual(
+            probe_record["delivery"]["project"], str(selected.resolve())
+        )
+        self.assertEqual(
+            probe_record["delivery"]["destination"], "codex://threads/new"
+        )
+        self.assertTrue(probe_record["delivery"]["prompt_present"])
+        self.assertEqual(probe_record["skill_ids"], ["bounded-answer"])
+        self.assertTrue(probe_record["instruction_digest"])
+        self.assertTrue(probe_record["index_digest"])
+        claude_probe = self.root / "finder claude probe.json"
+        self.assertEqual(
+            cli_main(
+                [
+                    "--config",
+                    str(self.config_path),
+                    "context",
+                    "--platform",
+                    "macos",
+                    "--project",
+                    str(selected),
+                    "--release-probe",
+                    str(claude_probe),
+                    "--release-probe-runtime",
+                    "claude",
+                ]
+            ),
+            0,
+        )
+        claude_record = json.loads(claude_probe.read_text(encoding="utf-8"))
+        self.assertEqual(claude_record["runtime"], "claude")
+        self.assertEqual(claude_record["status"], "web_prompt_ready")
+        self.assertEqual(
+            claude_record["delivery"]["destination"], "https://claude.ai/new"
+        )
+        self.assertTrue(claude_record["delivery"]["prompt_present"])
         removed = uninstall_context_menu("macos", services_dir=services)
         self.assertTrue(removed["removed"])
         self.assertFalse(workflow.parent.parent.exists())

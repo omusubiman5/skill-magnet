@@ -73,37 +73,27 @@ class ProductPolicyTest(unittest.TestCase):
             {"repository_url", "commit_sha", "approved_by", "approved_at"},
         )
 
-    def test_placement_is_not_skill_use_and_missing_evidence_fails_closed(self) -> None:
-        verification = self.policy["skill_use_verification"]
+    def test_handoff_prompt_requires_real_skill_use_without_claiming_completion(self) -> None:
+        handoff = self.policy["skill_use_handoff"]
         self.assertEqual(
-            set(verification["success_requires_all"]),
+            set(handoff["prompt_requires"]),
             {
-                "task_delivery_evidence",
-                "skill_read_evidence",
-                "skill_execution_completion_evidence",
+                "read_index_and_all_skill_files",
+                "apply_at_least_one_applicable_skill",
+                "obey_index_relationships_and_skill_boundaries",
+                "complete_actual_request_in_one_unified_answer",
+                "do_not_finish_with_skill_explanation_or_preparation_only",
             },
         )
         self.assertEqual(
-            set(verification["placement_is_not_evidence_of"]),
+            set(handoff["placement_is_not_evidence_of"]),
             {"skill_read", "skill_application"},
         )
+        self.assertEqual(handoff["success_state"], "desktop_handoff_ready")
+        self.assertFalse(handoff["answer_completion_claimed"])
         self.assertEqual(
-            verification["completion_contract"],
-            {
-                "actual_request_field": "contract.purpose",
-                "pack_skill_ids_field": "evidence.skill_ids",
-                "applied_skill_ids_field": "evidence.completed_skill_ids",
-                "applied_skill_ids_must_be_nonempty_subset": True,
-                "completed_status_field": "evidence.skill_execution_status",
-                "required_completed_status": "completed",
-                "actual_request_sha256_field": "evidence.actual_request_sha256",
-                "task_output_field": "result.task_output",
-                "task_output_must_be_non_empty": True,
-                "skill_specific_acceptance_must_pass": True,
-            },
+            handoff["desktop_result_verification"], "not_claimed_by_design"
         )
-        self.assertFalse(verification["self_report_alone_is_sufficient"])
-        self.assertEqual(verification["missing_evidence_result"], "fail_closed")
 
     def test_codex_defaults_to_explicit_task_injection_not_temp_placement(self) -> None:
         codex = self.policy["codex"]
@@ -122,10 +112,14 @@ class ProductPolicyTest(unittest.TestCase):
                 "approved_at",
                 "skill_ids",
                 "instruction_digest",
-                "challenge_nonce",
                 "actual_request_sha256",
             },
         )
+        self.assertEqual(
+            codex["billing_boundary"],
+            "existing_desktop_plan_no_api_key_or_metered_api",
+        )
+        self.assertFalse(codex["completion_receipt"])
 
     def test_scope_and_completion_require_both_deliverables_and_real_use(self) -> None:
         self.assertEqual(

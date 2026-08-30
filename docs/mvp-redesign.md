@@ -11,7 +11,8 @@
 - 一時ローカル展開が技術的に必要な場合も、対象・理由・期限・cleanupを明示し、検証後に片付ける。
 - 保管庫の版・来歴・承認を保持する。
 - ローカル配置の成功を、スキルの読み込み成功または使用成功とみなさない。
-- 選択したpackとversionをタスクへ明示し、読み込み証拠とスキル固有の適用証拠を検証する。
+- 選択したpackとversionをタスクへ明示し、全skillの読了と最低1つの適用をpromptで必須にする。
+- Codex/Claudeの既存利用プランを使い、API key、従量課金API、追加支払いを製品経路で要求しない。
 - 公式に確認できる経路または必要な証拠がない場合はfail-closedで停止し、保証外であることを明示する。
 - 起動はユーザーの右クリックメニューからの明示選択を条件とし、自動提案・自動配布・自動有効化をしない。
 - Windows ExplorerとmacOS Finderで同じ選択・確認・起動の意味と安全ポリシーを提供する。
@@ -26,7 +27,7 @@
 1. Skill Magnet本体。共通コア、CLI、Windows/macOS UIアダプター、検証・証拠機構を含む。
 2. Skill Magnetとは別の、ユーザー所有スキル保管庫。pack metadata、skill、version、skill固有acceptance checkを保持する。
 
-自動テストはcontract、prompt binding、URL encoding、CLI非起動、fail-closedを検証します。Codex Desktop appの回答を製品から機械取得できない間、handoff受理を回答完了と同一視しません。完成には自動テストに加え、実Desktop taskの依頼と自然文回答の実機証拠が必要です。
+自動テストはcontract、skill適用必須prompt、URL encoding、handoff、fail-closedを検証します。handoff受理を回答完了と同一視せず、Skill MagnetはDesktop taskの回答取得・検証を主張しません。製品経路ではAPI key、従量課金API、追加支払いを要求せず、利用者が契約済みのCodex DesktopまたはClaudeの利用枠へ渡します。
 
 ## 最小アーキテクチャ
 
@@ -34,9 +35,9 @@
 2. Selection UI: Windowsでは通常右クリックの単一root `Skill Magnet` から日本語の利用者向け名称でskill packを一つ選ぶ。対象AIは次の画面でCodexまたはClaudeを明示選択する。
 3. Confirmation UI: 主画面には選択packの表示名、用途、対象project、対象AI、actual requestだけを表示する。pack ID、repository、commit、全skill ID、digest、承認は既定で閉じた「詳細」に格納し、起動の明示確認を取る。
 4. Launch contract: UIから共通CLIへ、選択内容、期限、nonce、確認時刻を機械可読形式で渡す。
-5. Desktop task prompt: pack ID、全skill ID、検証済みINDEX/SKILL.mdの絶対pathとdigest、actual request、非デモ実行、期待成果、contract/attemptを人が読める形で含める。全instructionをURLへ展開して長さ上限を超えさせず、Codexへ参照ファイルの全文読了とINDEXによる適用部分集合の選定を要求する。未適用skillの受入固定値は要求しない。内部JSONを回答として要求しない。
+5. Desktop task prompt: pack ID、全skill ID、検証済みINDEX/SKILL.mdの絶対pathとdigest、actual request、非デモ実行、期待成果、contract/attemptを人が読める形で含める。全instructionをURLへ展開して長さ上限を超えさせず、Codexへ参照ファイルの全文読了、最低1つのskill適用、INDEX関係の遵守、実依頼の完了を要求する。skillの説明・一覧・準備確認だけで終了することを禁止する。
 6. Codex Desktop adapter: `codex://threads/new?path=...&prompt=...` で新規taskへ送る。Codex CLI/TUIは製品targetにしない。
-7. Handoff evidence: deep linkをOSへ渡した段階を `desktop_handoff_ready` として記録し、Desktop回答を取得できない限り `verified_completed` を記録しない。
+7. Handoff state: deep linkをOSへ渡した段階を `desktop_handoff_ready` とし、`handoff_completed: true`、`answer_completion_claimed: false`を記録する。completion receipt、callback、Desktop output schemaは作らない。
 8. Journal/cleanup: source、承認、launch contract、証拠、一時物、期限を記録し、終了・失敗・中断・期限到来後に残留ゼロへ戻す。
 
 GitHubのclone/cacheは正本ではなく、commitから再生成できる検証済み一時物です。
@@ -45,7 +46,7 @@ GitHubのclone/cacheは正本ではなく、commitから再生成できる検証
 
 共通コアはrepository、選択検証、launch contract、Desktop task prompt、handoff証拠を所有します。OSアダプターはコンテキストメニュー登録、選択project path、確認画面、Codex Desktop protocol handoffを担当します。
 
-WindowsのExplorer→Python/TkはGUI-subsystem launcherが所有します。CodexはOSのDesktop protocol handlerへ直接渡し、Codex CLI、cmd、Windows Terminalを起動しません。Claudeのprocess adapterは`CREATE_NO_WINDOW`を使います。Tkの確認・error dialogは抑止対象ではありません。
+WindowsのExplorer→Python/TkはGUI-subsystem launcherが所有します。CodexはOSのDesktop protocol handlerへ直接渡し、Codex CLI、cmd、Windows Terminalを起動しません。ClaudeはWebの新規conversationへprefillし、headless process adapterへfallbackしません。Tkの確認・error dialogは抑止対象ではありません。
 
 | 層 | Windows | macOS | 共通条件 |
 | --- | --- | --- | --- |
@@ -66,14 +67,14 @@ Codexの製品targetはCodex Desktop appです。スキルを常設配置した�
 2. actual request、検証済みINDEX/SKILL.mdの絶対pathとdigest、非デモ実行、期待成果、contract/attempt、instruction/acceptance digestを自然文promptへ束縛し、参照ファイルの全文読了後、trigger/boundaryと `depends-on` / `composes-with` / `contrasts-with` に従う必要最小集合の選定を要求する。
 3. `path`と`prompt`を独立してURL encodeし、`codex://threads/new` の新規taskへ渡す。
 4. OSがprotocol handoffを受理した事実とprompt hashを保存する。この状態は `desktop_handoff_ready` であり回答完了ではない。
-5. Desktop taskの結果を機械取得できない間は、`verified_completed`、skill適用成功、保存完了を自動生成しない。
+5. Desktop taskには利用者へ自然文成果を直接返すよう要求する。内部JSON、Skill Magnet用receipt、callback、検証JSONは作らせず、既存Desktop利用枠以外のAPI keyや追加支払いも要求しない。
 6. deep link生成・起動に失敗した場合はerrorを表示し、CLI、既存task resume、ChatGPT webへfallbackしない。
 
 deep linkの受理はモデル挙動や回答完了の保証ではありません。その制約を状態名へ明示し、実Desktop taskの回答確認と分離します。
 
-## Claude Code
+## Claude
 
-Claude Codeは `--plugin-dir` でpluginをインストールせずセッションだけ読み込み、`/plugin-name:skill-name` で明示呼び出しできます。ただしClaude側も配置・読込だけを適用成功とせず、同じ三段階の証拠とacceptance checkを要求します。
+WindowsとmacOSの製品経路は、検証済みpackとactual requestを一つのpromptへ束縛し、`https://claude.ai/new`の新規conversationへprefillします。clipboard、既存conversation、常設plugin、headless `claude --print`へfallbackしません。Web handoffはtask deliveryの境界であり、Claudeが全skillを読み、INDEXに従って適用し、回答を完了した証拠へは昇格させません。CLIのstructured-output adapterは回帰試験用であり、context-menu製品経路から到達させません。
 
 ## テスト可能な受入条件
 
@@ -85,10 +86,10 @@ Claude Codeは `--plugin-dir` でpluginをインストールせずセッショ�
 - 片方のアダプターが未実装・skip・失敗なら製品完成判定が失敗する。
 - ユーザー所有保管庫、完全commit SHA、来歴、承認、acceptance check不足を拒否する。
 - Desktop promptへ選択packの全skill、actual request、検証済みINDEX/SKILL.md参照、contract/digest、必要最小集合の選定規則が入り、prompt hashが一致する。
-- CLI検証では `evidence.skill_ids` をパック全件の読込対象、`evidence.completed_skill_ids` を実際の適用部分集合として区別し、適用skillだけacceptanceが通り、未適用skillの固定値が `null` である。
+- promptがパック全件を読込対象として列挙し、実依頼へ最低1つを適用すること、未適用skillの受入固定値を成果へ加えないことを明記する。
 - 日本語、改行、空白、`&`、`#`、長文をdeep linkの`path`/`prompt`で損失なく往復できる。
 - Codex target pathから `codex exec`、`codex resume`、CLI/TUI、cmd、Terminalを起動しない。
-- handoff受理は `desktop_handoff_ready` で、`verified_completed` にならない。
+- handoff受理は `desktop_handoff_ready` とし、回答完了やskill適用完了をSkill Magnetが主張しない。
 - deep link生成・起動不能、契約不一致、期限切れはfail-closedになる。
 - 正常終了、途中失敗、強制終了、期限切れ後に一時物とjournalの残留がない。
 - Skill Magnet本体と独立スキル保管庫を使うend-to-endテストが全件成功する。
@@ -97,7 +98,6 @@ Claude Codeは `--plugin-dir` でpluginをインストールせずセッショ�
 
 - [OpenAI: Build skills](https://learn.chatgpt.com/docs/build-skills) — Codexの明示・暗黙呼び出し、progressive disclosure、repository/user/admin/systemの探索位置。
 - 成功比較実装 `C:\Projects\news-obsidian-pipeline` — `codex://threads/new?path=...&prompt=...` の新規task handoff。
-- [Anthropic: Create plugins](https://code.claude.com/docs/en/plugins) — `--plugin-dir`、plugin名前空間、明示呼び出し。
-- [Anthropic: Plugins reference](https://code.claude.com/docs/en/plugins-reference) — session-only pluginとinstalled pluginの違い。
+- [Claude](https://claude.ai/new) — 製品が新規conversation prefillに用いる固定destination。
 
 過去のCodex CLI検証はDesktop targetの完成証拠には使用しません。

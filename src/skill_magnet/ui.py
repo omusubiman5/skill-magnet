@@ -397,11 +397,15 @@ def deliver_prepared_codex_handoff(
     """Deliver one prepared prompt and record only handoff readiness."""
     prepared = engine.prepare_codex_desktop_handoff(contract_id)
     opener = delivery or deliver_codex_desktop_prompt
-    opener(
-        str(prepared["prompt"]),
-        str(prepared["project"]),
-        str(prepared["destination"]),
-    )
+    try:
+        opener(
+            str(prepared["prompt"]),
+            str(prepared["project"]),
+            str(prepared["destination"]),
+        )
+    except Exception:
+        engine.record_codex_desktop_launch_failure(prepared)
+        raise
     return engine.record_codex_desktop_handoff(prepared)
 
 
@@ -421,8 +425,6 @@ def web_claude_prefill_url(prompt: str, destination: str) -> str:
 
 def deliver_web_claude_prompt(prompt: str, destination: str) -> None:
     """Open a new Web Claude conversation prefilled with the complete prompt."""
-    if os.name != "nt":
-        raise SkillMagnetError("Web Claude Explorer handoff is only implemented on Windows")
     url = web_claude_prefill_url(prompt, destination)
     try:
         if not webbrowser.open(url, new=2):

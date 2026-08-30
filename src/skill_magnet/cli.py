@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -23,6 +24,7 @@ from .platforms import (
 from .ui import (
     context_failure_message,
     deliver_prepared_codex_handoff,
+    deliver_web_claude_prompt,
     show_context_error,
     show_context_result,
     show_context_selection,
@@ -109,6 +111,11 @@ def _parser() -> argparse.ArgumentParser:
     context.add_argument("--menu-instruction-digest")
     context.add_argument("--menu-acceptance-digest")
     context.add_argument("--release-probe", type=Path, help=argparse.SUPPRESS)
+    context.add_argument(
+        "--release-probe-runtime",
+        choices=("codex", "claude"),
+        help=argparse.SUPPRESS,
+    )
     spec = commands.add_parser("context-menu-spec")
     spec.add_argument("--platform", required=True, choices=("windows", "macos"))
     render = commands.add_parser("render-context-menu")
@@ -197,10 +204,86 @@ def main(argv: list[str] | None = None) -> int:
                 probe = args.release_probe.resolve()
                 if not probe.is_absolute() or not args.project.resolve().is_dir():
                     raise SkillMagnetError("Invalid macOS release probe request")
+                if not config.packs:
+                    raise SkillMagnetError("macOS release probe requires a configured pack")
+                pack = next(iter(config.packs.values()))
+                activation = ActivationEngine(config, args.state_dir)
+                probe_runtime = args.release_probe_runtime or "codex"
+                purpose = (
+                    "Verify the Finder adapter carries the selected project, complete "
+                    "package, INDEX, launch contract, and selected runtime handoff semantics."
+                )
+                plan = activation.plan(
+                    platform="macos",
+                    project=args.project.resolve(),
+                    pack_id=pack.pack_id,
+                    runtime=probe_runtime,
+                    purpose=purpose,
+                )
+                contract = activation.confirm(plan, confirmed=True)
+                delivered: dict[str, str] = {}
+
+                def capture_delivery(
+                    prompt: str, project: str, destination: str
+                ) -> None:
+                    delivered.update(
+                        prompt=prompt,
+                        project=project,
+                        destination=destination,
+                    )
+
+                if probe_runtime == "codex":
+                    handoff = deliver_prepared_codex_handoff(
+                        activation,
+                        contract.contract_id,
+                        delivery=capture_delivery,
+                    )
+                    result_verification = handoff["desktop_result_verification"]
+                    answer_completion_claimed = handoff[
+                        "answer_completion_claimed"
+                    ]
+                else:
+                    handoff = activation.prepare_web_handoff(contract.contract_id)
+                    capture_delivery(
+                        str(handoff["prompt"]),
+                        str(handoff["project"]),
+                        str(handoff["destination"]),
+                    )
+                    result_verification = "not_claimed_by_design"
+                    answer_completion_claimed = False
+                record = {
+                    "schema_version": 1,
+                    "adapter": "macos_finder_quick_action",
+                    "selected_path": str(args.project.resolve()),
+                    "pack_id": contract.pack_id,
+                    "commit_sha": contract.commit_sha,
+                    "skill_ids": list(contract.skill_ids),
+                    "selection_kind": contract.selection_kind,
+                    "runtime": contract.runtime,
+                    "contract_id": contract.contract_id,
+                    "attempt_id": contract.attempt_id,
+                    "actual_request_sha256": hashlib.sha256(
+                        contract.purpose.encode("utf-8")
+                    ).hexdigest(),
+                    "instruction_digest": contract.instruction_digest,
+                    "index_digest": contract.index_digest,
+                    "prompt_sha256": handoff["prompt_sha256"],
+                    "status": handoff["status"],
+                    "result_verification": result_verification,
+                    "handoff_completed": True,
+                    "answer_completion_claimed": answer_completion_claimed,
+                    "billing_boundary": "existing_plan_no_api_key",
+                    "delivery": {
+                        "project": delivered.get("project"),
+                        "destination": delivered.get("destination"),
+                        "prompt_present": bool(delivered.get("prompt")),
+                    },
+                }
                 probe.parent.mkdir(parents=True, exist_ok=True)
                 try:
                     with probe.open("x", encoding="utf-8") as handle:
-                        handle.write(str(args.project.resolve()))
+                        json.dump(record, handle, ensure_ascii=False, indent=2)
+                        handle.write("\n")
                 except FileExistsError as exc:
                     raise SkillMagnetError("macOS release probe already exists") from exc
                 return 0
@@ -241,9 +324,17 @@ def main(argv: list[str] | None = None) -> int:
                             activation, contract.contract_id
                         )
                     else:
-                        result = activation.execute(
-                            contract.contract_id, interactive_handoff=True
+                        handoff = activation.prepare_web_handoff(
+                            contract.contract_id
                         )
+                        deliver_web_claude_prompt(
+                            str(handoff["prompt"]), str(handoff["destination"])
+                        )
+                        result = {
+                            key: value
+                            for key, value in handoff.items()
+                            if key != "prompt"
+                        }
                 except SkillMagnetError as exc:
                     show_context_error(context_failure_message(exc))
                     raise
@@ -277,9 +368,17 @@ def main(argv: list[str] | None = None) -> int:
                             activation, contract.contract_id
                         )
                     else:
-                        result = activation.execute(
-                            contract.contract_id, interactive_handoff=True
+                        handoff = activation.prepare_web_handoff(
+                            contract.contract_id
                         )
+                        deliver_web_claude_prompt(
+                            str(handoff["prompt"]), str(handoff["destination"])
+                        )
+                        result = {
+                            key: value
+                            for key, value in handoff.items()
+                            if key != "prompt"
+                        }
                 except SkillMagnetError as exc:
                     show_context_error(context_failure_message(exc))
                     raise

@@ -1146,10 +1146,17 @@ def install_context_menu(
         probe_path = type(_PACKAGE_ROOT)(probe_target)
         if not probe_path.is_absolute():
             raise SafetyError("Finder E2E probe path must be absolute")
+        probe_runtime = os.environ.get(
+            "SKILL_MAGNET_FINDER_E2E_RUNTIME", "codex"
+        ).casefold()
+        if probe_runtime not in {"codex", "claude"}:
+            raise SafetyError("Finder E2E probe runtime is invalid")
         workflow_command = (
             *workflow_command,
             "--release-probe",
             str(probe_path),
+            "--release-probe-runtime",
+            probe_runtime,
         )
     shell_command = subprocess_command(workflow_command).replace(
         '"$SELECTED_PATH"', '"$1"'

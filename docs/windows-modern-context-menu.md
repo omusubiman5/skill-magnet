@@ -22,19 +22,17 @@ The modern entry uses Microsoft's supported desktop-app integration:
    `windows.comServer`.
 3. `windows.fileExplorerContextMenus` binds the same command CLSID to both
    `Directory` and `Directory\Background`.
-4. Windows 11's compact surface reliably renders one dynamic flyout level. A
-   configured `selection_kind=package` is therefore one direct item labeled
-   `Package: <menu_label>`; opening it enumerates only that package's immediate
-   `Skill: <id> | Codex / Claude` leaves. Package members are never flattened
-   into separate direct context-menu items. A configured standalone
-   `selection_kind=skill` uses the corresponding direct `Skill: <menu_label>`
-   item and the same explicit runtime leaves. The installer-generated v2
-   manifest carries `pack_id`, `menu_label`, `selection_kind`, `skill_id`,
-   runtime, and immutable command argv. There is no classic fallback.
-   Menu construction performs no Git, network, Python, or activation work.
-5. A runtime leaf invokes the existing windowless Python `context` command with
-   one Windows argv vector containing project path, pack, skill, runtime, fixed
-   commit, membership digest, instruction digest, and acceptance digest.
+4. Windows 11's compact surface renders one direct item for each configured
+   package. The current release has one item labeled `Delivery Assurance`.
+   Package members and runtime choices are not emitted as Explorer leaves.
+   Selecting the package opens the common confirmation UI, where the user
+   chooses Codex or Claude and enters the actual request. The installer-generated
+   v3 manifest carries the package ID, complete skill set, fixed commit, content
+   digests, and immutable command argv. There is no classic fallback.
+5. The package leaf invokes the windowless Python `context` command with one
+   Windows argv vector containing project path, package, fixed commit,
+   membership digest, instruction digest, and acceptance digest. Runtime and
+   actual request enter only through the subsequent confirmation UI.
 
 The previous classic `HKCU` menu is not a supported fallback. Its self-signed
 process adapter can be rejected by Windows Smart App Control with error 4551,
@@ -65,9 +63,11 @@ as menu-use success.
 - Existing regression tests remain green.
 - Actual Explorer evidence proves modern direct visibility for folder bodies
   and backgrounds, and proves that no classic entry remains.
-- Actual Explorer then proves one Codex `verified_applied`, one failure with no
-  retained process/temp output, cancellation with no side effects, and complete
-  restoration of the initial registry/package state.
+- Actual Explorer then proves the package confirmation UI and Codex Desktop
+  handoff for the current fixed package. Handoff remains
+  `desktop_handoff_ready`; it is not relabeled as `verified_applied` or task
+  completion. Failure and cancellation retain no process/temp output, and
+  lifecycle testing restores the initial registry/package state.
 - `sm-62a.15` is performed by an independent auditor only after `sm-62a.6.7`
   passes.
 

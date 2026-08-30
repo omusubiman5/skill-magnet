@@ -2,7 +2,7 @@
 
 ## 判定
 
-ローカル自己署名版0.3.2候補はGO。Microsoft Store等の公開配布は正式publisher identityが別途必要であり、この判定に含めない。
+Smart App Control 4551修正componentはPASS。この判定は旧PMOメニューでnative DLLから確認UIを起動できたことだけを対象とし、現行Delivery Assurance packのDesktop自然文結果、Skill Magnet製品全体の完成、Microsoft Store等の公開配布を含めない。製品全体の現行判定は[`product-completion-remediation-report-2026-08-30.md`](product-completion-remediation-report-2026-08-30.md)のNO-GOである。
 
 ## 原因
 

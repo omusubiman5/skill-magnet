@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import stat
+import sys
 import tempfile
 import uuid
 from dataclasses import asdict, dataclass, replace
@@ -591,10 +592,14 @@ class ActivationEngine:
 
     @staticmethod
     def _pack_relations(pack: Pack) -> dict[str, set[tuple[str, str]]]:
-        """Parse enforceable depends-on/contrasts-with edges from INDEX Mermaid."""
+        """Parse enforceable INDEX Mermaid relationship edges."""
         path = pack.source / "INDEX.md"
         if not path.is_file():
-            return {"depends-on": set(), "contrasts-with": set()}
+            return {
+                "depends-on": set(),
+                "composes-with": set(),
+                "contrasts-with": set(),
+            }
         content = path.read_text(encoding="utf-8-sig")
         aliases: dict[str, str] = {}
 
@@ -608,7 +613,11 @@ class ActivationEngine:
             resolved = resolve(short_id)
             if resolved is not None:
                 aliases[alias] = resolved
-        relations = {"depends-on": set(), "contrasts-with": set()}
+        relations = {
+            "depends-on": set(),
+            "composes-with": set(),
+            "contrasts-with": set(),
+        }
         edge_pattern = re.compile(
             r"^\s*(\w+)(?:\[\"[^\"]+\"\])?\s+[-.=]+>\|([^|]+)\|\s+"
             r"(\w+)(?:\[\"[^\"]+\"\])?",
@@ -624,7 +633,10 @@ class ActivationEngine:
 
     @classmethod
     def _verify_pack_relations(
-        cls, pack: Pack, completed_skill_ids: list[str]
+        cls,
+        pack: Pack,
+        completed_skill_ids: list[str],
+        applied_rules: list[str],
     ) -> None:
         applied = set(completed_skill_ids)
         relations = cls._pack_relations(pack)
@@ -637,6 +649,17 @@ class ActivationEngine:
             if left in applied and right in applied:
                 raise _AcceptanceFailed(
                     f"Contrasting skills cannot both be applied: {left}, {right}"
+                )
+        for left, right in relations["composes-with"]:
+            if left not in applied or right not in applied:
+                continue
+            if not any(
+                "composes-with" in rule and left in rule and right in rule
+                for rule in applied_rules
+            ):
+                raise _AcceptanceFailed(
+                    "Applied composition has no relationship evidence: "
+                    f"{left} composes-with {right}"
                 )
 
     def confirm(self, plan: dict[str, Any], *, confirmed: bool) -> LaunchContract:
@@ -712,13 +735,15 @@ class ActivationEngine:
         )
         return contract
 
-    def _read_contract(self, contract_id: str) -> LaunchContract:
+    def _read_contract_record(
+        self, contract_id: str, *, allow_consumed: bool = False
+    ) -> LaunchContract:
         path = self.contract_dir / f"{contract_id}.json"
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise SafetyError(f"Launch contract is missing or invalid: {contract_id}") from exc
-        if value.get("consumed_at"):
+        if value.get("consumed_at") and not allow_consumed:
             raise SafetyError("Launch contract was already used")
         contract = LaunchContract(
             **{key: value[key] for key in LaunchContract.__dataclass_fields__}
@@ -730,6 +755,9 @@ class ActivationEngine:
         if self.now() >= datetime.fromisoformat(contract.expires_at):
             raise SafetyError("Launch contract expired")
         return contract
+
+    def _read_contract(self, contract_id: str) -> LaunchContract:
+        return self._read_contract_record(contract_id)
 
     def _consume(self, contract: LaunchContract) -> None:
         path = self.contract_dir / f"{contract.contract_id}.json"
@@ -779,13 +807,19 @@ class ActivationEngine:
             f"evidence.actual_request_sha256 to {actual_request_sha256}. "
             "In evidence.applied_rules, include at least one concrete applied rule for "
             "each applied skill and begin that rule with the exact skill ID followed "
-            "by a colon. "
+            "by a colon. If both endpoints of a composes-with INDEX edge are applied, "
+            "include one rule containing both exact skill IDs, the text composes-with, "
+            "and the request-specific reason for combining them. "
             "Return only the JSON evidence envelope requested by the output schema.\n\n"
             f"{self._instructions(pack, contract.skill_ids)}"
             f"{index_section}"
         )
 
-    def _desktop_task_prompt(self, contract: LaunchContract, pack: Pack) -> str:
+    def _desktop_task_prompt(
+        self,
+        contract: LaunchContract,
+        pack: Pack,
+    ) -> str:
         """Build the human-readable Codex Desktop task bound to one contract."""
         actual_request_sha256 = hashlib.sha256(
             contract.purpose.encode("utf-8")
@@ -793,15 +827,23 @@ class ActivationEngine:
         acceptance_lines: list[str] = []
         for skill_id, check in self._load_acceptance(pack, contract.skill_ids).items():
             for assertion in check["assertions"]:
-                acceptance_lines.append(
-                    f"- {skill_id}: {assertion['path']} = "
-                    f"{json.dumps(assertion['equals'], ensure_ascii=False)}"
-                )
+                if contract.selection_kind == "pack":
+                    acceptance_lines.append(
+                        f"- {skill_id}: {assertion['path']}へ依頼に適合する値を記述する"
+                        f"（固定値ではない。形式例: "
+                        f"{json.dumps(assertion['equals'], ensure_ascii=False)}）"
+                    )
+                else:
+                    acceptance_lines.append(
+                        f"- {skill_id}: {assertion['path']} = "
+                        f"{json.dumps(assertion['equals'], ensure_ascii=False)}"
+                    )
         instruction_refs = [
             "- "
             + skill_id
-            + ": "
-            + str((pack.source / skill_id / "SKILL.md").resolve())
+            + ": `"
+            + (pack.source / skill_id / "SKILL.md").resolve().as_posix()
+            + "`"
             + " (SHA-256: "
             + hashlib.sha256(
                 (pack.source / skill_id / "SKILL.md").read_bytes()
@@ -815,7 +857,7 @@ class ActivationEngine:
             index_digest = hashlib.sha256(index_path.read_bytes()).hexdigest()
             index_section = (
                 "\nパックINDEX（最初に全文を読む）:\n"
-                f"{index_path} (SHA-256: {index_digest})\n"
+                f"`{index_path.as_posix()}` (SHA-256: {index_digest})\n"
             )
         skill_label = (
             f"適用スキルID: {', '.join(contract.skill_ids)}\n"
@@ -826,10 +868,14 @@ class ActivationEngine:
             "Skill Magnetからの実行依頼です。\n"
             "これはデモ、準備確認、実行可否の説明ではありません。選択したパックの"
             "全スキルを読み、INDEXの関係と各スキルのtrigger/boundaryから必要最小限の"
-            "集合を選んで、実際の依頼をこの新規タスクで完了してください。depends-onは"
+            "集合を選んで、最低1つのスキルを必ず実際の依頼へ適用し、この新規タスクで"
+            "依頼を完了してください。skillの説明、一覧、準備確認だけで終了してはいけません。"
+            "depends-onは"
             "依存先を含め、composes-withは必要な場合だけ加え、contrasts-withは同時採用"
-            "しないでください。各スキルを個別の回答生成依頼として扱わないでください。\n\n"
-            f"対象プロジェクト: {contract.project}\n"
+            "しないでください。各スキルを個別の回答生成依頼として扱わず、一つの実行方法へ"
+            "統合してください。OpenAIまたはAnthropicのAPI key、従量課金API、追加支払いを"
+            "要求せず、このCodex Desktopタスクの既存利用枠だけで実行してください。\n\n"
+            f"対象プロジェクト: `{Path(contract.project).resolve().as_posix()}`\n"
             f"選択パックID: {contract.pack_id}\n"
             f"{skill_label}"
             f"Skill Magnet contract ID: {contract.contract_id}\n"
@@ -847,8 +893,10 @@ class ActivationEngine:
             "\n選択スキルの検証済み指示ファイル:\n"
             f"{'\n'.join(instruction_refs)}\n"
             "上記INDEXと全SKILL.mdをツールで省略せず読み終えてから、INDEXの関係と"
-            "各スキルのtrigger/boundaryに従って必要なものだけを実際の依頼へ適用して"
+            "各スキルのtrigger/boundaryに従って必要なものを最低1つ必ず実際の依頼へ適用して"
             "ください。適用しなかったスキルの受入固定値を成果へ追加しないでください。"
+            "Skill Magnet用のreceipt、callback、検証JSONは作成せず、利用者への自然文成果を"
+            "このタスクの最終回答として返してください。"
         )
 
     def prepare_codex_desktop_handoff(self, contract_id: str) -> dict[str, Any]:
@@ -873,6 +921,7 @@ class ActivationEngine:
         materialized_pack, materialization = self._materialize_desktop_pack(
             contract, pack, contract.skill_hashes, contract.index_digest
         )
+        self.evidence_dir.mkdir(parents=True, exist_ok=True)
         prompt = self._desktop_task_prompt(contract, materialized_pack)
         prompt_digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
         self._consume(contract)
@@ -882,6 +931,8 @@ class ActivationEngine:
             "destination": "codex://threads/new",
             "contract_id": contract.contract_id,
             "attempt_id": contract.attempt_id,
+            "pack_id": contract.pack_id,
+            "commit_sha": contract.commit_sha,
             "project": contract.project,
             "skill_ids": list(contract.skill_ids),
             "actual_request_sha256": hashlib.sha256(
@@ -923,14 +974,51 @@ class ActivationEngine:
                     "status": "desktop_handoff_ready",
                     "terminal": False,
                 },
-                "desktop_result_verification": "not_available",
-                "verified_completed": False,
+                "handoff_completed": True,
+                "answer_completion_claimed": False,
+                "desktop_result_verification": "not_claimed_by_design",
+                "billing_boundary": "existing_desktop_plan_no_api_key",
             }
         )
         self.engine._write_json_atomic(
             self.evidence_dir / f"{contract_id}-desktop-handoff.json", evidence
         )
         return evidence
+
+    def record_codex_desktop_launch_failure(
+        self, prepared: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Close a prepared handoff when the OS rejects the Desktop deep link."""
+        if prepared.get("status") != "desktop_handoff_prepared":
+            raise SafetyError("Invalid Codex Desktop handoff state")
+        contract_id = str(prepared["contract_id"])
+        attempt_id = str(prepared["attempt_id"])
+        materialization = self.materialization_dir / contract_id
+        if materialization.is_dir() and not _is_link(materialization):
+            self._make_tree_writable(materialization)
+            shutil.rmtree(materialization)
+        terminal_event = self._write_terminal_lifecycle(
+            attempt_id=attempt_id,
+            contract_id=contract_id,
+            status="launch_failed",
+        )
+        failure = {
+            "status": "launch_failed",
+            "attempt_id": attempt_id,
+            "contract_id": contract_id,
+            "pack_id": prepared["pack_id"] if "pack_id" in prepared else None,
+            "commit_sha": prepared.get("commit_sha"),
+            "reason": "launch_failed",
+            "task_delivery_evidence": {
+                "prompt_sha256": prepared["prompt_sha256"]
+            },
+            "terminal_event_id": terminal_event["terminal_event_id"],
+            "terminal_event": {"status": "launch_failed", "terminal": True},
+        }
+        self.engine._write_json_atomic(
+            self.evidence_dir / f"{contract_id}-not-guaranteed.json", failure
+        )
+        return failure
 
     def prepare_web_handoff(self, contract_id: str) -> dict[str, Any]:
         """Consume one verified selection and return its single Web Claude prompt.
@@ -993,6 +1081,28 @@ class ActivationEngine:
         return {"type": value_type, "const": value}
 
     @staticmethod
+    def _request_aware_schema(example: Any) -> dict[str, Any]:
+        """Keep an acceptance field's JSON shape without freezing its decision."""
+        rule = ActivationEngine._const_schema(example)
+        return {key: value for key, value in rule.items() if key != "const"}
+
+    @staticmethod
+    def _same_json_type(expected: Any, actual: Any) -> bool:
+        if isinstance(expected, bool):
+            return isinstance(actual, bool)
+        if isinstance(expected, int):
+            return isinstance(actual, int) and not isinstance(actual, bool)
+        if isinstance(expected, float):
+            return isinstance(actual, (int, float)) and not isinstance(actual, bool)
+        if expected is None:
+            return actual is None
+        if isinstance(expected, list):
+            return isinstance(actual, list) and all(
+                isinstance(item, str) for item in actual
+            )
+        return isinstance(actual, str)
+
+    @staticmethod
     def _output_schema(
         contract: LaunchContract, checks: dict[str, dict[str, Any]]
     ) -> dict[str, Any]:
@@ -1018,7 +1128,12 @@ class ActivationEngine:
                 previous = result_properties.get(field)
                 const_rule = ActivationEngine._const_schema(expected)
                 rule = (
-                    {"anyOf": [const_rule, {"type": "null"}]}
+                    {
+                        "anyOf": [
+                            ActivationEngine._request_aware_schema(expected),
+                            {"type": "null"},
+                        ]
+                    }
                     if package_selection
                     else const_rule
                 )
@@ -1128,7 +1243,9 @@ class ActivationEngine:
             raise _AcceptanceFailed("Completed skill IDs do not match the selection")
         if contract.selection_kind == "pack":
             self._verify_pack_relations(
-                self.config.packs[contract.pack_id], completed_skill_ids
+                self.config.packs[contract.pack_id],
+                completed_skill_ids,
+                applied_rules,
             )
         for skill in completed_skill_ids:
             if not any(item.startswith(f"{skill}:") for item in applied_rules):
@@ -1153,11 +1270,29 @@ class ActivationEngine:
                     actual = self._value_at(output, assertion["path"])
                 except SafetyError as exc:
                     raise _AcceptanceFailed(str(exc)) from exc
-                if skill in completed_skill_ids and actual != assertion["equals"]:
-                    raise _AcceptanceFailed(
-                        f"Skill-specific acceptance failed for {skill}: "
-                        f"{assertion['path']}"
-                    )
+                if skill in completed_skill_ids:
+                    if contract.selection_kind == "pack":
+                        if actual is None or not self._same_json_type(
+                            assertion["equals"], actual
+                        ):
+                            raise _AcceptanceFailed(
+                                f"Request-aware acceptance failed for {skill}: "
+                                f"{assertion['path']}"
+                            )
+                        if not any(
+                            item.startswith(f"{skill}:")
+                            and assertion["path"] in item
+                            for item in applied_rules
+                        ):
+                            raise _AcceptanceFailed(
+                                f"Request-aware acceptance has no applied rule for {skill}: "
+                                f"{assertion['path']}"
+                            )
+                    elif actual != assertion["equals"]:
+                        raise _AcceptanceFailed(
+                            f"Skill-specific acceptance failed for {skill}: "
+                            f"{assertion['path']}"
+                        )
                 if skill not in completed_skill_ids and actual is not None:
                     raise _AcceptanceFailed(
                         f"Unapplied skill claimed an acceptance value: {skill}"
