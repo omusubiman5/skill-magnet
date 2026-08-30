@@ -7,7 +7,7 @@
 
 **NO-GO / 実装継続中**
 
-Smart App Control 4551修正、full MSIX、wheel単独性、terminal cleanup hardeningを含む139テストはローカルでPASSしている。0.3.5 candidateはWindows/macOS CI run `33307525539`でPASSしたが、0.3.6 candidateのCIは未実行である。これは製品完成ゲートの一部にすぎず、実Desktop自然文結果などの未達を埋めない。
+Smart App Control 4551修正、full MSIX、wheel単独性、terminal cleanup hardeningを含む139テストはローカルとWindows/macOS CI run `33307964947`でPASSしている。これは製品完成ゲートの一部にすぎず、実Desktop自然文結果などの未達を埋めない。
 
 ## 再監査で確認した未達
 
@@ -25,7 +25,8 @@ Smart App Control 4551修正、full MSIX、wheel単独性、terminal cleanup har
 
 - `python -m unittest discover -s tests -v`: 139件PASS、環境依存1件skip。
 - 0.3.6 candidate artifact-input commit: `e52c04e3d8e1b8a5ef842cc77e5745d31d74c4e9`。
-- 0.3.6 canonical wheel logical payload SHA-256: `82238c81583a38149f1877f46b43154ee73033e2774d66b81af35526966a451e`。独立したローカル2buildで一致した。CI照合は未実行。
+- 0.3.6 canonical wheel logical payload SHA-256: `82238c81583a38149f1877f46b43154ee73033e2774d66b81af35526966a451e`。独立したローカル2buildで一致し、CI standalone wheel gateもPASSした。
+- 0.3.6 CI run [`33307964947`](https://github.com/omusubiman5/skill-magnet/actions/runs/33307964947): Windows/macOSともgreen。両OS139 test、wheel payload gate、macOS Finder lifecycle、Windows certificate/native/MSIX lifecycleがPASSした。
 - 0.3.5 CI run [`33307525539`](https://github.com/omusubiman5/skill-magnet/actions/runs/33307525539): Windows/macOSともgreen。両OS138 test、wheel payload gate、macOS Finder lifecycle、Windows certificate/native/MSIX lifecycleがPASSした。
 - 0.3.4 CI run [`33307128048`](https://github.com/omusubiman5/skill-magnet/actions/runs/33307128048): Windows/macOSともgreen。両OS136 test、wheel payload gate、macOS Finder lifecycle、Windows certificate/native/MSIX lifecycleがPASSした。
 - 0.3.3 canonical wheel logical payload SHA-256: `1c1ab2914220d4f468614efd9f8a70a845d336c91864f75480c47a584cd2feb1`。独立したローカル2buildで一致し、CIのstandalone wheel payload gateもPASSした。
