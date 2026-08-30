@@ -724,7 +724,7 @@ class ActivationEndToEndTest(unittest.TestCase):
         )
 
         def fail_only_lock(paths: tuple[Path, ...]) -> None:
-            if paths == (lock_path,):
+            if len(paths) == 1 and paths[0].name == f"{contract.contract_id}.lock":
                 raise _CleanupFailed(paths)
             original_cleanup(paths)
 
