@@ -13,8 +13,8 @@
   "menu_leaf_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
-  "release_code_sha": "d6ea6777a269cea85d03061270ef7b1527ee24c7",
-  "wheel_payload_sha256": "c9a0ffe8f542fd475144ac8fecd284175a46863d69d1d44ec5be78ed901ba38f",
+  "release_code_sha": "3d388e3feded3ed00f76bb28e6a768efe646617c",
+  "wheel_payload_sha256": "c8da150b48878b11dccb709902e93ebe05d8f360c83433787259aab9f921c2a1",
   "automated_status": "LOCAL_WINDOWS_GREEN_130_PASS_CI_PENDING",
   "windows_explorer_field_status": "PASS_INSTALLED_MENU_MANIFEST_DELIVERY_ASSURANCE_8F12AF5",
   "codex_desktop_result_status": "HANDOFF_READY_ANSWER_COMPLETION_NOT_CLAIMED"
@@ -25,6 +25,7 @@ explorer-results-ledger:end -->
 - menu contract: 1 package leaf / selection kind `package` / pack内9 skills
 - 自動証拠: contract固定、INDEX/全SKILL materialization、source改変耐性、deep-link binding、CLI非起動、rollback、残留物回収
 - wheel再現性: 独立した2 directoryで0.4.0 wheelをbuildし、論理payload SHA-256が両方`c9a0ffe8f542fd475144ac8fecd284175a46863d69d1d44ec5be78ed901ba38f`で一致した。
+- 0.4.1 path修正版も独立した2 directoryでbuildし、論理payload SHA-256が両方`c8da150b48878b11dccb709902e93ebe05d8f360c83433787259aab9f921c2a1`で一致した。
 - 実機証拠: 更新wheelをWindowsへ再installし、modern context menuのstatusが`usable_installed_state: true`、`menu_contract_matches_config: true`を返した。実際のTSVはpack ID `codex-delivery-assurance`、表示名`Delivery Assurance`、固定commit `8f12af5ddfdd3b985f26d33dad09d6061d675342`を記録した。
 - 0.4.0実install: package `SkillMagnet.ContextMenu_0.4.0.0_x64__byy1sc3mfzfz4`を登録し、1 package leaf、Directory/Background、署名済みcommand target、`usable_installed_state: true`を確認した。
 - Desktop handoff契約: promptはINDEX/全SKILL.mdの全文読了、最低1つのskill適用、実依頼の完了を必須化し、説明・一覧・準備確認だけでの終了を禁止する。
