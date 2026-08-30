@@ -7,19 +7,19 @@
 
 **NO-GO / 実装継続中**
 
-Smart App Control 4551修正、full MSIX、wheel単独性、127テストはローカルでPASSしている。しかし、これは製品完成ゲートの一部にすぎない。現行candidateのWindows/macOS CIは再試験中である。
+Smart App Control 4551修正、full MSIX、wheel単独性、127テスト、現行candidateのWindows/macOS CIはPASSしている。しかし、これは製品完成ゲートの一部にすぎない。
 
 ## 再監査で確認した未達
 
 - 現行`Delivery Assurance / 8f12af5…`へ更新後のCodex Desktop自然文結果がない。
-- `docs/windows-explorer-leaf-launch-results.md`は`NOT_RETESTED_AFTER_PACK_UPDATE`を明記している。
-- Finder CIは`--release-probe`で選択pathを書いた直後に終了し、selection、confirmation、contract、runtimeを通らない。
-- CIはSkill Magnet本体＋独立pack→実Desktop task→INDEX適用部分集合→成果という必須E2Eを実行しない。
+- 再試験ではOSへのhandoffまで成功したが、distinctな新規taskを観測できず、結果は`verified_completed=false`である。
+- Finder CIはpack検証、contract、materialization、delivery境界まで通るが、release probe専用分岐で通常のpack/runtime選択、確認UI、実AI起動を通らない。
+- CIはSkill Magnet本体＋独立pack→実runtime task→INDEX適用部分集合→非空成果→acceptanceという必須E2Eを実行しない。
 - 現行packで複数skillをINDEXに従って組み合わせた実行証拠がない。
 - Desktop handoffは正しく`verified_completed=false`だが、従ってpolicyの三段階成功条件も未達である。
-- Claudeのsession-only plugin設計と、Web/`claude --print`実装が一致しない。
-- acceptanceは特定headless CI回答の固定値で、一般のactual requestへ適応しない。
-- README、Finder supported扱い、Windows modern menu文書、旧Smart App Control実機証拠のscopeに不整合がある。
+- Web Claudeは製品経路として統一済みだが、実conversationへのprompt反映、全skill読了、INDEX適用、自然文結果の証拠がない。
+- request-aware acceptanceはJSON型と自己申告ruleを検査するだけで、依頼に対する意味的妥当性を独立検証できない。
+- Finderの通常UIフロー、公開署名・notarization、配布元・更新経路が未受入である。
 
 ## 今回実施した検証
 
@@ -27,7 +27,7 @@ Smart App Control 4551修正、full MSIX、wheel単独性、127テストはロ�
 - candidate artifact-input commit: `4061de4832ca9495ffcf3baa5c059c9f937249e2`。
 - canonical wheel logical payload SHA-256: `5f6972b6cef9fa1e6d9f4658a8b5aee19e0fa03f103b3687b584618bd287a625`。独立したローカル2buildと先行CIのWindows/macOS buildで一致した。
 - 現行policy、MVP設計、Explorer正本台帳、Finder lifecycle、Claude adapter、INDEX parserを再読した。
-- 独立鬼レビュー: P0 3件、P1 4件、P2 3件、P3 0件、NO-GO。
+- 独立鬼再レビュー: P0 3件、P1 4件、P2 1件、P3 0件、NO-GO。
 
 ## 実装済みの是正
 
@@ -44,7 +44,9 @@ Smart App Control 4551修正、full MSIX、wheel単独性、127テストはロ�
 
 run `33295357619`ではWindows/macOSの127 testがPASSした一方、wheel gateが失敗した。ローカルwheelだけに旧`codex-pmo-skills-c7747bba`が残っており、CIのclean buildには存在しなかった。原因はcustom `build_py`が既存`build/lib/skill_magnet`を消さずに再利用したことだった。
 
-修正後はpackage rootを先に削除してから現在のsource、固定pack、native assetsだけを構築する。独立した2回のローカルbuildは、先行CIのWindows/macOSと同じlogical payload SHA-256 `5f6972b6…a625`になった。現行candidateのCI結果がgreenになるまではrelease証拠に昇格しない。
+修正後はpackage rootを先に削除してから現在のsource、固定pack、native assetsだけを構築する。独立した2回のローカルbuildは、先行CIのWindows/macOSと同じlogical payload SHA-256 `5f6972b6…a625`になった。
+
+現行candidateのCI run `33295723849`はWindows/macOSともgreen。macOSは現行Finder semantic lifecycle、Windowsは127 test、wheel payload gate、証明書state test、standalone wheelからのnative build、MSIX install/update/rollback/uninstall lifecycleまで通過した。ただし実Desktop自然文結果と人手UI受入はCIの範囲外であり、製品GOには昇格しない。
 
 ## 現行pack Desktop実機再試験
 

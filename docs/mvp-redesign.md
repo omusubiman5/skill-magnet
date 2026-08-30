@@ -45,7 +45,7 @@ GitHubのclone/cacheは正本ではなく、commitから再生成できる検証
 
 共通コアはrepository、選択検証、launch contract、Desktop task prompt、handoff証拠を所有します。OSアダプターはコンテキストメニュー登録、選択project path、確認画面、Codex Desktop protocol handoffを担当します。
 
-WindowsのExplorer→Python/TkはGUI-subsystem launcherが所有します。CodexはOSのDesktop protocol handlerへ直接渡し、Codex CLI、cmd、Windows Terminalを起動しません。Claudeのprocess adapterは`CREATE_NO_WINDOW`を使います。Tkの確認・error dialogは抑止対象ではありません。
+WindowsのExplorer→Python/TkはGUI-subsystem launcherが所有します。CodexはOSのDesktop protocol handlerへ直接渡し、Codex CLI、cmd、Windows Terminalを起動しません。ClaudeはWebの新規conversationへprefillし、headless process adapterへfallbackしません。Tkの確認・error dialogは抑止対象ではありません。
 
 | 層 | Windows | macOS | 共通条件 |
 | --- | --- | --- | --- |
