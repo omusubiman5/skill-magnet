@@ -24,8 +24,9 @@ Smart App Control 4551修正、full MSIX、wheel単独性、terminal cleanup har
 ## 今回実施した検証
 
 - `python -m unittest discover -s tests -v`: 139件PASS、環境依存1件skip。
-- 0.3.5 candidate artifact-input commit: `5700c90d7ba0a63ce2a0e627eb91e8535e827786`。
-- 0.3.5 canonical wheel logical payload SHA-256: `2b902feab25b61f1568def13059353fab72579874ffe860a679ddd07b88fc568`。独立したローカル2buildで一致した。CI照合は未実行。
+- 0.3.6 candidate artifact-input commit: `e52c04e3d8e1b8a5ef842cc77e5745d31d74c4e9`。
+- 0.3.6 canonical wheel logical payload SHA-256: `82238c81583a38149f1877f46b43154ee73033e2774d66b81af35526966a451e`。独立したローカル2buildで一致した。CI照合は未実行。
+- 0.3.5 CI run [`33307525539`](https://github.com/omusubiman5/skill-magnet/actions/runs/33307525539): Windows/macOSともgreen。両OS138 test、wheel payload gate、macOS Finder lifecycle、Windows certificate/native/MSIX lifecycleがPASSした。
 - 0.3.4 CI run [`33307128048`](https://github.com/omusubiman5/skill-magnet/actions/runs/33307128048): Windows/macOSともgreen。両OS136 test、wheel payload gate、macOS Finder lifecycle、Windows certificate/native/MSIX lifecycleがPASSした。
 - 0.3.3 canonical wheel logical payload SHA-256: `1c1ab2914220d4f468614efd9f8a70a845d336c91864f75480c47a584cd2feb1`。独立したローカル2buildで一致し、CIのstandalone wheel payload gateもPASSした。
 - completion receipt追加後のCI run [`33306460511`](https://github.com/omusubiman5/skill-magnet/actions/runs/33306460511): Windows/macOSともgreen。両OSで132 test、standalone wheel install、candidate SHAとwheel payload gateがPASSした。Windowsは証明書state、native build、MSIX install/update/rollback/uninstall lifecycle、macOSはFinder semantic lifecycleもPASSした。
