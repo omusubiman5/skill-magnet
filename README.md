@@ -62,7 +62,7 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 
    ```powershell
    python -m pip wheel . --no-deps --wheel-dir .\dist
-   python -m pip install --force-reinstall .\dist\skill_magnet-0.3.4-py3-none-any.whl
+   python -m pip install --force-reinstall .\dist\skill_magnet-0.3.5-py3-none-any.whl
    ```
 
 3. Windowsの右クリックメニューを登録します。このcommandはrepository rootで、そのままcopy/pasteできます。

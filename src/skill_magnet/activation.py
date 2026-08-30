@@ -165,6 +165,7 @@ class LaunchContract:
     confirmed_at: str
     expires_at: str
     nonce: str
+    desktop_binding: dict[str, str] | None
     contract_digest: str
 
     def as_dict(self) -> dict[str, Any]:
@@ -246,26 +247,34 @@ class ActivationEngine:
                 expires_at = datetime.fromisoformat(str(receipt["expires_at"]))
             except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
                 self._cleanup_desktop_contract_artifacts(contract_id)
+                self._record_desktop_completion_rejection(
+                    contract_id, reason="malformed_receipt"
+                )
                 removed.append(contract_id)
                 continue
             if self.now() < expires_at:
                 continue
             self._cleanup_desktop_contract_artifacts(contract_id)
+            self._record_desktop_completion_rejection(
+                contract_id, reason="expired_receipt"
+            )
             removed.append(contract_id)
         return removed
 
-    def _cleanup_desktop_contract_artifacts(self, contract_id: str) -> None:
+    def _cleanup_desktop_contract_artifacts(
+        self, contract_id: str, *, include_lock: bool = True
+    ) -> None:
         """Remove only paths derived from a validated contract ID."""
         if not re.fullmatch(r"[0-9a-f]{32}", contract_id):
             raise SafetyError("Invalid Desktop cleanup contract ID")
-        self._cleanup_temporary_artifacts(
-            (
-                self.evidence_dir / f"{contract_id}-desktop-schema.json",
-                self.evidence_dir / f"{contract_id}-desktop-output.json",
-                self.desktop_receipt_dir / f"{contract_id}.json",
-                self.desktop_receipt_dir / f"{contract_id}.lock",
-            )
-        )
+        paths = [
+            self.evidence_dir / f"{contract_id}-desktop-schema.json",
+            self.evidence_dir / f"{contract_id}-desktop-output.json",
+            self.desktop_receipt_dir / f"{contract_id}.json",
+        ]
+        if include_lock:
+            paths.append(self.desktop_receipt_dir / f"{contract_id}.lock")
+        self._cleanup_temporary_artifacts(tuple(paths))
         materialization = self.materialization_dir / contract_id
         if materialization.is_dir() and not _is_link(materialization):
             self._make_tree_writable(materialization)
@@ -805,6 +814,7 @@ class ActivationEngine:
                 confirmed_at + timedelta(minutes=int(plan["ttl_minutes"]))
             ).isoformat(),
             "nonce": uuid.uuid4().hex,
+            "desktop_binding": None,
         }
         digest_payload = {**payload, "skill_ids": list(payload["skill_ids"])}
         contract = LaunchContract(**payload, contract_digest=_digest(digest_payload))
@@ -842,9 +852,12 @@ class ActivationEngine:
     ) -> None:
         path = self.contract_dir / f"{contract.contract_id}.json"
         value = contract.as_dict()
-        value["consumed_at"] = self.now().isoformat()
         if desktop_binding is not None:
+            unsigned = {**value, "desktop_binding": desktop_binding}
+            unsigned.pop("contract_digest")
             value["desktop_binding"] = desktop_binding
+            value["contract_digest"] = _digest(unsigned)
+        value["consumed_at"] = self.now().isoformat()
         self.engine._write_json_atomic(path, value)
 
     def _task_envelope(self, contract: LaunchContract, pack: Pack) -> str:
@@ -1188,8 +1201,10 @@ class ActivationEngine:
             )
             if not contract_record.get("consumed_at"):
                 raise SafetyError("Desktop handoff was not consumed")
-            binding = contract_record.get("desktop_binding")
-            if not isinstance(binding, dict):
+            binding = contract.desktop_binding
+            if not isinstance(binding, dict) or contract_record.get(
+                "desktop_binding"
+            ) != binding:
                 raise SafetyError("Desktop handoff binding is missing")
             expected_schema_path = self.evidence_dir / f"{contract_id}-desktop-schema.json"
             expected_output_path = self.evidence_dir / f"{contract_id}-desktop-output.json"
@@ -1227,7 +1242,7 @@ class ActivationEngine:
                 "state": "desktop_result_verified",
                 "verification_session_resumed": False,
             }
-            self._cleanup_desktop_contract_artifacts(contract_id)
+            self._cleanup_desktop_contract_artifacts(contract_id, include_lock=False)
             terminal_event = self._write_terminal_lifecycle(
                 attempt_id=contract.attempt_id,
                 contract_id=contract.contract_id,
@@ -1242,14 +1257,18 @@ class ActivationEngine:
             verified_path = self.evidence_dir / f"{contract_id}-verified.json"
             verified["user_result"]["details"]["evidence_file"] = str(verified_path)
             self.engine._write_json_atomic(verified_path, verified)
+            self._cleanup_temporary_artifacts((lock_path,))
             return verified
         except Exception:
             try:
-                self._cleanup_desktop_contract_artifacts(contract_id)
-            finally:
+                self._cleanup_desktop_contract_artifacts(
+                    contract_id, include_lock=False
+                )
                 self._record_desktop_completion_rejection(
                     contract_id, reason="verification_failed"
                 )
+            finally:
+                self._cleanup_temporary_artifacts((lock_path,))
             raise
 
     def prepare_web_handoff(self, contract_id: str) -> dict[str, Any]:

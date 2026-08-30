@@ -614,6 +614,36 @@ class ActivationEndToEndTest(unittest.TestCase):
         )
         self.assertFalse(receipt_path.exists())
 
+    def test_desktop_completion_binding_and_receipt_cannot_be_changed_without_contract_failure(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        contract = engine.confirm(self._plan(engine), confirmed=True)
+        engine.prepare_codex_desktop_handoff(contract.contract_id)
+        receipt_path = (
+            self.state / "desktop-completion-receipts" / f"{contract.contract_id}.json"
+        )
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["prompt_sha256"] = "0" * 64
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        contract_path = self.state / "launch-contracts" / f"{contract.contract_id}.json"
+        contract_record = json.loads(contract_path.read_text(encoding="utf-8"))
+        contract_record["desktop_binding"]["prompt_sha256"] = "0" * 64
+        contract_path.write_text(json.dumps(contract_record), encoding="utf-8")
+        (
+            self.state / "evidence" / f"{contract.contract_id}-desktop-output.json"
+        ).write_text(
+            json.dumps(self._desktop_completion_output(contract)), encoding="utf-8"
+        )
+
+        with self.assertRaisesRegex(SafetyError, "contract integrity"):
+            engine.complete_codex_desktop_handoff(contract.contract_id)
+
+        self.assertFalse(
+            (self.state / "evidence" / f"{contract.contract_id}-verified.json").exists()
+        )
+        self.assertTrue(
+            (self.state / "evidence" / f"{contract.contract_id}-not-guaranteed.json").is_file()
+        )
+
     def test_desktop_completion_receipt_has_atomic_concurrent_claim(self) -> None:
         engine = ActivationEngine(self.config, self.state)
         contract = engine.confirm(self._plan(engine), confirmed=True)
@@ -642,6 +672,41 @@ class ActivationEndToEndTest(unittest.TestCase):
                     engine.complete_codex_desktop_handoff(contract.contract_id)
                 release_verify.set()
                 self.assertEqual(first.result(timeout=10)["status"], "verified_completed")
+
+    def test_desktop_completion_keeps_claim_until_success_terminal_is_committed(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        contract = engine.confirm(self._plan(engine), confirmed=True)
+        engine.prepare_codex_desktop_handoff(contract.contract_id)
+        (
+            self.state / "evidence" / f"{contract.contract_id}-desktop-output.json"
+        ).write_text(
+            json.dumps(self._desktop_completion_output(contract)), encoding="utf-8"
+        )
+        entered_terminal = threading.Event()
+        release_terminal = threading.Event()
+        original_terminal = engine._write_terminal_lifecycle
+
+        def blocking_terminal(**kwargs: object) -> dict[str, object]:
+            if kwargs.get("status") == "verified_completed":
+                entered_terminal.set()
+                self.assertTrue(release_terminal.wait(timeout=10))
+            return original_terminal(**kwargs)
+
+        with mock.patch.object(
+            engine, "_write_terminal_lifecycle", side_effect=blocking_terminal
+        ):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                first = pool.submit(
+                    engine.complete_codex_desktop_handoff, contract.contract_id
+                )
+                self.assertTrue(entered_terminal.wait(timeout=10))
+                with self.assertRaisesRegex(SafetyError, "already being consumed"):
+                    engine.complete_codex_desktop_handoff(contract.contract_id)
+                release_terminal.set()
+                self.assertEqual(first.result(timeout=10)["status"], "verified_completed")
+        self.assertFalse(
+            (self.state / "evidence" / f"{contract.contract_id}-not-guaranteed.json").exists()
+        )
 
     def test_desktop_completion_cli_uses_original_config_and_returns_sanitized_status(self) -> None:
         engine = ActivationEngine(self.config, self.state)
@@ -759,6 +824,12 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertFalse(
             (self.state / "desktop-materializations" / contract.contract_id).exists()
         )
+        rejection = json.loads(
+            (
+                self.state / "evidence" / f"{contract.contract_id}-not-guaranteed.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(rejection["reason"], "malformed_receipt")
 
     def test_cross_platform_manual_selection_to_verified_application_e2e(self) -> None:
         self.assertFalse(self.state.exists())

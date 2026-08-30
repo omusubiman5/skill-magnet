@@ -7,7 +7,7 @@
 
 **NO-GO / 実装継続中**
 
-Smart App Control 4551修正、full MSIX、wheel単独性、receipt hardeningを含む136テストはローカルでPASSしている。0.3.3 candidateはWindows/macOS CIでPASSしたが、0.3.4 hardening candidateのCIは未実行である。これは製品完成ゲートの一部にすぎず、実Desktop自然文結果などの未達を埋めない。
+Smart App Control 4551修正、full MSIX、wheel単独性、terminal CAS hardeningを含む138テストはローカルでPASSしている。0.3.4 candidateはWindows/macOS CI run `33307128048`でPASSしたが、0.3.5 candidateのCIは未実行である。これは製品完成ゲートの一部にすぎず、実Desktop自然文結果などの未達を埋めない。
 
 ## 再監査で確認した未達
 
@@ -23,7 +23,7 @@ Smart App Control 4551修正、full MSIX、wheel単独性、receipt hardeningを
 
 ## 今回実施した検証
 
-- `python -m unittest discover -s tests -v`: 136件PASS、環境依存1件skip。
+- `python -m unittest discover -s tests -v`: 138件PASS、環境依存1件skip。
 - 0.3.4 candidate artifact-input commit: `76397228e453fda6329dde50356b4e313594e538`。
 - 0.3.4 canonical wheel logical payload SHA-256: `3d8b21f4397194c8908a1059511ca2676468ff93cf8dbc9cfd598cf8b1b12a9b`。独立したローカル2buildで一致した。CI照合は未実行。
 - 0.3.3 canonical wheel logical payload SHA-256: `1c1ab2914220d4f468614efd9f8a70a845d336c91864f75480c47a584cd2feb1`。独立したローカル2buildで一致し、CIのstandalone wheel payload gateもPASSした。
@@ -43,6 +43,7 @@ Smart App Control 4551修正、full MSIX、wheel単独性、receipt hardeningを
 - `build/lib`を再利用したwheelへ廃止済みpackが残る欠陥を修正した。package出力を毎回初期化し、意図的に古いpackを置いてもwheelへ混入しない回帰試験を追加した。
 - Codex Desktop task用の期限付きcompletion receiptを追加した。handoff時にschemaと一回限りreceiptを作り、task完了後にcontract、challenge nonce、request hash、pack provenance、INDEX関係、適用部分集合、acceptanceを検証して初めて`verified_completed`へ遷移する。改ざん、再利用、期限切れ、OS起動失敗ではreceipt、schema、output、materializationを回収し、成功証拠を作らない。
 - 鬼再監査で実証された`prompt_sha256`改ざん、並行二重callback、期限切れ直撃、malformed receipt残留を0.3.4で修正した。prompt/schema digestは消費済みcontract recordのhandoff bindingとも照合し、callbackは原子的lockで一つだけclaimする。全verification failureをnegative terminalへ確定し、安全に導出したreceipt/schema/output/materializationだけを即時回収する回帰試験を追加した。
+- 0.3.4再監査で実証されたbinding+receipt同時改ざんと、cleanup後・success terminal前の競合を0.3.5で修正した。desktop bindingをcontract digest本体へ含め、success/rejectionの排他的terminal証拠がatomic writeされるまでclaim lockを保持する。malformed/expired recoveryもnegative terminalを残す。
 
 ## CI再現性障害と修正
 
