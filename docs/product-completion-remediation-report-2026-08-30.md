@@ -24,6 +24,8 @@ Smart App Control 4551修正、full MSIX、wheel単独性、125テスト、Windo
 ## 今回実施した検証
 
 - `python -m unittest discover -s tests -v`: 127件PASS、環境依存1件skip。
+- candidate artifact-input commit: `6b67796bff695c9fe37e956c7a6ffdd56ed4ced4`。
+- canonical wheel physical SHA-256: `e901004060abfe1e66ab34da245b3a368ea102c37bef92282858b99e4c93e42e`、logical payload SHA-256: `a4e1b843f0ca57a053bfb7b5f53325bb812ebb3a086073fbda4f0ea6a0522837`。
 - 現行policy、MVP設計、Explorer正本台帳、Finder lifecycle、Claude adapter、INDEX parserを再読した。
 - 独立鬼レビュー: P0 3件、P1 4件、P2 3件、P3 0件、NO-GO。
 
