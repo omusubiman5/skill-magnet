@@ -13,8 +13,8 @@
   "menu_leaf_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
-  "release_code_sha": "404ce8c3b8757e7dd2e7646606818b0eb72be887",
-  "wheel_payload_sha256": "1c1ab2914220d4f468614efd9f8a70a845d336c91864f75480c47a584cd2feb1",
+  "release_code_sha": "76397228e453fda6329dde50356b4e313594e538",
+  "wheel_payload_sha256": "3d8b21f4397194c8908a1059511ca2676468ff93cf8dbc9cfd598cf8b1b12a9b",
   "automated_status": "LOCAL_136_PASS_RECEIPT_HARDENING_CI_PENDING",
   "windows_explorer_field_status": "PASS_INSTALLED_MENU_MANIFEST_DELIVERY_ASSURANCE_8F12AF5",
   "codex_desktop_result_status": "RETESTED_HANDOFF_NO_DISTINCT_TASK_OBSERVED"

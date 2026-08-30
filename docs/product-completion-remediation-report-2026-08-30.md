@@ -24,7 +24,8 @@ Smart App Control 4551修正、full MSIX、wheel単独性、receipt hardeningを
 ## 今回実施した検証
 
 - `python -m unittest discover -s tests -v`: 136件PASS、環境依存1件skip。
-- candidate artifact-input commit: `404ce8c3b8757e7dd2e7646606818b0eb72be887`。
+- 0.3.4 candidate artifact-input commit: `76397228e453fda6329dde50356b4e313594e538`。
+- 0.3.4 canonical wheel logical payload SHA-256: `3d8b21f4397194c8908a1059511ca2676468ff93cf8dbc9cfd598cf8b1b12a9b`。独立したローカル2buildで一致した。CI照合は未実行。
 - 0.3.3 canonical wheel logical payload SHA-256: `1c1ab2914220d4f468614efd9f8a70a845d336c91864f75480c47a584cd2feb1`。独立したローカル2buildで一致し、CIのstandalone wheel payload gateもPASSした。
 - completion receipt追加後のCI run [`33306460511`](https://github.com/omusubiman5/skill-magnet/actions/runs/33306460511): Windows/macOSともgreen。両OSで132 test、standalone wheel install、candidate SHAとwheel payload gateがPASSした。Windowsは証明書state、native build、MSIX install/update/rollback/uninstall lifecycle、macOSはFinder semantic lifecycleもPASSした。
 - 現行policy、MVP設計、Explorer正本台帳、Finder lifecycle、Claude adapter、INDEX parserを再読した。
