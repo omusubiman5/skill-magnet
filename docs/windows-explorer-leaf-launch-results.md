@@ -28,6 +28,7 @@ explorer-results-ledger:end -->
 - 0.4.1 path修正版も独立した2 directoryでbuildし、論理payload SHA-256が両方`c8da150b48878b11dccb709902e93ebe05d8f360c83433787259aab9f921c2a1`で一致した。
 - 実機証拠: 更新wheelをWindowsへ再installし、modern context menuのstatusが`usable_installed_state: true`、`menu_contract_matches_config: true`を返した。実際のTSVはpack ID `codex-delivery-assurance`、表示名`Delivery Assurance`、固定commit `8f12af5ddfdd3b985f26d33dad09d6061d675342`を記録した。
 - 0.4.0実install: package `SkillMagnet.ContextMenu_0.4.0.0_x64__byy1sc3mfzfz4`を登録し、1 package leaf、Directory/Background、署名済みcommand target、`usable_installed_state: true`を確認した。
+- 0.4.1実install: package `SkillMagnet.ContextMenu_0.4.1.0_x64__byy1sc3mfzfz4`へ更新し、site-packages版が9 skillすべてをMarkdown-safeな ``C:/.../.skill-magnet...`` pathと正しいSHA-256でpromptへ出力することを確認した。
 - Desktop handoff契約: promptはINDEX/全SKILL.mdの全文読了、最低1つのskill適用、実依頼の完了を必須化し、説明・一覧・準備確認だけでの終了を禁止する。
 - Desktop完了の扱い: 製品証拠の状態名はhandoffまでを表し、回答完了へ偽装しない。completion receiptやcallbackは使わない。
 - 課金境界: OpenAI/Anthropic API key、従量課金API、追加支払いを要求せず、既存のCodex Desktop/Claude利用プランへ渡す。
