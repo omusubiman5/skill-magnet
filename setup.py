@@ -82,8 +82,14 @@ def _copy_git_tree(source: Path, destination: Path, commit: str) -> None:
 
 class BuildPyWithRuntimeAssets(build_py):
     def run(self) -> None:
-        super().run()
+        # setuptools reuses build/lib by default.  Runtime packs have changed
+        # names across releases, so a reused directory can silently retain an
+        # obsolete pack and contaminate the next wheel.  Always construct the
+        # package tree from the current source/configuration only.
         package_root = Path(self.build_lib) / "skill_magnet"
+        if package_root.exists():
+            shutil.rmtree(package_root)
+        super().run()
         if not PACK_SOURCE.is_dir():
             raise RuntimeError(
                 "Pinned skill pack is missing; run git submodule update --init --recursive"

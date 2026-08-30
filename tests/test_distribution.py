@@ -19,6 +19,17 @@ class DistributionArtifactTest(unittest.TestCase):
             temporary_path = Path(temporary)
             wheels = temporary_path / "wheels"
             wheels.mkdir()
+            stale_member = (
+                ROOT
+                / "build"
+                / "lib"
+                / "skill_magnet"
+                / "_packs"
+                / "obsolete-pack-from-prior-build"
+                / "SKILL.md"
+            )
+            stale_member.parent.mkdir(parents=True, exist_ok=True)
+            stale_member.write_text("must not enter the wheel\n", encoding="utf-8")
             built = subprocess.run(
                 [
                     sys.executable,
@@ -37,6 +48,10 @@ class DistributionArtifactTest(unittest.TestCase):
             wheel = next(wheels.glob("skill_magnet-*.whl"))
             with zipfile.ZipFile(wheel) as archive:
                 names = set(archive.namelist())
+                self.assertFalse(
+                    any("obsolete-pack-from-prior-build" in name for name in names),
+                    "wheel retained runtime assets from a prior build",
+                )
                 skill_member = next(
                     name
                     for name in names
