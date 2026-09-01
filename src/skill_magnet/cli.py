@@ -11,6 +11,7 @@ from .activation import ActivationEngine
 from .core import Config, Engine, SkillMagnetError
 from .platforms import (
     context_menu_spec,
+    finder_context_menu_status,
     install_context_menu,
     install_windows_context_menus,
     install_windows_modern_context_menu,
@@ -400,9 +401,10 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 result["classic"] = uninstall_context_menu(args.platform)
         elif args.command == "context-menu-status":
-            if args.platform != "windows":
-                raise SkillMagnetError("Modern context-menu status is available on Windows")
-            result = windows_modern_context_menu_status(config=args.config)
+            if args.platform == "windows":
+                result = windows_modern_context_menu_status(config=args.config)
+            else:
+                result = finder_context_menu_status()
         else:
             if not args.confirm:
                 raise SkillMagnetError("Context-menu rollback requires --confirm")

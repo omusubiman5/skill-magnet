@@ -1224,3 +1224,53 @@ def uninstall_context_menu(
     if workflow.exists():
         shutil.rmtree(workflow)
     return {"removed": True, "platform": platform, "locations": [str(workflow)]}
+
+
+def finder_context_menu_status(
+    *, services_dir: Path | None = None
+) -> dict[str, object]:
+    """Report whether the product-owned Finder Quick Action is usable."""
+
+    if sys.platform != "darwin" and services_dir is None:
+        raise SkillMagnetError("Finder Quick Action status is only available on macOS")
+    base = services_dir or (Path.home() / "Library" / "Services")
+    workflow = base / "Skill Magnet.workflow"
+    document = workflow / "Contents" / "document.wflow"
+    installed = workflow.is_dir()
+    document_exists = document.is_file()
+    contract_valid = False
+    if document_exists:
+        try:
+            payload = plistlib.loads(document.read_bytes())
+            metadata = payload["workflowMetaData"]
+            actions = payload["actions"]
+            action = actions[0]["action"]
+            parameters = action["ActionParameters"]
+            contract_valid = (
+                len(actions) == 1
+                and action["BundleIdentifier"] == "com.apple.RunShellScript"
+                and metadata["serviceApplicationBundleID"] == "com.apple.finder"
+                and metadata["serviceInputTypeIdentifier"]
+                == "com.apple.finder.file-or-folder"
+                and parameters["shell"] == "/bin/zsh"
+                and "python" in parameters["COMMAND_STRING"].casefold()
+                and '"context"' in parameters["COMMAND_STRING"]
+                and '"--platform" "macos"' in parameters["COMMAND_STRING"]
+            )
+        except (KeyError, IndexError, TypeError, ValueError, plistlib.InvalidFileException):
+            contract_valid = False
+    residue = sorted(
+        str(path) for path in base.glob(".skill-magnet-workflow-*")
+    ) if base.is_dir() else []
+    return {
+        "installed": installed,
+        "platform": "macos",
+        "integration": "macos_finder_quick_action",
+        "location": str(workflow),
+        "document_exists": document_exists,
+        "workflow_contract_valid": contract_valid,
+        "transaction_residue": residue,
+        "usable_installed_state": (
+            installed and document_exists and contract_valid and not residue
+        ),
+    }

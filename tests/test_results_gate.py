@@ -26,7 +26,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
         return validate_consistency(
             text, observed_test_count=self.count if count is None else count,
             observed_leaf_count=1, observed_selection_kinds=["package"],
-            observed_pack_skill_count=9, observed_version="0.5.1")
+            observed_pack_skill_count=9, observed_version="0.5.2")
 
     def test_canonical_results_are_consistent(self) -> None:
         self.assertEqual(self.validate(self.text), [])

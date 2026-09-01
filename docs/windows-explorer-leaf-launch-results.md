@@ -9,23 +9,23 @@
 <!-- explorer-results-ledger:start
 {
   "release_scope": "one-package-leaf",
-  "release_version": "0.5.1",
+  "release_version": "0.5.2",
   "distribution_scope": "local-self-signed",
-  "full_test_count": 139,
+  "full_test_count": 140,
   "menu_leaf_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
   "release_code_sha": "bd88138f0a04be3fae2eb1c0a5e37b2acc2c5b15",
   "wheel_payload_sha256": "c463dc6bacaa10dd8959e3e5c63119a021073f56f5d6de8d1c0c652e1d20be32",
-  "automated_status": "LOCAL_RELEASE_GATE_PASS_139",
+  "automated_status": "LOCAL_RELEASE_GATE_PASS_140",
   "windows_explorer_field_status": "PASS_REAL_RIGHT_CLICK_MENU_AND_CONFIRMATION_UI_0_5_1",
-  "macos_finder_field_status": "CI_SEMANTIC_ONLY_REAL_UI_NOT_CLAIMED_FOR_0_5_1",
+  "macos_finder_field_status": "CI_SEMANTIC_ONLY_REAL_UI_NOT_CLAIMED_FOR_0_5_2",
   "public_distribution_status": "NOT_CLAIMED_REQUIRES_EXTERNAL_PUBLISHER",
   "codex_desktop_result_status": "HANDOFF_READY_ANSWER_COMPLETION_NOT_CLAIMED"
 }
 explorer-results-ledger:end -->
 
-- 統合テスト: `python -m unittest discover -s tests -v` — 139 tests PASS、環境依存1件skip
+- 統合テスト: `python -m unittest discover -s tests -v` — 140 tests PASS、環境依存1件skip
 - menu contract: 1 package leaf / selection kind `package` / pack内9 skills
 - 自動証拠: contract固定、GitHub固定commitのINDEX/全SKILL参照、archiveのメモリ内検証、deep-link binding、ローカルskill残留ゼロ
 - wheel再現性: 独立した2 directoryで0.4.0 wheelをbuildし、論理payload SHA-256が両方`c9a0ffe8f542fd475144ac8fecd284175a46863d69d1d44ec5be78ed901ba38f`で一致した。
@@ -50,7 +50,7 @@ Windows 0.5.1ローカル自己署名版では、次をリリース証拠とし�
 2. package leafから実行確認画面が起動し、全SKILL、任意INDEX、最低1つのskill規則の実作業適用を必須にしたhandoff契約が表示対象packへ結び付くこと。
 3. update、rollback、uninstall後のAppx・証明書・ContextMenu/rollback残留ゼロ。CIでは旧自己署名trust 2世代のupgrade cleanupも含めて確認済み。
 
-macOS Finderは製品policy上のsupported adapterです。以前のrun `33259524623`は旧release probeに対するcomponent証拠であり、現行semantic E2Eの合格証拠へ転用しません。現行candidateでは実Quick Action install、`/usr/bin/automator`実行、GitHub固定commitのメモリ内検証、contract、Codex/Claude delivery境界、uninstall、ローカルskill残留ゼロをCIで再試験します。Finderのメニュー表示そのものは人手UX受入として別途必要です。
+macOS Finderは製品policy上のsupported adapterです。配布形態は[`macos-local-install-policy.md`](macos-local-install-policy.md)で定めるPythonライブラリ＋Finder Quick Actionのローカル導入版であり、Developer ID、notarization、Mac App Storeを要件にしません。以前のrun `33259524623`は旧release probeに対するcomponent証拠であり、現行semantic E2Eの合格証拠へ転用しません。現行candidateでは実Quick Action install、`/usr/bin/automator`実行、GitHub固定commitのメモリ内検証、contract、Codex/Claude delivery境界、uninstall、ローカルskill残留ゼロをCIで再試験します。Finderのメニュー表示そのものは[`macos-finder-friend-acceptance.md`](macos-finder-friend-acceptance.md)による友人の実Mac受入を必須とし、CIで代替しません。
 
 0.3.3 candidateのrun [`33306460511`](https://github.com/omusubiman5/skill-magnet/actions/runs/33306460511)は過去設計の参考記録であり、0.4.0のrelease証拠には使用しない。
 

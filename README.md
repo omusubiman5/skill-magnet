@@ -67,7 +67,7 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 
    ```powershell
    python -m pip wheel . --no-deps --wheel-dir .\dist
-   python -m pip install --force-reinstall .\dist\skill_magnet-0.5.1-py3-none-any.whl
+   python -m pip install --force-reinstall .\dist\skill_magnet-0.5.2-py3-none-any.whl
    ```
 
 3. Windowsの右クリックメニューを登録します。このcommandはrepository rootで、そのままcopy/pasteできます。
@@ -205,12 +205,14 @@ packの追加・削除・版・含有skillを変更した後は、同じinstall 
 
 ## macOS Quick Start
 
-macOSではFinder Quick Actionとして登録・解除します。
+macOSではPython 3.12以上へライブラリを導入し、Finder Quick Actionとして登録・解除します。署名済み`.app`、Developer ID、notarization、Mac App Storeを前提にしないローカル導入版です。
 
 ```bash
 python -m skill_magnet --config /path/to/skill-magnet.json install-context-menu --platform macos --confirm
 python -m skill_magnet --config /path/to/skill-magnet.json uninstall-context-menu --platform macos --confirm
 ```
+
+配布境界と実Macでの受入条件は[`docs/macos-local-install-policy.md`](docs/macos-local-install-policy.md)、友人へ渡せる確認手順は[`docs/macos-finder-friend-acceptance.md`](docs/macos-finder-friend-acceptance.md)を参照してください。
 
 実packを変更せず事前検証するには `activation-plan` を使います。
 

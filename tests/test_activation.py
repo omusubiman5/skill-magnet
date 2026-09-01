@@ -34,6 +34,7 @@ from skill_magnet.cli import exit_process, main as cli_main
 from skill_magnet.core import Config, Pack, SafetyError, SkillMagnetError
 from skill_magnet.platforms import (
     context_menu_spec,
+    finder_context_menu_status,
     install_context_menu,
     install_windows_modern_context_menu,
     install_windows_context_menus,
@@ -3799,6 +3800,10 @@ class ActivationEndToEndTest(unittest.TestCase):
         workflow = services / "Skill Magnet.workflow" / "Contents" / "document.wflow"
         self.assertTrue(result["installed"])
         self.assertTrue(workflow.is_file())
+        status = finder_context_menu_status(services_dir=services)
+        self.assertTrue(status["usable_installed_state"])
+        self.assertTrue(status["workflow_contract_valid"])
+        self.assertEqual(status["transaction_residue"], [])
         workflow_bytes = workflow.read_bytes()
         self.assertIn(b"com.apple.RunShellScript", workflow_bytes)
         self.assertIn(b"finder probe.txt", workflow_bytes)
@@ -3885,6 +3890,26 @@ class ActivationEndToEndTest(unittest.TestCase):
         removed = uninstall_context_menu("macos", services_dir=services)
         self.assertTrue(removed["removed"])
         self.assertFalse(workflow.parent.parent.exists())
+        self.assertFalse(
+            finder_context_menu_status(services_dir=services)[
+                "usable_installed_state"
+            ]
+        )
+
+    def test_macos_status_rejects_tampered_workflow_and_transaction_residue(self) -> None:
+        services = self.root / "tampered-services"
+        install_context_menu("macos", self.config_path, services_dir=services)
+        workflow = services / "Skill Magnet.workflow" / "Contents" / "document.wflow"
+        document = plistlib.loads(workflow.read_bytes())
+        document["workflowMetaData"]["serviceApplicationBundleID"] = "com.example.other"
+        workflow.write_bytes(plistlib.dumps(document))
+        residue = services / ".skill-magnet-workflow-leftover"
+        residue.mkdir()
+        status = finder_context_menu_status(services_dir=services)
+        self.assertTrue(status["installed"])
+        self.assertFalse(status["workflow_contract_valid"])
+        self.assertEqual(status["transaction_residue"], [str(residue)])
+        self.assertFalse(status["usable_installed_state"])
 
     def test_macos_product_workflow_omits_release_probe(self) -> None:
         services = self.root / "product-services"
