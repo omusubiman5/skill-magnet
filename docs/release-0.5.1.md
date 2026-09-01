@@ -45,3 +45,7 @@
 - macOSの実Finder UIまたはnotarizationを、このWindowsローカル版のGO証拠へ転用しない。
 
 この境界により、利用可能なローカル版を未完了扱いのまま放置せず、同時に未実証の公開配布を誤ってGOにしない。
+
+## 後続のmacOS方針
+
+0.5.1のWindowsリリース判定は変更しない。macOSは署名済みアプリ配布へ拡張せず、PythonライブラリとFinder Quick Actionによるローカル導入版として扱う。Developer ID、notarization、Mac App Storeは要件外とし、macOS CIに加えて友人の実MacによるFinder UI受入が完了した時点で、macOSローカル導入版を別途GO判定する。詳細は[`macos-local-install-policy.md`](macos-local-install-policy.md)を正本とする。
