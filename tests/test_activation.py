@@ -2097,7 +2097,7 @@ class ActivationEndToEndTest(unittest.TestCase):
             actual_request, "（鬼レビュー対応）&#x20;&lt;保持&gt;&amp;#x20;"
         )
 
-    def test_context_contract_keeps_entity_bearing_actual_request_exact(self) -> None:
+    def test_context_contract_and_handoff_canonicalize_only_u0020_references(self) -> None:
         engine = ActivationEngine(self.config, self.state)
         leaf = next(
             item
@@ -2116,7 +2116,7 @@ class ActivationEndToEndTest(unittest.TestCase):
             menu_instruction_digest=leaf.instruction_digest,
             menu_acceptance_digest=leaf.acceptance_digest,
         )
-        actual_request = "（鬼レビュー対応）&#x20;&lt;保持&gt;"
+        actual_request = "（**上記**重大な未完了事項  ）&#x20;&lt;保持&gt;&amp;#x20;"
 
         contract = confirm_context_selection(
             engine,
@@ -2127,7 +2127,15 @@ class ActivationEndToEndTest(unittest.TestCase):
         )
 
         self.assertIsNotNone(contract)
-        self.assertEqual(contract.purpose, actual_request)
+        canonical_request = "（**上記**重大な未完了事項  ） &lt;保持&gt;&amp;#x20;"
+        self.assertEqual(contract.purpose, canonical_request)
+        prepared = engine.prepare_codex_desktop_handoff(contract.contract_id)
+        self.assertIn(canonical_request, prepared["prompt"])
+        self.assertNotIn("）&#x20;", prepared["prompt"])
+        self.assertEqual(
+            prepared["actual_request_sha256"],
+            hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+        )
 
     def test_menu_display_normalizes_space_reference_without_decoding_markup(self) -> None:
         raw_config = json.loads(self.config_path.read_text(encoding="utf-8"))

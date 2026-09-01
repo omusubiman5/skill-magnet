@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import hashlib
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -23,7 +24,8 @@ def parse_ledger(text: str) -> dict[str, object]:
 def validate_consistency(text: str, *, observed_test_count: int,
                          observed_leaf_count: int,
                          observed_selection_kinds: list[str],
-                         observed_pack_skill_count: int) -> list[str]:
+                         observed_pack_skill_count: int,
+                         observed_version: str | None = None) -> list[str]:
     ledger = parse_ledger(text)
     errors: list[str] = []
     expected = {"full_test_count": observed_test_count,
@@ -38,6 +40,20 @@ def validate_consistency(text: str, *, observed_test_count: int,
         errors.append("human-readable test count mismatch")
     if ledger.get("release_scope") != "one-package-leaf":
         errors.append("release_scope must be one-package-leaf")
+    if observed_version is not None:
+        required_release_state = {
+            "release_version": observed_version,
+            "distribution_scope": "local-self-signed",
+            "automated_status": f"LOCAL_RELEASE_GATE_PASS_{observed_test_count}",
+            "public_distribution_status": "NOT_CLAIMED_REQUIRES_EXTERNAL_PUBLISHER",
+            "codex_desktop_result_status": "HANDOFF_READY_ANSWER_COMPLETION_NOT_CLAIMED",
+        }
+        for key, expected_value in required_release_state.items():
+            if ledger.get(key) != expected_value:
+                errors.append(
+                    f"{key} mismatch: ledger={ledger.get(key)!r}, "
+                    f"observed={expected_value!r}"
+                )
     if not re.fullmatch(r"[0-9a-f]{40}", str(ledger.get("release_code_sha", ""))):
         errors.append("release_code_sha must be a lowercase 40-hex commit")
     if not re.fullmatch(
@@ -137,6 +153,8 @@ def main(argv: list[str] | None = None) -> int:
     from skill_magnet.platforms import windows_menu_leaves
     config_path = repository / "skill-magnet.json"
     config = Config.load(config_path)
+    project = tomllib.loads((repository / "pyproject.toml").read_text(encoding="utf-8"))
+    project_version = str(project["project"]["version"])
     leaves = windows_menu_leaves(config_path, "%1")
     count = args.observed_test_count
     if count is None:
@@ -155,7 +173,8 @@ def main(argv: list[str] | None = None) -> int:
         observed_selection_kinds=sorted(
             {config.packs[leaf.pack_id].selection_kind for leaf in leaves}
         ),
-        observed_pack_skill_count=len(leaves[0].skill_ids) if leaves else 0)
+        observed_pack_skill_count=len(leaves[0].skill_ids) if leaves else 0,
+        observed_version=project_version)
     errors.extend(
         validate_release_provenance(repository, parse_ledger(results_text), args.wheel)
     )
@@ -163,7 +182,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {error}")
     if errors:
         return 1
-    print("PASS: current Explorer evidence matches product configuration and test suite")
+    print(
+        "PASS: local self-signed release evidence matches product configuration "
+        "and test suite; public distribution is not claimed"
+    )
     return 0
 
 

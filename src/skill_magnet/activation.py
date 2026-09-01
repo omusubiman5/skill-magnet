@@ -22,6 +22,7 @@ from .core import (
     SkillMagnetError,
     _is_link,
     _parse_github_repo,
+    normalize_actual_request,
 )
 
 
@@ -421,7 +422,8 @@ class ActivationEngine:
             raise SkillMagnetError(f"Unsupported platform: {platform}")
         if runtime not in self.SUPPORTED_RUNTIMES:
             raise SkillMagnetError(f"Unsupported verified runtime: {runtime}")
-        if not purpose.strip():
+        purpose = normalize_actual_request(purpose).strip()
+        if not purpose:
             raise SkillMagnetError("Purpose is required")
         if not 1 <= ttl_minutes <= 120:
             raise SkillMagnetError("ttl_minutes must be between 1 and 120")
@@ -451,7 +453,7 @@ class ActivationEngine:
             "approved_by": pack.approved_by,
             "approved_at": pack.approved_at,
             "pack_purpose": pack.purpose,
-            "purpose": purpose.strip(),
+            "purpose": purpose,
             "selection_kind": "skill" if skill_id is not None else "pack",
             "selected_skill_id": skill_id,
             "skill_ids": list(selected_skills),

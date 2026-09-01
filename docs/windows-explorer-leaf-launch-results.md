@@ -9,24 +9,29 @@
 <!-- explorer-results-ledger:start
 {
   "release_scope": "one-package-leaf",
-  "full_test_count": 138,
+  "release_version": "0.5.1",
+  "distribution_scope": "local-self-signed",
+  "full_test_count": 139,
   "menu_leaf_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
   "release_code_sha": "1e2d91bd71dd7c3a59a07c260e57b388ca3d90e2",
-  "wheel_payload_sha256": "7c2f2a75daf640ffb36c42a9840211b1dd82463e9673ade47223ab7becdff5f9",
-  "automated_status": "LOCAL_PRODUCTIZATION_GATE_PASS_138",
-  "windows_explorer_field_status": "PASS_REAL_RIGHT_CLICK_DELIVERY_ASSURANCE_CODEX_HANDOFF_0_5_0",
+  "wheel_payload_sha256": "c463dc6bacaa10dd8959e3e5c63119a021073f56f5d6de8d1c0c652e1d20be32",
+  "automated_status": "LOCAL_RELEASE_GATE_PASS_139",
+  "windows_explorer_field_status": "AUTOMATED_CONTRACT_ONLY_REAL_UI_NOT_CLAIMED_FOR_0_5_1",
+  "macos_finder_field_status": "CI_SEMANTIC_ONLY_REAL_UI_NOT_CLAIMED_FOR_0_5_1",
+  "public_distribution_status": "NOT_CLAIMED_REQUIRES_EXTERNAL_PUBLISHER",
   "codex_desktop_result_status": "HANDOFF_READY_ANSWER_COMPLETION_NOT_CLAIMED"
 }
 explorer-results-ledger:end -->
 
-- 統合テスト: `python -m unittest discover -s tests -v` — 138 tests PASS、環境依存1件skip
+- 統合テスト: `python -m unittest discover -s tests -v` — 139 tests PASS、環境依存1件skip
 - menu contract: 1 package leaf / selection kind `package` / pack内9 skills
 - 自動証拠: contract固定、GitHub固定commitのINDEX/全SKILL参照、archiveのメモリ内検証、deep-link binding、ローカルskill残留ゼロ
 - wheel再現性: 独立した2 directoryで0.4.0 wheelをbuildし、論理payload SHA-256が両方`c9a0ffe8f542fd475144ac8fecd284175a46863d69d1d44ec5be78ed901ba38f`で一致した。
 - 0.4.1 path修正版も独立した2 directoryでbuildし、論理payload SHA-256が両方`c8da150b48878b11dccb709902e93ebe05d8f360c83433787259aab9f921c2a1`で一致した。
 - 0.5.0 GitHub-only候補wheelの論理payload SHA-256は`7c2f2a75daf640ffb36c42a9840211b1dd82463e9673ade47223ab7becdff5f9`、wheel file SHA-256は`99addeeafde2933af9feab15848e90d835518fe5eba15ad1d0c714eba460eca4`である。
+- 0.5.1ローカル自己署名版wheelの論理payload SHA-256は`c463dc6bacaa10dd8959e3e5c63119a021073f56f5d6de8d1c0c652e1d20be32`、wheel file SHA-256は`1335abceda94b20955ebf877330695e41dac6a84530c0a0a788b5e5eee0e8fda`である。公開publisherによる配布は本台帳のGO対象に含めない。
 - 実機証拠: 更新wheelをWindowsへ再installし、modern context menuのstatusが`usable_installed_state: true`、`menu_contract_matches_config: true`を返した。実際のTSVはpack ID `codex-delivery-assurance`、表示名`Delivery Assurance`、固定commit `8f12af5ddfdd3b985f26d33dad09d6061d675342`を記録した。
 - 0.4.0実install: package `SkillMagnet.ContextMenu_0.4.0.0_x64__byy1sc3mfzfz4`を登録し、1 package leaf、Directory/Background、署名済みcommand target、`usable_installed_state: true`を確認した。
 - 0.4.1実installのローカルskill path方式は廃止対象の過去実績であり、現行合格証拠には使用しない。現行版はGitHub固定commit URLとSHA-256だけをpromptへ出力する。

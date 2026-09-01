@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import base64
+import binascii
 import hashlib
 import io
 import json
@@ -30,6 +31,16 @@ def normalize_display_text(value: str) -> str:
     This intentionally is not a general HTML entity decoder. Values such as
     ``&lt;`` remain literal, and callers retain the original value for contracts,
     identifiers, hashes, and execution.
+    """
+    return _HTML_U0020_REFERENCE.sub(" ", value)
+
+
+def normalize_actual_request(value: str) -> str:
+    """Canonicalize numeric U+0020 references before request confirmation.
+
+    This deliberately shares the narrow display normalization without decoding
+    general HTML entities.  The returned value is the single source for the
+    launch contract, request digest, and runtime handoff.
     """
     return _HTML_U0020_REFERENCE.sub(" ", value)
 
@@ -608,6 +619,90 @@ class Engine:
             raise SafetyError(f"Refusing to remove unexpected transaction path: {path}")
         shutil.rmtree(path)
 
+    def _validate_pending_recovery(self, pending: dict[str, Any]) -> None:
+        """Reject journals whose paths are outside product-owned boundaries."""
+        if pending.get("version") != 1:
+            raise SafetyError("Unsupported pending-transaction version")
+        transaction_id = pending.get("id")
+        mode = pending.get("mode")
+        pack_id = pending.get("pack")
+        if not isinstance(transaction_id, str) or not re.fullmatch(
+            r"[0-9a-f]{32}", transaction_id
+        ):
+            raise SafetyError("Invalid pending-transaction id")
+        if mode not in {"sync", "rollback"} or pack_id not in self.config.packs:
+            raise SafetyError("Invalid pending-transaction identity")
+        records = pending.get("records")
+        if not isinstance(records, list):
+            raise SafetyError("Invalid pending-transaction records")
+
+        expected_snapshot_root = (
+            self.state_dir / "snapshots" / transaction_id
+        ).resolve()
+        try:
+            snapshot_root = Path(str(pending["snapshot_root"])).resolve()
+        except (KeyError, OSError) as exc:
+            raise SafetyError("Invalid pending snapshot path") from exc
+        if snapshot_root != expected_snapshot_root:
+            raise SafetyError("Pending snapshot path escapes the state directory")
+
+        expected_flags = (
+            (True, False) if mode == "sync" else (False, True)
+        )
+        if (
+            pending.get("remove_snapshot_on_revert"),
+            pending.get("delete_snapshot_on_commit"),
+        ) != expected_flags:
+            raise SafetyError("Invalid pending snapshot cleanup policy")
+        encoded_state = pending.get("state_before")
+        if encoded_state is not None:
+            if not isinstance(encoded_state, str):
+                raise SafetyError("Invalid pending state snapshot")
+            try:
+                base64.b64decode(encoded_state, validate=True)
+            except (ValueError, binascii.Error) as exc:
+                raise SafetyError("Invalid pending state snapshot") from exc
+
+        pack = self.config.packs[str(pack_id)]
+        recovery_token = (
+            transaction_id if mode == "sync" else f"{transaction_id}-rollback"
+        )
+        for record in records:
+            if not isinstance(record, dict):
+                raise SafetyError("Invalid pending-transaction record")
+            target = record.get("target")
+            skill = record.get("skill")
+            if target not in self.config.targets or skill not in pack.skills:
+                raise SafetyError("Pending record is outside the configured pack")
+            target_root = self.config.targets[str(target)].resolve()
+            if _is_link(target_root):
+                raise SafetyError("Pending record target root is a link")
+            destination = (target_root / str(skill)).resolve()
+            expected_stage = (
+                target_root / f".skill-magnet-stage-{recovery_token}-{skill}"
+            ).resolve()
+            expected_backup = (
+                target_root / f".skill-magnet-old-{recovery_token}-{skill}"
+            ).resolve()
+            expected_snapshot = (
+                expected_snapshot_root / str(target) / str(skill)
+            ).resolve()
+            try:
+                actual_destination = Path(str(record["destination"])).resolve()
+                actual_stage = Path(str(record["stage"])).resolve()
+                actual_backup = Path(str(record["backup"])).resolve()
+            except (KeyError, OSError) as exc:
+                raise SafetyError("Invalid pending record path") from exc
+            if (
+                actual_destination != destination
+                or actual_stage != expected_stage
+                or actual_backup != expected_backup
+            ):
+                raise SafetyError("Pending record path escapes the managed target")
+            snapshot = record.get("snapshot")
+            if snapshot is not None and Path(str(snapshot)).resolve() != expected_snapshot:
+                raise SafetyError("Pending record snapshot escapes the state directory")
+
     def _transaction_is_committed(self, pending: dict[str, Any]) -> bool:
         try:
             state = self._load_state()
@@ -634,6 +729,9 @@ class Engine:
             pending = json.loads(self.pending_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise SafetyError(f"Cannot recover pending transaction: {exc}") from exc
+        if not isinstance(pending, dict):
+            raise SafetyError("Cannot recover pending transaction: expected an object")
+        self._validate_pending_recovery(pending)
         committed = not force_revert and self._transaction_is_committed(pending)
         records = pending.get("records", [])
         if committed:
