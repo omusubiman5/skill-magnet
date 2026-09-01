@@ -21,3 +21,12 @@
 
 [`macos-local-install-policy.md`](macos-local-install-policy.md)と[`macos-finder-friend-acceptance.md`](macos-finder-friend-acceptance.md)を正本とする。CIだけでFinderメニューの目視表示を代替せず、実Mac受入の記録後に状態を確定する。
 
+## 検証と成果物
+
+- release code commit: `b3b7a3dd176311732341b6ae8cf19cb5cddac1a2`
+- full test suite: 140 PASS、環境依存1件skip
+- macOS workflow status正常系・改ざん・transaction residue回帰: PASS
+- Python 0.5.2 / MSIX 0.5.2.0同期: PASS
+- `dist/skill_magnet-0.5.2-py3-none-any.whl`
+- wheel SHA-256: `8082dfa1d0c21ca505e8cd1a5fbcc96c6faccd938db4319ceb6a0e461e5c23a2`
+- logical payload SHA-256: `c96f964a9799de4fec3240797f4f2b07dae4f3920d531a7632cbcf7651a3ce9d`

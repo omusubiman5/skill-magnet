@@ -15,8 +15,8 @@
   "menu_leaf_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
-  "release_code_sha": "bd88138f0a04be3fae2eb1c0a5e37b2acc2c5b15",
-  "wheel_payload_sha256": "c463dc6bacaa10dd8959e3e5c63119a021073f56f5d6de8d1c0c652e1d20be32",
+  "release_code_sha": "b3b7a3dd176311732341b6ae8cf19cb5cddac1a2",
+  "wheel_payload_sha256": "c96f964a9799de4fec3240797f4f2b07dae4f3920d531a7632cbcf7651a3ce9d",
   "automated_status": "LOCAL_RELEASE_GATE_PASS_140",
   "windows_explorer_field_status": "PASS_REAL_RIGHT_CLICK_MENU_AND_CONFIRMATION_UI_0_5_1",
   "macos_finder_field_status": "CI_SEMANTIC_ONLY_REAL_UI_NOT_CLAIMED_FOR_0_5_2",
@@ -32,6 +32,7 @@ explorer-results-ledger:end -->
 - 0.4.1 path修正版も独立した2 directoryでbuildし、論理payload SHA-256が両方`c8da150b48878b11dccb709902e93ebe05d8f360c83433787259aab9f921c2a1`で一致した。
 - 0.5.0 GitHub-only候補wheelの論理payload SHA-256は`7c2f2a75daf640ffb36c42a9840211b1dd82463e9673ade47223ab7becdff5f9`、wheel file SHA-256は`99addeeafde2933af9feab15848e90d835518fe5eba15ad1d0c714eba460eca4`である。
 - 0.5.1ローカル自己署名版wheelの論理payload SHA-256は`c463dc6bacaa10dd8959e3e5c63119a021073f56f5d6de8d1c0c652e1d20be32`、wheel file SHA-256は`1335abceda94b20955ebf877330695e41dac6a84530c0a0a788b5e5eee0e8fda`である。公開publisherによる配布は本台帳のGO対象に含めない。
+- 0.5.2ローカル導入候補wheelの論理payload SHA-256は`c96f964a9799de4fec3240797f4f2b07dae4f3920d531a7632cbcf7651a3ce9d`、wheel file SHA-256は`8082dfa1d0c21ca505e8cd1a5fbcc96c6faccd938db4319ceb6a0e461e5c23a2`である。macOSの実Finder UIは友人実機受入まで未主張とする。
 - 実機証拠: 0.5.1 wheelをWindowsへinstallし、modern context menuのstatusが`usable_installed_state: true`、`menu_contract_matches_config: true`、`menu_leaf_count: 1`を返した。File Explorerの`C:\Projects\skill-magnet`背景を実際に右クリックし、`Skill Magnet`→`Delivery Assurance`から`Skill Magnet — 実行確認`画面が起動すること、画面上のproject、pack、用途、実行AI、依頼内容、実行/取消UIを確認した。外部AIへのテスト依頼送信はフィールドUI受入の対象外とし、確認画面を取消で閉じた。実際のTSVはpack ID `codex-delivery-assurance`、表示名`Delivery Assurance`、固定commit `8f12af5ddfdd3b985f26d33dad09d6061d675342`を記録した。
 - 0.4.0実install: package `SkillMagnet.ContextMenu_0.4.0.0_x64__byy1sc3mfzfz4`を登録し、1 package leaf、Directory/Background、署名済みcommand target、`usable_installed_state: true`を確認した。
 - 0.4.1実installのローカルskill path方式は廃止対象の過去実績であり、現行合格証拠には使用しない。現行版はGitHub固定commit URLとSHA-256だけをpromptへ出力する。
