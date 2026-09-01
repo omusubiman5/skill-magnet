@@ -8,7 +8,7 @@ Skill Magnetの目的は、GitHub固定commitに保管されたskillをLLMへ単
 
 ## 現在の状態
 
-GitHub中心の手動activation経路は、スキルパックを一つ選ぶUXです。通常右クリックの正規入口は `Skill Magnet` 一つで、対象パックを選び、確認画面でCodexまたはClaudeと依頼内容を明示します。Codexを選ぶと、CLI/TUIではなくCodex Desktop appの新規taskへ、パック内の全スキルと依頼が渡されます。skill contentは該当するユーザー所有GitHub repositoryだけに保管し、Skill Magnetは固定commitをメモリ上で検証します。promptには固定commitの全SKILL.md URLとdigestを渡し、INDEXが存在するpackではINDEXのURLとdigestも渡します。ローカルへskillを保存・複製・materializeしません。CodexとClaudeには全skillの読了、trigger/boundaryと存在する場合のINDEX関係に基づく必要最小集合の選定、最低1つの具体的適用、実依頼の完了を必須化します。skillの説明・一覧・準備確認だけで終了することを禁止します。Skill MagnetはAPI keyや従量課金APIを使わず、既存のCodex DesktopまたはClaude利用プランへhandoffします。handoff受理は回答完了を意味せず、Skill MagnetはLLM回答を取得・検証したとは主張しません。Windows ExplorerとmacOS Finderは規範policy上のsupported adapterです。
+GitHub中心の手動activation経路は、スキルパックを一つ選ぶUXです。通常右クリックの正規入口は `Skill Magnet` 一つで、対象パックを選び、確認画面でCodexまたはClaudeと依頼内容を明示します。Codexを選ぶと、CLI/TUIではなくCodex Desktop appの新規taskへ、パック内の全スキルと依頼が渡されます。skill contentの永続的な正本は該当するユーザー所有GitHub repositoryだけで、Skill Magnetは固定commitをメモリ上で検証します。promptには固定commitの全SKILL.md URLとdigestを渡し、INDEXが存在するpackではINDEXのURLとdigestも渡します。library編集時だけ製品所有の隔離workspaceを使い、実行用にはmaterializeせず、有効化完了後に削除します。CodexとClaudeには全skillの読了、trigger/boundaryと存在する場合のINDEX関係に基づく必要最小集合の選定、最低1つの具体的適用、実依頼の完了を必須化します。skillの説明・一覧・準備確認だけで終了することを禁止します。Skill MagnetはAPI keyや従量課金APIを使わず、既存のCodex DesktopまたはClaude利用プランへhandoffします。handoff受理は回答完了を意味せず、Skill MagnetはLLM回答を取得・検証したとは主張しません。Windows ExplorerとmacOS Finderは規範policy上のsupported adapterです。
 
 旧MVPの `sync` は `~/.agents/skills` と `~/.claude/skills` への常設コピーを前提とし、現在の製品ポリシーに適合しません。CLIから恒久的に無効化しており、overrideはありません。
 
@@ -20,7 +20,7 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 - GitHubのユーザー所有保管庫を唯一の正本とする。
 - Skill Magnetはスキルの目的に沿って、必要なパックだけを明示選択して呼び出す。
 - Codex/Claudeへの全件・常設・暗黙同期を既定にしない。
-- skillの保管は該当するユーザー所有GitHub repositoryだけとし、ローカルへskill contentを保存・複製・materializeしない。
+- skillの永続保管は該当するユーザー所有GitHub repositoryだけとする。明示したlibrary編集transaction中だけ製品所有の隔離workspaceへ一時複製できるが、実行用materializeには使わず完了後に削除する。
 - 保管庫の版・来歴・承認を保持する。
 - ローカル配置の成功を、スキルの読み込み成功または使用成功とみなさない。
 - 選択したpackとversionをタスクへ明示し、全skillの読了、最低1つの実作業への適用、存在する場合だけINDEX関係の適用をpromptで必須にする。読了や要約だけを実行完了とみなさない。
@@ -51,6 +51,44 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 6. 利用者はDesktop appまたはClaudeの新規conversationで自然文回答を確認する。Skill Magnetはhandoff成功と回答完了を混同しない。
 
 `dry-run` を通していない有効化は拒否する設計です。
+
+## Skill Library Manager
+
+新しいskillは、本体repositoryを直接編集せず、汎用名のskill repositoryへ追加します。repository名はskill IDやpack IDから生成されず、既定候補は`skill-magnet-skills`です。次のアプリcommandが、作成・import、catalog/INDEX検証、差分preview、isolated commit、push/PR、remote blob SHA-256照合、本体config有効化、status、receiptを担当します。
+
+7画面のGUIを開く場合は次を実行します。Repository → Skill → Pack & INDEX → Validation → Preview → Publish → Activate & Receiptの順に進み、publishとactivateは別々に明示確認します。
+
+```powershell
+python -m skill_magnet library ui
+```
+
+```powershell
+# 1. library draftを作る
+python -m skill_magnet library init --repository C:\path\to\skill-magnet-skills
+
+# 2. skillを追加する（--sourceで既存SKILL.md/acceptance.jsonもimport可能）
+python -m skill_magnet library add --repository C:\path\to\skill-magnet-skills --skill-id my-skill --display-name "My skill" --purpose "実行目的" --pack-id my-pack
+
+# 3. fail-closed検証
+python -m skill_magnet library validate --repository C:\path\to\skill-magnet-skills
+
+# 4. 隔離workspaceで差分previewを作る。出力されたtransaction_idを以後使う
+python -m skill_magnet library prepare --draft C:\path\to\skill-magnet-skills --remote https://github.com/OWNER/skill-magnet-skills.git
+
+# 5. 明示確認後、専用branchへnon-force pushしてPRを作る
+python -m skill_magnet library publish --transaction-id TRANSACTION_ID --confirm
+
+# 6. PR merge後にremote bytesを再確認し、検証済み状態へ進める
+python -m skill_magnet library verify-merged --transaction-id TRANSACTION_ID
+
+# 7. 本体configへatomicに反映しreceiptを保存する
+python -m skill_magnet library activate --transaction-id TRANSACTION_ID --confirm
+
+# 状態一覧
+python -m skill_magnet library status
+```
+
+`publish`と`activate`はそれぞれ確認なしでは動きません。default branchへの直接pushは、`prepare --branch <default-branch>`と`publish --direct --no-pr --confirm`を両方明示し、repository policyがpushを許可した場合だけ成立します。PR未merge、remote digest不一致、secret候補、symlink、path traversal、dependency cycle、同一pack内のcontrastは有効化されません。GitHub tokenを引数、config、journal、receiptへ保存しません。
 
 ## Windows 11 Quick Start
 

@@ -62,9 +62,20 @@ class ProductPolicyTest(unittest.TestCase):
             storage["allowed_location"],
             "configured_user_owned_github_repository_only",
         )
-        self.assertEqual(storage["local_storage"], "prohibited")
+        self.assertEqual(
+            storage["local_storage"], "ephemeral_authoring_transaction_only"
+        )
         self.assertEqual(storage["runtime_verification"], "bounded_in_memory_bytes_only")
         self.assertEqual(storage["local_metadata_json"], "allowed_without_skill_content")
+        self.assertEqual(
+            storage["authoring_workspace"],
+            {
+                "owner": "skill_magnet_product",
+                "isolated": True,
+                "runtime_materialization": False,
+                "cleanup_after_completion": True,
+            },
+        )
         self.assertFalse(self.policy["legacy_persistent_sync"]["default_enabled"])
         self.assertEqual(
             self.policy["legacy_persistent_sync"]["production_use"],
