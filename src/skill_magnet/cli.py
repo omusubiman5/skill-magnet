@@ -79,12 +79,6 @@ def _parser() -> argparse.ArgumentParser:
             choices=("codex", "claude"),
             help="Limit the operation to one target. May be repeated.",
         )
-        if name == "sync":
-            command.add_argument(
-                "--allow-legacy-persistent-sync",
-                action="store_true",
-                help="Explicitly opt in to the legacy persistent-copy engine.",
-            )
     rollback = commands.add_parser("rollback")
     rollback.add_argument("--pack", required=True)
     for name in ("activation-plan", "activation-launch"):
@@ -172,12 +166,10 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command in {"dry-run", "status"}:
             result = engine.status(args.pack, args.target)
         elif args.command == "sync":
-            if not args.allow_legacy_persistent_sync:
-                raise SkillMagnetError(
-                    "Legacy persistent sync is disabled by default; use the verified "
-                    "activation path instead"
-                )
-            result = engine.sync(args.pack, args.target)
+            raise SkillMagnetError(
+                "Persistent skill sync is permanently disabled; skill content is "
+                "stored only in the configured GitHub repository"
+            )
         elif args.command == "rollback":
             result = engine.rollback(args.pack)
         elif args.command in {"activation-plan", "activation-launch"}:

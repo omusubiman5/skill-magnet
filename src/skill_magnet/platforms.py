@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
-from .core import Config, Pack, SafetyError, SkillMagnetError, _is_link
+from .core import Config, Engine, Pack, SafetyError, SkillMagnetError, _is_link
 
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -132,8 +132,9 @@ def windows_leaf_command_argv(
         raise SkillMagnetError(f"Pack {pack_id} must be selected as a complete package")
     if runtime is not None and runtime not in ("codex", "claude"):
         raise SkillMagnetError(f"Unsupported runtime: {runtime}")
-    instruction_digest = _selection_blob_digest(pack, skill_id, "SKILL.md")
-    acceptance_digest = _selection_blob_digest(pack, skill_id, "acceptance.json")
+    engine = Engine(loaded)
+    instruction_digest = _selection_blob_digest(engine, pack, skill_id, "SKILL.md")
+    acceptance_digest = _selection_blob_digest(engine, pack, skill_id, "acceptance.json")
     return _windows_leaf_argv(
         config,
         project,
@@ -184,37 +185,22 @@ def _windows_leaf_argv(
     return tuple(command)
 
 
-def _fixed_blob_digest(pack: Pack, skill_id: str, filename: str) -> str:
-    if (pack.source / ".skill-magnet-snapshot.json").is_file():
-        path = pack.source / skill_id / filename
-        if not path.is_file():
-            raise SkillMagnetError(
-                f"Cannot read approved skill artifact: {skill_id}/{filename}"
-            )
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-    result = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(pack.source),
-            "show",
-            f"{pack.expected_commit}:{skill_id}/{filename}",
-        ],
-        capture_output=True,
-    )
-    if result.returncode != 0:
-        raise SkillMagnetError(
-            f"Cannot read approved skill artifact: {skill_id}/{filename}"
-        )
-    return hashlib.sha256(result.stdout).hexdigest()
+def _fixed_blob_digest(
+    engine: Engine, pack: Pack, skill_id: str, filename: str
+) -> str:
+    return hashlib.sha256(
+        engine.pack_bytes(pack, f"{skill_id}/{filename}")
+    ).hexdigest()
 
 
-def _selection_blob_digest(pack: Pack, skill_id: str | None, filename: str) -> str:
+def _selection_blob_digest(
+    engine: Engine, pack: Pack, skill_id: str | None, filename: str
+) -> str:
     """Bind a menu leaf to one skill or to every skill in a package."""
     if skill_id is not None:
-        return _fixed_blob_digest(pack, skill_id, filename)
+        return _fixed_blob_digest(engine, pack, skill_id, filename)
     payload = {
-        selected: _fixed_blob_digest(pack, selected, filename)
+        selected: _fixed_blob_digest(engine, pack, selected, filename)
         for selected in pack.skills
     }
     encoded = json.dumps(
@@ -226,11 +212,12 @@ def _selection_blob_digest(pack: Pack, skill_id: str | None, filename: str) -> s
 def windows_menu_leaves(config: Path, placeholder: str) -> tuple[WindowsMenuLeaf, ...]:
     """Build one immutable Explorer leaf per explicitly selectable package."""
     loaded = Config.load(config)
+    engine = Engine(loaded)
     leaves: list[WindowsMenuLeaf] = []
     for pack in loaded.packs.values():
         if pack.selection_kind == "package":
-            instruction_digest = _selection_blob_digest(pack, None, "SKILL.md")
-            acceptance_digest = _selection_blob_digest(pack, None, "acceptance.json")
+            instruction_digest = _selection_blob_digest(engine, pack, None, "SKILL.md")
+            acceptance_digest = _selection_blob_digest(engine, pack, None, "acceptance.json")
             leaves.append(
                 WindowsMenuLeaf(
                     pack_id=pack.pack_id,
@@ -253,8 +240,8 @@ def windows_menu_leaves(config: Path, placeholder: str) -> tuple[WindowsMenuLeaf
             )
             continue
         for skill_id in pack.skills:
-            instruction_digest = _fixed_blob_digest(pack, skill_id, "SKILL.md")
-            acceptance_digest = _fixed_blob_digest(pack, skill_id, "acceptance.json")
+            instruction_digest = _fixed_blob_digest(engine, pack, skill_id, "SKILL.md")
+            acceptance_digest = _fixed_blob_digest(engine, pack, skill_id, "acceptance.json")
             leaves.append(
                 WindowsMenuLeaf(
                     pack_id=pack.pack_id,

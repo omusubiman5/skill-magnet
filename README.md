@@ -2,11 +2,15 @@
 
 Skill Magnetは、ユーザー自身のGitHub保管庫でスキルを保存・版管理し、仕事に必要なスキルパックを選んでCodex Desktop appまたはClaudeへ渡すローカルツールです。
 
+## 目的
+
+Skill Magnetの目的は、GitHub固定commitに保管されたskillをLLMへ単に読ませることではなく、利用者の実際の依頼へ正確に適用させ、完成した成果を得ることです。LLMは選択packの全skillを読んでtrigger/boundaryから必要最小集合を選び、選んだskillの手順・判断基準・境界を実際の分析、編集、生成、検証へ反映します。読了、要約、候補列挙、実行可否の説明だけでは完了ではありません。packにINDEXが存在する場合だけ、その関係も読んで `depends-on` / `composes-with` / `contrasts-with` を適用します。成果形式は実際の依頼とskillに従い、自然文、JSON、コード、ファイルなどをSkill Magnetが一律に禁止しません。
+
 ## 現在の状態
 
-GitHub中心の手動activation経路は、スキルパックを一つ選ぶUXです。通常右クリックの正規入口は `Skill Magnet` 一つで、対象パックを選び、確認画面でCodexまたはClaudeと依頼内容を明示します。Codexを選ぶと、CLI/TUIではなくCodex Desktop appの新規taskへ、INDEXで関係づけられたパック内の全スキルと依頼が渡されます。Desktop promptは、確認時のINDEX/SKILL.mdをcontract専用の期限付きmaterializationへ固定し、digestを束縛します。Codexには全ファイルの読了、trigger/boundary・INDEX関係に基づく必要最小集合の選定、最低1つの適用、実依頼の完了を必須化します。skillの説明・一覧・準備確認だけで終了することを禁止します。Skill MagnetはAPI keyや従量課金APIを使わず、既存のCodex DesktopまたはClaude利用プランへhandoffします。Desktop appがdeep linkを受理した時点の製品状態は `desktop_handoff_ready` であり、回答完了を意味しません。Skill MagnetはDesktop回答を取得・検証したとは主張しません。Windows ExplorerとmacOS Finderは規範policy上のsupported adapterです。
+GitHub中心の手動activation経路は、スキルパックを一つ選ぶUXです。通常右クリックの正規入口は `Skill Magnet` 一つで、対象パックを選び、確認画面でCodexまたはClaudeと依頼内容を明示します。Codexを選ぶと、CLI/TUIではなくCodex Desktop appの新規taskへ、パック内の全スキルと依頼が渡されます。skill contentは該当するユーザー所有GitHub repositoryだけに保管し、Skill Magnetは固定commitをメモリ上で検証します。promptには固定commitの全SKILL.md URLとdigestを渡し、INDEXが存在するpackではINDEXのURLとdigestも渡します。ローカルへskillを保存・複製・materializeしません。CodexとClaudeには全skillの読了、trigger/boundaryと存在する場合のINDEX関係に基づく必要最小集合の選定、最低1つの具体的適用、実依頼の完了を必須化します。skillの説明・一覧・準備確認だけで終了することを禁止します。Skill MagnetはAPI keyや従量課金APIを使わず、既存のCodex DesktopまたはClaude利用プランへhandoffします。handoff受理は回答完了を意味せず、Skill MagnetはLLM回答を取得・検証したとは主張しません。Windows ExplorerとmacOS Finderは規範policy上のsupported adapterです。
 
-旧MVPの `sync` は `~/.agents/skills` と `~/.claude/skills` への常設コピーを前提とし、現在の製品ポリシーに適合しません。CLIでも既定無効です。本番 `sync` は実施していません。
+旧MVPの `sync` は `~/.agents/skills` と `~/.claude/skills` への常設コピーを前提とし、現在の製品ポリシーに適合しません。CLIから恒久的に無効化しており、overrideはありません。
 
 ## 製品ポリシー
 
@@ -16,10 +20,10 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 - GitHubのユーザー所有保管庫を唯一の正本とする。
 - Skill Magnetはスキルの目的に沿って、必要なパックだけを明示選択して呼び出す。
 - Codex/Claudeへの全件・常設・暗黙同期を既定にしない。
-- 一時ローカル展開が技術的に必要な場合も、対象・理由・期限・cleanupを明示し、検証後に片付ける。
+- skillの保管は該当するユーザー所有GitHub repositoryだけとし、ローカルへskill contentを保存・複製・materializeしない。
 - 保管庫の版・来歴・承認を保持する。
 - ローカル配置の成功を、スキルの読み込み成功または使用成功とみなさない。
-- 選択したpackとversionをタスクへ明示し、全skillの読了と最低1つの適用をpromptで必須にする。
+- 選択したpackとversionをタスクへ明示し、全skillの読了、最低1つの実作業への適用、存在する場合だけINDEX関係の適用をpromptで必須にする。読了や要約だけを実行完了とみなさない。
 - Codex/Claudeの既存利用プランを使い、API key、従量課金API、追加支払いを製品経路で要求しない。
 - 公式に確認できる経路または必要な証拠がない場合はfail-closedで停止し、保証外であることを明示する。
 - 起動はユーザーの右クリックメニューからの明示選択を条件とし、自動提案・自動配布・自動有効化をしない。
@@ -31,7 +35,7 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 - 起動時に有効なパックはゼロです。
 - ユーザーは必要な時にアプリでパックと対象ランタイムを明示選択します。自動提案、自動配布、自動有効化はしません。
 - GitHub URL、完全なcommit SHA、承認記録を検証してから有効化します。
-- 一時展開物には対象、理由、期限、cleanup方法を記録し、検証後または期限到来時に削除します。
+- GitHubから取得したskill bytesはprocess memory内だけで検証し、ローカルへ展開・保存しません。
 - 全パックの一括配布、ユーザー領域への常設配置、バックグラウンドでの暗黙同期は既定機能にしません。
 - ファイルのclone、展開、配置、候補表示だけでは「スキル使用成功」と表示しません。
 
@@ -41,7 +45,7 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 
 1. ユーザー所有GitHub保管庫から利用可能なパックと、その目的・版・承認状態を一覧する。
 2. 必要な時にユーザーが右クリックメニューで目的に合うスキルパックを一つ選び、画面でCodexまたはClaudeを明示選択する。
-3. `dry-run` で取得元commit、対象、展開場所、期限、cleanup予定、競合を確認する。
+3. GitHub固定commit、対象、承認、全skillと任意のINDEXをメモリ内で検証する。
 4. 選択したpack ID、GitHub URL、commit SHA、全skill ID、instruction digestをタスクへ明示注入する。
 5. CodexではDesktop appの新規taskを開き、全skillの読了と最低1つの適用を必須とする一つのpromptを渡す。
 6. 利用者はDesktop appまたはClaudeの新規conversationで自然文回答を確認する。Skill Magnetはhandoff成功と回答完了を混同しない。
@@ -63,7 +67,7 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 
    ```powershell
    python -m pip wheel . --no-deps --wheel-dir .\dist
-   python -m pip install --force-reinstall .\dist\skill_magnet-0.4.1-py3-none-any.whl
+   python -m pip install --force-reinstall .\dist\skill_magnet-0.5.1-py3-none-any.whl
    ```
 
 3. Windowsの右クリックメニューを登録します。このcommandはrepository rootで、そのままcopy/pasteできます。
@@ -218,16 +222,16 @@ python -m skill_magnet activation-plan --platform windows --project C:\path\to\t
 
 ## 実行先の現状
 
-- Claude: WindowsとmacOSの製品経路は、検証済みpackと依頼を一つのpromptに束縛し、`https://claude.ai/new`の新規conversationへprefillします。clipboard、既存conversation、常設plugin、headless `claude --print`へfallbackしません。handoffは回答完了を意味しません。
+- Claude: WindowsとmacOSの製品経路は、検証済みpackと依頼を一つのpromptに束縛し、`https://claude.ai/new`の新規conversationへprefillします。全skillの読了だけでなく、選んだskillの規則を実作業と最終成果へ具体的に反映するよう要求します。clipboard、既存conversation、常設plugin、headless `claude --print`へfallbackしません。handoffは回答完了を意味しません。
 - Codex: `codex://threads/new?path=...&prompt=...` を使い、Codex Desktop appの新規taskへhandoffします。`path`と`prompt`は別々にURL encodeし、日本語、改行、空白、`&`、`#`を保持します。Skill MagnetのCodex実行先として `codex exec`、`codex resume`、CLI/TUI、cmd、Windows Terminalは起動しません。
 
-Codex Desktopのpromptには、選択pack ID、全skill ID、contract専用materialization内のINDEX/SKILL.mdの絶対pathとdigest、actual request、非デモ実行の指示、期待成果、contract/attemptを人が読める形で含めます。Codexには参照ファイルの全文読了、最低1つの適用、INDEX関係の遵守、実依頼への直接回答を要求し、説明・一覧・準備確認だけで終了することを禁止します。API key、従量課金API、追加支払いは要求しません。deep linkをOSへ渡した時点は `desktop_handoff_ready` です。completion receipt、callback command、Desktop output schemaは作らず、`handoff_completed: true`、`answer_completion_claimed: false`として記録します。詳細は [`docs/mvp-redesign.md`](docs/mvp-redesign.md) にあります。
+Codex DesktopとClaudeのpromptには、選択pack ID、全skill ID、GitHub固定commitのSKILL.md URLとdigest、actual request、非デモ実行の指示、期待成果、contract/attemptを人が読める形で含めます。INDEXはpackに存在する場合だけURLとdigestを含め、その関係を適用させます。LLMには参照ファイルの全文読了とdigest照合に加え、選んだskillの手順・判断基準・境界を実際の分析・編集・生成・検証へ反映して依頼を完了するよう要求します。読む、要約する、候補を挙げるだけでは完了にしません。成果形式は依頼とskillに委ね、JSONを含む特定形式を一律禁止しません。skill contentはローカルへ保存せず、API key、従量課金API、追加支払いも要求しません。handoff時点では回答完了を主張しません。詳細は [`docs/mvp-redesign.md`](docs/mvp-redesign.md) にあります。
 
 旧CLI verification adapterは回帰試験用コードとして残っていますが、Codex Desktop製品経路からは到達しません。global/user Codex configは変更しません。Desktop app自身の設定と認証はDesktop appが所有します。
 
 ## 成果物と完了条件
 
-成果物は、Skill Magnet本体と、そこから独立したユーザー所有のスキル保管庫です。MVPの目的は、保管庫の固定commitから一つのpackageを選び、INDEXと全skillをCodex Desktop appの新規taskへ依頼と一体で渡し、タスク内で必要なskillだけを適用して回答を得ることです。
+成果物は、Skill Magnet本体と、そこから独立したユーザー所有のスキル保管庫です。MVPの目的は、保管庫の固定commitから一つのpackageを選び、全skillと、存在する場合だけINDEXをCodex DesktopまたはClaudeの新規taskへ依頼と一体で渡し、必要なskillの規則を実作業へ適用した完成成果を得ることです。
 
 この一連を両方の成果物を使ったend-to-end自動テストで合格した時だけ完成とします。ローカル配置、候補表示、旧syncテストの成功だけでは完成ではありません。
 
@@ -235,7 +239,7 @@ Codex Desktopのpromptには、選択pack ID、全skill ID、contract専用mater
 
 現段階のテストは二種類あります。
 
-- Desktop handoff E2E: 独立Git保管庫、期限付きcontract、選択pack、actual request、INDEX/SKILL.md digest、skill適用必須prompt、deep-link encoding、`desktop_handoff_ready`、回答完了を主張しない状態、起動失敗cleanupを検証します。
+- Desktop handoff E2E: 独立Git保管庫、期限付きcontract、選択pack、actual request、全SKILL.mdと任意INDEXのdigest、skillの実作業適用を必須にするprompt、deep-link encoding、handoff状態、起動失敗cleanupを検証します。
 - 製品ポリシーテスト: 規範的定義が必須制約を保持し、READMEと設計文書の表示が一致することを検証します。
 - 旧MVPテスト: 旧常設syncエンジンの安全性を回帰確認します。成功しても、再設計後MVPの完成を意味しません。
 
@@ -243,7 +247,7 @@ Codex Desktopのpromptには、選択pack ID、全skill ID、contract専用mater
 python -m unittest discover -s tests -v
 ```
 
-再設計後MVPの完了条件は、別保管庫の固定commitからの単一pack選択、全skillの読込とINDEXに基づく最低1つのskill適用を必須化したprompt、Desktop新規taskへの正確なbinding、API key／従量課金APIを使わないhandoff、Windows ExplorerとmacOS Finderの両実入口を確認することです。handoffは回答完了として表示せず、どちらか一方のadapterだけの成功を完成扱いにしません。
+再設計後MVPの完了条件は、別保管庫の固定commitからの単一pack選択、全skillの読込、存在する場合のINDEX関係、最低1つのskillを実作業へ適用することを必須化したprompt、新規taskへの正確なbinding、API key／従量課金APIを使わないhandoff、Windows ExplorerとmacOS Finderの両実入口を確認することです。handoffは回答完了として表示せず、どちらか一方のadapterだけの成功を完成扱いにしません。
 
 GitHub ActionsはWindowsとmacOSの両jobを必須の同一テストsuiteとして定義しています。片方だけの成功を完成扱いにしません。
 

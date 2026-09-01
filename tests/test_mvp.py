@@ -361,6 +361,59 @@ class MvpTest(unittest.TestCase):
         self.assertEqual(len(state["transactions"]), 1)
         self._assert_no_hidden_transaction_paths()
 
+    def test_tampered_pending_journal_cannot_delete_outside_managed_paths(self) -> None:
+        transaction_id = "0" * 32
+        canary = self.root / "must-not-delete"
+        canary.mkdir()
+        (canary / "user-data.txt").write_text("preserve", encoding="utf-8")
+        target_root = self.config.targets["codex"]
+        self.state.mkdir()
+        self.engine.pending_file.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "id": transaction_id,
+                    "mode": "sync",
+                    "pack": "my-pack",
+                    "state_before": None,
+                    "records": [
+                        {
+                            "target": "codex",
+                            "skill": "first-skill",
+                            "destination": str(canary),
+                            "stage": str(
+                                target_root
+                                / f".skill-magnet-stage-{transaction_id}-first-skill"
+                            ),
+                            "backup": str(
+                                target_root
+                                / f".skill-magnet-old-{transaction_id}-first-skill"
+                            ),
+                            "before_existed": False,
+                            "parent_preexisting": True,
+                            "snapshot": None,
+                            "install": True,
+                        }
+                    ],
+                    "snapshot_root": str(
+                        self.state / "snapshots" / transaction_id
+                    ),
+                    "remove_snapshot_on_revert": True,
+                    "delete_snapshot_on_commit": False,
+                    "state_dir_preexisting": True,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            SafetyError, "Pending record path escapes the managed target"
+        ):
+            self.engine.rollback("my-pack")
+
+        self.assertTrue((canary / "user-data.txt").is_file())
+        self.assertTrue(self.engine.pending_file.is_file())
+
     def test_new_engine_public_rollback_recovers_interruption(self) -> None:
         self.engine.sync("my-pack")
         original = self.engine._activate_stage

@@ -31,6 +31,26 @@ gdi32.CreateCompatibleBitmap.argtypes = (wintypes.HDC, ctypes.c_int, ctypes.c_in
 gdi32.CreateCompatibleBitmap.restype = wintypes.HBITMAP
 gdi32.SelectObject.argtypes = (wintypes.HDC, wintypes.HGDIOBJ)
 gdi32.SelectObject.restype = wintypes.HGDIOBJ
+gdi32.GetDIBits.argtypes = (
+    wintypes.HDC,
+    wintypes.HBITMAP,
+    wintypes.UINT,
+    wintypes.UINT,
+    wintypes.LPVOID,
+    ctypes.c_void_p,
+    wintypes.UINT,
+)
+gdi32.GetDIBits.restype = ctypes.c_int
+gdi32.DeleteObject.argtypes = (wintypes.HGDIOBJ,)
+gdi32.DeleteObject.restype = wintypes.BOOL
+gdi32.DeleteDC.argtypes = (wintypes.HDC,)
+gdi32.DeleteDC.restype = wintypes.BOOL
+user32.GetWindowDC.argtypes = (wintypes.HWND,)
+user32.GetWindowDC.restype = wintypes.HDC
+user32.ReleaseDC.argtypes = (wintypes.HWND, wintypes.HDC)
+user32.ReleaseDC.restype = ctypes.c_int
+user32.PrintWindow.argtypes = (wintypes.HWND, wintypes.HDC, wintypes.UINT)
+user32.PrintWindow.restype = wintypes.BOOL
 
 
 class RECT(ctypes.Structure):
@@ -69,7 +89,7 @@ def window_text(hwnd: int) -> str:
     return value.value
 
 
-def largest_chatgpt_window() -> tuple[int, int, str, RECT]:
+def largest_chatgpt_window(target_pid: int | None = None) -> tuple[int, int, str, RECT]:
     candidates: list[tuple[int, int, str, RECT]] = []
     callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
 
@@ -93,7 +113,10 @@ def largest_chatgpt_window() -> tuple[int, int, str, RECT]:
             name = Path(path.value).name.casefold()
         finally:
             kernel32.CloseHandle(process)
-        if name not in {"chatgpt.exe", "codex.exe"}:
+        if target_pid is not None:
+            if pid.value != target_pid:
+                return True
+        elif name not in {"chatgpt.exe", "codex.exe"}:
             return True
         rect = RECT()
         if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
@@ -156,8 +179,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--metadata", type=Path, required=True)
+    parser.add_argument("--pid", type=int)
     args = parser.parse_args()
-    hwnd, pid, title, rect = largest_chatgpt_window()
+    hwnd, pid, title, rect = largest_chatgpt_window(args.pid)
     capture(hwnd, rect, args.output)
     metadata = {
         "captured_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -171,7 +195,7 @@ def main() -> int:
         json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    print(json.dumps(metadata, ensure_ascii=False))
+    print(json.dumps(metadata, ensure_ascii=True))
     return 0
 
 

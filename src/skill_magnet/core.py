@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import copy
 import base64
+import binascii
 import hashlib
+import io
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import uuid
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +31,16 @@ def normalize_display_text(value: str) -> str:
     This intentionally is not a general HTML entity decoder. Values such as
     ``&lt;`` remain literal, and callers retain the original value for contracts,
     identifiers, hashes, and execution.
+    """
+    return _HTML_U0020_REFERENCE.sub(" ", value)
+
+
+def normalize_actual_request(value: str) -> str:
+    """Canonicalize numeric U+0020 references before request confirmation.
+
+    This deliberately shares the narrow display normalization without decoding
+    general HTML entities.  The returned value is the single source for the
+    launch contract, request digest, and runtime handoff.
     """
     return _HTML_U0020_REFERENCE.sub(" ", value)
 
@@ -65,17 +80,11 @@ def _expand_path(value: str, base: Path) -> Path:
 
 
 def _pack_source(value: str, base: Path) -> Path:
-    prefix = "package://"
-    if not value.startswith(prefix):
-        return _expand_path(value, base)
-    name = value[len(prefix) :]
-    if not SKILL_NAME.fullmatch(name):
-        raise SkillMagnetError(f"Invalid packaged source name: {value}")
-    packaged = Path(__file__).resolve().parent / "_packs" / name
-    if packaged.is_dir():
-        return packaged.resolve()
-    source_checkout = base / ".approved-snapshots" / name
-    return source_checkout.resolve()
+    if value.startswith("package://"):
+        raise SkillMagnetError(
+            "Packaged skill sources are prohibited; use the pinned GitHub repository"
+        )
+    return _expand_path(value, base)
 
 
 def _parse_github_repo(url: str) -> tuple[str, str]:
@@ -172,7 +181,7 @@ class Pack:
     pack_id: str
     repo_url: str
     expected_commit: str
-    source: Path
+    source: Path | None
     skills: tuple[str, ...]
     approved_by: str = ""
     approved_at: str = ""
@@ -274,11 +283,16 @@ class Config:
                     "display_name": display_name,
                     "purpose": purpose,
                 }
+            source_value = raw.get("source")
             self.packs[pack_id] = Pack(
                 pack_id=pack_id,
                 repo_url=str(raw.get("repo_url", "")),
                 expected_commit=str(raw.get("expected_commit", "")).lower(),
-                source=_pack_source(str(raw.get("source", "")), self.base),
+                source=(
+                    _pack_source(str(source_value), self.base)
+                    if source_value is not None
+                    else None
+                ),
                 skills=skills,
                 approved_by=str(raw.get("approved_by", "")).strip(),
                 approved_at=str(raw.get("approved_at", "")).strip(),
@@ -317,6 +331,144 @@ class Engine:
         self.state_dir = (state_dir or config.state_dir).resolve()
         self.state_file = self.state_dir / "state.json"
         self.pending_file = self.state_dir / "pending-transaction.json"
+        self._remote_pack_files: dict[str, dict[str, bytes]] = {}
+
+    @staticmethod
+    def _github_archive_url(pack: Pack) -> str:
+        owner, repository = _parse_github_repo(pack.repo_url)
+        return (
+            f"https://codeload.github.com/{owner}/{repository}/tar.gz/"
+            f"{pack.expected_commit}"
+        )
+
+    def _load_remote_pack(self, pack: Pack) -> dict[str, bytes]:
+        cached = self._remote_pack_files.get(pack.pack_id)
+        if cached is not None:
+            return cached
+        archive_url = self._github_archive_url(pack)
+        request = urllib.request.Request(
+            archive_url,
+            headers={"User-Agent": "Skill-Magnet/0.5"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                if response.geturl() != archive_url:
+                    raise SafetyError(
+                        "Pinned GitHub skill archive redirected to an unexpected URL"
+                    )
+                archive = response.read(16 * 1024 * 1024 + 1)
+        except (OSError, urllib.error.URLError) as exc:
+            raise SkillMagnetError(
+                f"Cannot read pinned GitHub skill repository: {exc}"
+            ) from exc
+        if len(archive) > 16 * 1024 * 1024:
+            raise SafetyError("Pinned GitHub skill archive exceeds 16 MiB")
+        files: dict[str, bytes] = {}
+        total = 0
+        try:
+            with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as bundle:
+                members = bundle.getmembers()
+                if len(members) > 5000:
+                    raise SafetyError("Pinned GitHub skill archive has too many entries")
+                for member in members:
+                    parts = Path(member.name).parts
+                    if len(parts) < 2:
+                        continue
+                    relative_parts = parts[1:]
+                    if any(part in {"", ".", ".."} for part in relative_parts):
+                        raise SafetyError("Unsafe path in pinned GitHub skill archive")
+                    relative = "/".join(relative_parts)
+                    if member.isdir():
+                        continue
+                    if not member.isfile() or member.issym() or member.islnk():
+                        raise SafetyError("Links are not allowed in a GitHub skill pack")
+                    if relative in files:
+                        raise SafetyError("Duplicate path in pinned GitHub skill archive")
+                    extracted = bundle.extractfile(member)
+                    if extracted is None:
+                        raise SafetyError("Cannot read pinned GitHub skill archive entry")
+                    content = extracted.read(4 * 1024 * 1024 + 1)
+                    if len(content) > 4 * 1024 * 1024:
+                        raise SafetyError(f"GitHub skill file exceeds 4 MiB: {relative}")
+                    total += len(content)
+                    if total > 32 * 1024 * 1024:
+                        raise SafetyError("Expanded GitHub skill pack exceeds 32 MiB")
+                    files[relative] = content
+        except (tarfile.TarError, OSError) as exc:
+            raise SafetyError(f"Invalid pinned GitHub skill archive: {exc}") from exc
+        self._remote_pack_files[pack.pack_id] = files
+        return files
+
+    def pack_bytes(self, pack: Pack, relative: str) -> bytes:
+        if pack.source is not None:
+            path = pack.source.joinpath(*Path(relative).parts)
+            if not path.is_file() or _is_link(path):
+                raise SafetyError(f"Cannot read approved skill artifact: {relative}")
+            return path.read_bytes()
+        try:
+            return self._load_remote_pack(pack)[relative]
+        except KeyError as exc:
+            raise SafetyError(f"Cannot read approved skill artifact: {relative}") from exc
+
+    def pack_text(self, pack: Pack, relative: str) -> str:
+        try:
+            return self.pack_bytes(pack, relative).decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise SafetyError(f"Approved skill artifact is not UTF-8: {relative}") from exc
+
+    def _remote_skill_hash(self, pack: Pack, skill: str) -> str:
+        files = self._load_remote_pack(pack)
+        prefix = f"{skill}/"
+        selected = sorted(
+            (path[len(prefix):], content)
+            for path, content in files.items()
+            if path.startswith(prefix)
+        )
+        if not selected:
+            raise SkillMagnetError(f"Invalid GitHub skill directory: {skill}")
+        digest = hashlib.sha256()
+        for relative, content in selected:
+            digest.update(relative.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(content)
+            digest.update(b"\0")
+        return digest.hexdigest()
+
+    def _validate_remote_pack(self, pack: Pack) -> tuple[str, dict[str, str]]:
+        files = self._load_remote_pack(pack)
+        hashes: dict[str, str] = {}
+        for skill in pack.skills:
+            skill_file = f"{skill}/SKILL.md"
+            content = self.pack_text(pack, skill_file)
+            lines = content.splitlines()
+            if not lines or lines[0].strip() != "---":
+                raise SkillMagnetError(f"SKILL.md is missing YAML frontmatter: {skill}")
+            metadata: dict[str, str] = {}
+            for line in lines[1:]:
+                if line.strip() == "---":
+                    break
+                match = re.match(r"^([A-Za-z0-9_-]+):\s*(.*?)\s*$", line)
+                if match:
+                    metadata[match.group(1)] = match.group(2).strip("'\"")
+            else:
+                raise SkillMagnetError(f"SKILL.md frontmatter is not closed: {skill}")
+            if metadata.get("name") != skill or not metadata.get("description"):
+                raise SafetyError(f"Invalid GitHub skill metadata: {skill}")
+            prefix = f"{skill}/"
+            for relative, value in files.items():
+                if not relative.startswith(prefix):
+                    continue
+                name = relative.rsplit("/", 1)[-1]
+                if any(pattern.fullmatch(name) for pattern in SECRET_FILE_NAMES):
+                    raise SafetyError(
+                        f"Secret-like file is not allowed in a skill pack: {relative}"
+                    )
+                if any(pattern.search(value) for pattern in SECRET_CONTENT):
+                    raise SafetyError(
+                        f"Secret-like content is not allowed in a skill pack: {relative}"
+                    )
+            hashes[skill] = self._remote_skill_hash(pack, skill)
+        return pack.expected_commit, hashes
 
     def _pack(self, pack_id: str) -> Pack:
         try:
@@ -330,6 +482,8 @@ class Engine:
             raise SafetyError(
                 f"Repository owner {expected_owner} is not in allowed_github_owners"
             )
+        if pack.source is None:
+            return self._validate_remote_pack(pack)
         if not pack.source.is_dir():
             raise SkillMagnetError(f"Pack source does not exist: {pack.source}")
         snapshot_path = pack.source / ".skill-magnet-snapshot.json"
@@ -465,6 +619,90 @@ class Engine:
             raise SafetyError(f"Refusing to remove unexpected transaction path: {path}")
         shutil.rmtree(path)
 
+    def _validate_pending_recovery(self, pending: dict[str, Any]) -> None:
+        """Reject journals whose paths are outside product-owned boundaries."""
+        if pending.get("version") != 1:
+            raise SafetyError("Unsupported pending-transaction version")
+        transaction_id = pending.get("id")
+        mode = pending.get("mode")
+        pack_id = pending.get("pack")
+        if not isinstance(transaction_id, str) or not re.fullmatch(
+            r"[0-9a-f]{32}", transaction_id
+        ):
+            raise SafetyError("Invalid pending-transaction id")
+        if mode not in {"sync", "rollback"} or pack_id not in self.config.packs:
+            raise SafetyError("Invalid pending-transaction identity")
+        records = pending.get("records")
+        if not isinstance(records, list):
+            raise SafetyError("Invalid pending-transaction records")
+
+        expected_snapshot_root = (
+            self.state_dir / "snapshots" / transaction_id
+        ).resolve()
+        try:
+            snapshot_root = Path(str(pending["snapshot_root"])).resolve()
+        except (KeyError, OSError) as exc:
+            raise SafetyError("Invalid pending snapshot path") from exc
+        if snapshot_root != expected_snapshot_root:
+            raise SafetyError("Pending snapshot path escapes the state directory")
+
+        expected_flags = (
+            (True, False) if mode == "sync" else (False, True)
+        )
+        if (
+            pending.get("remove_snapshot_on_revert"),
+            pending.get("delete_snapshot_on_commit"),
+        ) != expected_flags:
+            raise SafetyError("Invalid pending snapshot cleanup policy")
+        encoded_state = pending.get("state_before")
+        if encoded_state is not None:
+            if not isinstance(encoded_state, str):
+                raise SafetyError("Invalid pending state snapshot")
+            try:
+                base64.b64decode(encoded_state, validate=True)
+            except (ValueError, binascii.Error) as exc:
+                raise SafetyError("Invalid pending state snapshot") from exc
+
+        pack = self.config.packs[str(pack_id)]
+        recovery_token = (
+            transaction_id if mode == "sync" else f"{transaction_id}-rollback"
+        )
+        for record in records:
+            if not isinstance(record, dict):
+                raise SafetyError("Invalid pending-transaction record")
+            target = record.get("target")
+            skill = record.get("skill")
+            if target not in self.config.targets or skill not in pack.skills:
+                raise SafetyError("Pending record is outside the configured pack")
+            target_root = self.config.targets[str(target)].resolve()
+            if _is_link(target_root):
+                raise SafetyError("Pending record target root is a link")
+            destination = (target_root / str(skill)).resolve()
+            expected_stage = (
+                target_root / f".skill-magnet-stage-{recovery_token}-{skill}"
+            ).resolve()
+            expected_backup = (
+                target_root / f".skill-magnet-old-{recovery_token}-{skill}"
+            ).resolve()
+            expected_snapshot = (
+                expected_snapshot_root / str(target) / str(skill)
+            ).resolve()
+            try:
+                actual_destination = Path(str(record["destination"])).resolve()
+                actual_stage = Path(str(record["stage"])).resolve()
+                actual_backup = Path(str(record["backup"])).resolve()
+            except (KeyError, OSError) as exc:
+                raise SafetyError("Invalid pending record path") from exc
+            if (
+                actual_destination != destination
+                or actual_stage != expected_stage
+                or actual_backup != expected_backup
+            ):
+                raise SafetyError("Pending record path escapes the managed target")
+            snapshot = record.get("snapshot")
+            if snapshot is not None and Path(str(snapshot)).resolve() != expected_snapshot:
+                raise SafetyError("Pending record snapshot escapes the state directory")
+
     def _transaction_is_committed(self, pending: dict[str, Any]) -> bool:
         try:
             state = self._load_state()
@@ -491,6 +729,9 @@ class Engine:
             pending = json.loads(self.pending_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise SafetyError(f"Cannot recover pending transaction: {exc}") from exc
+        if not isinstance(pending, dict):
+            raise SafetyError("Cannot recover pending transaction: expected an object")
+        self._validate_pending_recovery(pending)
         committed = not force_revert and self._transaction_is_committed(pending)
         records = pending.get("records", [])
         if committed:

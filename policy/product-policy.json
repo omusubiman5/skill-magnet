@@ -6,10 +6,10 @@
     "GitHubのユーザー所有保管庫を唯一の正本とする。",
     "Skill Magnetはスキルの目的に沿って、必要なパックだけを明示選択して呼び出す。",
     "Codex/Claudeへの全件・常設・暗黙同期を既定にしない。",
-    "一時ローカル展開が技術的に必要な場合も、対象・理由・期限・cleanupを明示し、検証後に片付ける。",
+    "skillの保管は該当するユーザー所有GitHub repositoryだけとし、ローカルへskill contentを保存・複製・materializeしない。",
     "保管庫の版・来歴・承認を保持する。",
     "ローカル配置の成功を、スキルの読み込み成功または使用成功とみなさない。",
-    "選択したpackとversionをタスクへ明示し、全skillの読了と最低1つの適用をpromptで必須にする。",
+    "選択したpackとversionをタスクへ明示し、全skillの読了、最低1つの実作業への適用、存在する場合だけINDEX関係の適用をpromptで必須にする。読了や要約だけを実行完了とみなさない。",
     "Codex/Claudeの既存利用プランを使い、API key、従量課金API、追加支払いを製品経路で要求しない。",
     "公式に確認できる経路または必要な証拠がない場合はfail-closedで停止し、保証外であることを明示する。",
     "起動はユーザーの右クリックメニューからの明示選択を条件とし、自動提案・自動配布・自動有効化をしない。",
@@ -33,14 +33,15 @@
       "automatic_distribution",
       "automatic_activation",
       "local_placement_as_activation",
+      "temporary_skill_materialization",
       "unverified_skill_use"
     ]
   },
-  "temporary_materialization": {
-    "allowed_only_when_runtime_requires": true,
-    "required_fields": ["target", "reason", "expires_at", "cleanup_plan"],
-    "cleanup_trigger": "after_handoff_failure_or_expiry",
-    "required_final_state": "no_residue"
+  "skill_content_storage": {
+    "allowed_location": "configured_user_owned_github_repository_only",
+    "local_storage": "prohibited",
+    "runtime_verification": "bounded_in_memory_bytes_only",
+    "local_metadata_json": "allowed_without_skill_content"
   },
   "provenance": {
     "required": true,
@@ -84,11 +85,13 @@
     "success_state": "desktop_handoff_ready",
     "success_proves_only": "prompt_delivery_to_new_desktop_task",
     "prompt_requires": [
-      "read_index_and_all_skill_files",
+      "read_all_skill_files_and_index_if_present",
       "apply_at_least_one_applicable_skill",
+      "apply_selected_skill_rules_to_actual_work_and_deliverable",
       "obey_index_relationships_and_skill_boundaries",
       "complete_actual_request_in_one_unified_answer",
-      "do_not_finish_with_skill_explanation_or_preparation_only"
+      "do_not_finish_with_skill_reading_summary_or_preparation_only",
+      "do_not_restrict_output_format_beyond_request_and_skill"
     ],
     "placement_is_not_evidence_of": ["skill_read", "skill_application"],
     "answer_completion_claimed": false,
@@ -120,6 +123,7 @@
   },
   "legacy_persistent_sync": {
     "default_enabled": false,
-    "production_use": "prohibited_until_redesign_is_approved_and_implemented"
+    "production_use": "permanently_prohibited",
+    "cli_override": false
   }
 }

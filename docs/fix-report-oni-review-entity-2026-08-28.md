@@ -1,5 +1,7 @@
 # `（鬼レビュー対応）&#x20;` 表示 対応報告
 
+> 2026-09-01追記: この対応の表示専用正規化だけではhandoff本文のliteral entityを除去できなかった。依頼確定境界まで拡張した現行対応は[`fix-report-actual-request-u0020-2026-09-01.md`](fix-report-actual-request-u0020-2026-09-01.md)を参照すること。
+
 日付: 2026-08-28  
 対象: `C:\Projects\skill-magnet`  
 状態: partial（実装・自動test完了、実画面受入未完了）

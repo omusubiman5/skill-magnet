@@ -1,0 +1,13 @@
+{
+  "captured_at_utc": "2026-08-30T14:29:32.160239+00:00",
+  "window_handle": 4982708,
+  "window_pid": 6840,
+  "window_title": "ChatGPT",
+  "window_rect": [
+    -8,
+    -8,
+    1928,
+    1040
+  ],
+  "capture_method": "Win32 PrintWindow(PW_RENDERFULLCONTENT), window rectangle only"
+}

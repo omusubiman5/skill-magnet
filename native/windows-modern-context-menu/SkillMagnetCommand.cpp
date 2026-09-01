@@ -313,7 +313,7 @@ public:
         PROCESS_INFORMATION process{};
         if (!CreateProcessW(nullptr, mutable_command.data(), nullptr, nullptr, FALSE,
                             CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW, nullptr,
-                            project.c_str(),
+                            nullptr,
                             &startup, &process)) {
             const DWORD error = GetLastError();
             LogInvokeEvent(L"create_process_failed", launch_digest, error);

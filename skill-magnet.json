@@ -11,7 +11,6 @@
       "selection_kind": "package",
       "repo_url": "https://github.com/omusubiman5/codex-pmo-skills.git",
       "expected_commit": "8f12af5ddfdd3b985f26d33dad09d6061d675342",
-      "source": "package://codex-delivery-assurance-8f12af5",
       "purpose": "Assess delivery readiness with reviewed Codex execution, authorization, sandbox, MCP, CI, context-routing, and handoff controls.",
       "approved_by": "user",
       "approved_at": "2026-08-22T18:15:11.6526999+09:00",
