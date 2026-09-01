@@ -25,9 +25,14 @@
 - entity-bearing actual requestのcontract・SHA・Desktop prompt統一: PASS
 - Python 0.5.1 / MSIX 0.5.1.0同期: PASS
 - wheel build: PASS
+- Windows install: `SkillMagnet.ContextMenu_0.5.1.0_x64__byy1sc3mfzfz4`
+- Windows context menu status: `usable_installed_state: true` / `menu_contract_matches_config: true` / 1 package leaf
+- Explorer実UI: `Skill Magnet`→`Delivery Assurance`→`Skill Magnet — 実行確認`の起動、project/pack/実行AI/依頼内容/実行・取消UIを確認: PASS
+- 外部AIへのテスト送信: フィールドUI受入範囲外のため未送信（handoff契約は自動テスト済み）
 
 ## 成果物
 
+- release code commit: `bd88138f0a04be3fae2eb1c0a5e37b2acc2c5b15`
 - `dist/skill_magnet-0.5.1-py3-none-any.whl`
 - wheel SHA-256: `1335abceda94b20955ebf877330695e41dac6a84530c0a0a788b5e5eee0e8fda`
 - logical payload SHA-256: `c463dc6bacaa10dd8959e3e5c63119a021073f56f5d6de8d1c0c652e1d20be32`
