@@ -11,13 +11,13 @@
   "release_scope": "one-package-leaf",
   "release_version": "0.5.2",
   "distribution_scope": "local-self-signed",
-  "full_test_count": 140,
+  "full_test_count": 146,
   "menu_leaf_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
   "release_code_sha": "b3b7a3dd176311732341b6ae8cf19cb5cddac1a2",
   "wheel_payload_sha256": "c96f964a9799de4fec3240797f4f2b07dae4f3920d531a7632cbcf7651a3ce9d",
-  "automated_status": "LOCAL_RELEASE_GATE_PASS_140",
+  "automated_status": "LOCAL_RELEASE_GATE_PASS_146",
   "windows_explorer_field_status": "PASS_REAL_RIGHT_CLICK_MENU_AND_CONFIRMATION_UI_0_5_1",
   "macos_finder_field_status": "CI_SEMANTIC_ONLY_REAL_UI_NOT_CLAIMED_FOR_0_5_2",
   "public_distribution_status": "NOT_CLAIMED_REQUIRES_EXTERNAL_PUBLISHER",
@@ -25,7 +25,7 @@
 }
 explorer-results-ledger:end -->
 
-- 統合テスト: `python -m unittest discover -s tests -v` — 140 tests PASS、環境依存1件skip
+- 統合テスト: `python -m unittest discover -s tests -v` — 146 tests PASS、環境依存1件skip
 - menu contract: 1 package leaf / selection kind `package` / pack内9 skills
 - 自動証拠: contract固定、GitHub固定commitのINDEX/全SKILL参照、archiveのメモリ内検証、deep-link binding、ローカルskill残留ゼロ
 - wheel再現性: 独立した2 directoryで0.4.0 wheelをbuildし、論理payload SHA-256が両方`c9a0ffe8f542fd475144ac8fecd284175a46863d69d1d44ec5be78ed901ba38f`で一致した。

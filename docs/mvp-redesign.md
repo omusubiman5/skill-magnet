@@ -8,7 +8,7 @@
 - GitHubのユーザー所有保管庫を唯一の正本とする。
 - Skill Magnetはスキルの目的に沿って、必要なパックだけを明示選択して呼び出す。
 - Codex/Claudeへの全件・常設・暗黙同期を既定にしない。
-- skillの保管は該当するユーザー所有GitHub repositoryだけとし、ローカルへskill contentを保存・複製・materializeしない。
+- skillの永続保管は該当するユーザー所有GitHub repositoryだけとする。明示したlibrary編集transaction中だけ製品所有の隔離workspaceへ一時複製できるが、実行用materializeには使わず完了後に削除する。
 - 保管庫の版・来歴・承認を保持する。
 - ローカル配置の成功を、スキルの読み込み成功または使用成功とみなさない。
 - 選択したpackとversionをタスクへ明示し、全skillの読了、最低1つの実作業への適用、存在する場合だけINDEX関係の適用をpromptで必須にする。読了や要約だけを実行完了とみなさない。

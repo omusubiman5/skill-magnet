@@ -2,7 +2,7 @@
 artifact: prd
 version: "1.0"
 created: 2026-09-02
-status: draft
+status: implemented
 ---
 
 # 要件定義: Skill Library Manager
@@ -304,3 +304,4 @@ Skill Magnetへ「Skill Library Manager」を追加する。利用者はアプ�
 | Version | Date | Author | Changes |
 |---|---|---|---|
 | 1.0 | 2026-09-02 | Codex | 初版。汎用repository命名とアプリ内skill追加transactionを定義 |
+| 1.1 | 2026-09-02 | Codex | FR-1〜FR-21の実装・検証完了に伴いstatusをimplementedへ更新 |

@@ -1,0 +1,908 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import tempfile
+import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable, Iterable
+
+from .core import Config, SKILL_NAME, SkillMagnetError
+
+
+CATALOG_FILENAME = "skill-magnet.catalog.json"
+CATALOG_VERSION = 1
+TRANSACTION_VERSION = 1
+DEFAULT_REPOSITORY_NAME = "skill-magnet-skills"
+RELATION_TYPES = ("depends-on", "composes-with", "contrasts-with")
+TERMINAL_STATES = {"active", "rolled_back"}
+SECRET_RULES = (
+    ("private-key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")),
+    ("github-token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b")),
+    ("generic-secret", re.compile(r"(?i)\b(?:api[_-]?key|secret|token)\s*[:=]\s*['\"]?[A-Za-z0-9_./+\-=]{16,}")),
+)
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _canonical(value: Any) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def _sha256(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _atomic_json(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(value, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SkillMagnetError(f"Cannot read JSON: {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise SkillMagnetError(f"JSON root must be an object: {path}")
+    return value
+
+
+def _safe_relative(value: str) -> PurePosixPath:
+    normalized = value.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    if (
+        not normalized
+        or path.is_absolute()
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or re.match(r"^[A-Za-z]:", normalized)
+    ):
+        raise SkillMagnetError(f"Unsafe relative path: {value}")
+    return path
+
+
+def _frontmatter(text: str, source: str) -> dict[str, str]:
+    lines = text.lstrip("\ufeff").splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise SkillMagnetError(f"SKILL.md is missing YAML frontmatter: {source}")
+    result: dict[str, str] = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        match = re.match(r"^([A-Za-z0-9_-]+):\s*(.*?)\s*$", line)
+        if match:
+            result[match.group(1)] = match.group(2).strip("'\"")
+    else:
+        raise SkillMagnetError(f"SKILL.md frontmatter is not closed: {source}")
+    return result
+
+
+def _scan_secret(relative: str, data: bytes) -> None:
+    text = data.decode("utf-8", errors="replace")
+    for rule, pattern in SECRET_RULES:
+        if pattern.search(text):
+            raise SkillMagnetError(f"Secret candidate rejected: {relative} ({rule})")
+
+
+def _repository_files(root: Path) -> dict[str, bytes]:
+    root = root.resolve()
+    if not root.is_dir():
+        raise SkillMagnetError(f"Library directory does not exist: {root}")
+    files: dict[str, bytes] = {}
+    for candidate in sorted(root.rglob("*")):
+        if ".git" in candidate.relative_to(root).parts:
+            continue
+        if candidate.is_symlink():
+            raise SkillMagnetError(
+                f"Symbolic links are not allowed: {candidate.relative_to(root)}"
+            )
+        if candidate.is_dir():
+            continue
+        relative = candidate.relative_to(root).as_posix()
+        _safe_relative(relative)
+        data = candidate.read_bytes()
+        _scan_secret(relative, data)
+        files[relative] = data
+    return files
+
+
+def _pack_map(catalog: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    packs = catalog.get("packs")
+    if not isinstance(packs, list) or not packs:
+        raise SkillMagnetError("Catalog packs must be a non-empty list")
+    result: dict[str, dict[str, Any]] = {}
+    for pack in packs:
+        if not isinstance(pack, dict):
+            raise SkillMagnetError("Each catalog pack must be an object")
+        pack_id = str(pack.get("id", ""))
+        if not SKILL_NAME.fullmatch(pack_id) or pack_id in result:
+            raise SkillMagnetError(f"Invalid or duplicate pack id: {pack_id}")
+        result[pack_id] = pack
+    return result
+
+
+def _catalog_skills(catalog: dict[str, Any]) -> tuple[str, ...]:
+    ordered: list[str] = []
+    for pack in _pack_map(catalog).values():
+        skills = pack.get("skills")
+        if not isinstance(skills, list) or not skills:
+            raise SkillMagnetError(f"Pack {pack['id']} must list skills")
+        if len(skills) != len(set(map(str, skills))):
+            raise SkillMagnetError(f"Pack {pack['id']} has duplicate skills")
+        for raw in skills:
+            skill = str(raw)
+            if not SKILL_NAME.fullmatch(skill):
+                raise SkillMagnetError(f"Invalid skill id: {skill}")
+            if skill not in ordered:
+                ordered.append(skill)
+    return tuple(ordered)
+
+
+def _validate_relations(catalog: dict[str, Any], all_skills: set[str]) -> None:
+    for pack in _pack_map(catalog).values():
+        selected = set(map(str, pack["skills"]))
+        relations = pack.get("relations", {})
+        if not isinstance(relations, dict) or set(relations) - set(RELATION_TYPES):
+            raise SkillMagnetError(f"Pack {pack['id']} has invalid relations")
+        graph: dict[str, set[str]] = {skill: set() for skill in all_skills}
+        contrasts: set[frozenset[str]] = set()
+        for kind in RELATION_TYPES:
+            entries = relations.get(kind, [])
+            if not isinstance(entries, list):
+                raise SkillMagnetError(f"Relation {kind} must be a list")
+            for pair in entries:
+                if not isinstance(pair, list) or len(pair) != 2:
+                    raise SkillMagnetError(f"Relation {kind} must contain [source, target]")
+                left, right = map(str, pair)
+                unknown = {left, right} - all_skills
+                if unknown:
+                    raise SkillMagnetError(
+                        f"Relation {kind} references unknown skills: {', '.join(sorted(unknown))}"
+                    )
+                if left == right:
+                    raise SkillMagnetError(f"Relation {kind} cannot be self-referential: {left}")
+                if kind == "depends-on":
+                    graph[left].add(right)
+                    if left in selected and right not in selected:
+                        raise SkillMagnetError(
+                            f"Pack {pack['id']} omits dependency: {left} depends-on {right}"
+                        )
+                elif kind == "contrasts-with":
+                    contrasts.add(frozenset((left, right)))
+        for pair in contrasts:
+            if pair <= selected:
+                raise SkillMagnetError(
+                    f"Pack {pack['id']} selects contrasting skills: {', '.join(sorted(pair))}"
+                )
+        visiting: list[str] = []
+        visited: set[str] = set()
+
+        def visit(node: str) -> None:
+            if node in visiting:
+                cycle = visiting[visiting.index(node) :] + [node]
+                raise SkillMagnetError("Dependency cycle: " + " -> ".join(cycle))
+            if node in visited:
+                return
+            visiting.append(node)
+            for dependency in graph[node]:
+                visit(dependency)
+            visiting.pop()
+            visited.add(node)
+
+        for skill in sorted(graph):
+            visit(skill)
+
+
+def render_index(catalog: dict[str, Any]) -> str:
+    lines = ["# Skill Library INDEX", "", "```mermaid", "flowchart TD"]
+    seen: set[tuple[str, str, str]] = set()
+    for pack in _pack_map(catalog).values():
+        relations = pack.get("relations", {})
+        for kind in RELATION_TYPES:
+            for left, right in relations.get(kind, []):
+                edge = (str(left), kind, str(right))
+                if edge in seen:
+                    continue
+                seen.add(edge)
+                connector = "-.->" if kind == "contrasts-with" else "-->"
+                lines.append(f'  {left}["{left}"] {connector}|{kind}| {right}["{right}"]')
+    lines.extend(["```", ""])
+    return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class ValidationResult:
+    repository_name: str
+    pack_ids: tuple[str, ...]
+    skill_ids: tuple[str, ...]
+    manifest: dict[str, str]
+    menu_shape: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "valid": True,
+            "repository_name": self.repository_name,
+            "pack_ids": list(self.pack_ids),
+            "skill_ids": list(self.skill_ids),
+            "manifest": dict(self.manifest),
+            "menu_shape": self.menu_shape,
+        }
+
+
+def validate_library(root: Path) -> ValidationResult:
+    root = root.resolve()
+    files = _repository_files(root)
+    if CATALOG_FILENAME not in files:
+        raise SkillMagnetError(f"Missing required catalog: {CATALOG_FILENAME}")
+    try:
+        catalog = json.loads(files[CATALOG_FILENAME].decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SkillMagnetError(f"Invalid {CATALOG_FILENAME}: {exc}") from exc
+    if not isinstance(catalog, dict) or catalog.get("schema_version") != CATALOG_VERSION:
+        raise SkillMagnetError("Unsupported catalog schema_version")
+    repository = catalog.get("repository")
+    if not isinstance(repository, dict):
+        raise SkillMagnetError("Catalog repository must be an object")
+    repository_name = str(repository.get("name", "")).strip()
+    if not repository_name:
+        raise SkillMagnetError("Catalog repository.name is required")
+    skills = _catalog_skills(catalog)
+    all_skills = set(skills)
+    _validate_relations(catalog, all_skills)
+    seen_directories = {
+        path.parts[0]
+        for relative in files
+        if len((path := PurePosixPath(relative)).parts) == 2
+        and path.parts[1] in {"SKILL.md", "acceptance.json"}
+    }
+    extras = seen_directories - all_skills
+    if extras:
+        raise SkillMagnetError("Uncataloged skill directories: " + ", ".join(sorted(extras)))
+    for skill in skills:
+        skill_path = f"{skill}/SKILL.md"
+        acceptance_path = f"{skill}/acceptance.json"
+        if skill_path not in files or acceptance_path not in files:
+            raise SkillMagnetError(f"Skill {skill} requires SKILL.md and acceptance.json")
+        try:
+            skill_text = files[skill_path].decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise SkillMagnetError(f"SKILL.md must be UTF-8: {skill}") from exc
+        metadata = _frontmatter(skill_text, skill_path)
+        if metadata.get("name") != skill:
+            raise SkillMagnetError(f"SKILL.md name must equal directory id: {skill}")
+        lowered = skill_text.casefold()
+        if "trigger" not in lowered or "boundary" not in lowered:
+            raise SkillMagnetError(f"Skill {skill} must define trigger and boundary")
+        try:
+            acceptance = json.loads(files[acceptance_path].decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise SkillMagnetError(f"Invalid acceptance.json for {skill}: {exc}") from exc
+        if not isinstance(acceptance, dict) or acceptance.get("version") != 1:
+            raise SkillMagnetError(f"Skill {skill} acceptance.json requires version 1")
+        assertions = acceptance.get("assertions")
+        if not isinstance(assertions, list) or not assertions:
+            raise SkillMagnetError(f"Skill {skill} requires acceptance assertions")
+        for assertion in assertions:
+            if (
+                not isinstance(assertion, dict)
+                or not isinstance(assertion.get("path"), str)
+                or "equals" not in assertion
+                or not re.fullmatch(r"result\.[A-Za-z_][A-Za-z0-9_-]*", assertion["path"])
+                or isinstance(assertion["equals"], (dict, list))
+            ):
+                raise SkillMagnetError(f"Skill {skill} has an invalid acceptance assertion")
+    expected_index = render_index(catalog).encode("utf-8")
+    if "INDEX.md" in files and files["INDEX.md"].replace(b"\r\n", b"\n") != expected_index:
+        raise SkillMagnetError("INDEX.md does not match catalog relations")
+    manifest_paths = {CATALOG_FILENAME}
+    if "INDEX.md" in files:
+        manifest_paths.add("INDEX.md")
+    for skill in skills:
+        manifest_paths.update((f"{skill}/SKILL.md", f"{skill}/acceptance.json"))
+    manifest = {path: _sha256(files[path]) for path in sorted(manifest_paths)}
+    menu_value = [
+        {
+            "id": pack_id,
+            "label": str(pack.get("display_name", pack_id)),
+            "skills": list(map(str, pack["skills"])),
+        }
+        for pack_id, pack in _pack_map(catalog).items()
+    ]
+    return ValidationResult(
+        repository_name=repository_name,
+        pack_ids=tuple(_pack_map(catalog)),
+        skill_ids=skills,
+        manifest=manifest,
+        menu_shape=_sha256(_canonical(menu_value)),
+    )
+
+
+def initialize_library(root: Path, name: str = DEFAULT_REPOSITORY_NAME) -> dict[str, Any]:
+    root = root.resolve()
+    if root.exists() and any(root.iterdir()):
+        raise SkillMagnetError("Library initialization requires a new or empty directory")
+    root.mkdir(parents=True, exist_ok=True)
+    catalog = {
+        "schema_version": CATALOG_VERSION,
+        "repository": {"name": name or DEFAULT_REPOSITORY_NAME},
+        "packs": [],
+    }
+    _atomic_json(root / CATALOG_FILENAME, catalog)
+    return {"repository": str(root), "name": catalog["repository"]["name"]}
+
+
+def add_skill(
+    root: Path,
+    *,
+    skill_id: str,
+    display_name: str,
+    purpose: str,
+    pack_id: str,
+    pack_display_name: str | None = None,
+    skill_source: Path | None = None,
+) -> dict[str, Any]:
+    if not SKILL_NAME.fullmatch(skill_id) or not SKILL_NAME.fullmatch(pack_id):
+        raise SkillMagnetError("Invalid skill or pack id")
+    root = root.resolve()
+    catalog_path = root / CATALOG_FILENAME
+    catalog = _read_json(catalog_path)
+    existing_skills = set(_catalog_skills(catalog)) if catalog.get("packs") else set()
+    if skill_id in existing_skills or (root / skill_id).exists():
+        raise SkillMagnetError(f"Skill already exists: {skill_id}")
+    target = root / skill_id
+    target.mkdir()
+    previous_catalog = catalog_path.read_bytes()
+    index_path = root / "INDEX.md"
+    previous_index = index_path.read_bytes() if index_path.exists() else None
+    try:
+        if skill_source is not None:
+            source = skill_source.resolve()
+            source_files = _repository_files(source)
+            for required in ("SKILL.md", "acceptance.json"):
+                if required not in source_files:
+                    raise SkillMagnetError(f"Imported skill is missing {required}")
+                (target / required).write_bytes(source_files[required])
+        else:
+            (target / "SKILL.md").write_text(
+                "---\n"
+                f"name: {skill_id}\n"
+                f"description: {purpose}\n"
+                "---\n\n"
+                f"# {display_name}\n\n"
+                "## Trigger\n\nDescribe when this skill applies.\n\n"
+                "## Boundary\n\nDescribe what this skill must not do.\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            _atomic_json(
+                target / "acceptance.json",
+                {
+                    "version": 1,
+                    "assertions": [{"path": "result.applied", "equals": True}],
+                },
+            )
+        packs = catalog.setdefault("packs", [])
+        pack = next((item for item in packs if item.get("id") == pack_id), None)
+        if pack is None:
+            pack = {
+                "id": pack_id,
+                "display_name": pack_display_name or pack_id,
+                "purpose": purpose,
+                "skills": [],
+                "skill_metadata": {},
+                "relations": {kind: [] for kind in RELATION_TYPES},
+            }
+            packs.append(pack)
+        pack.setdefault("skills", []).append(skill_id)
+        pack.setdefault("skill_metadata", {})[skill_id] = {
+            "display_name": display_name,
+            "purpose": purpose,
+        }
+        _atomic_json(catalog_path, catalog)
+        index_path.write_text(render_index(catalog), encoding="utf-8", newline="\n")
+        result = validate_library(root)
+    except Exception:
+        shutil.rmtree(target, ignore_errors=True)
+        catalog_path.write_bytes(previous_catalog)
+        if previous_index is None:
+            index_path.unlink(missing_ok=True)
+        else:
+            index_path.write_bytes(previous_index)
+        raise
+    return result.as_dict()
+
+
+def _run(
+    args: list[str], *, cwd: Path | None = None, check: bool = True
+) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
+    if check and result.returncode:
+        detail = (result.stderr or result.stdout).strip()
+        raise SkillMagnetError(f"Command failed ({args[0]}): {detail}")
+    return result
+
+
+def _tree_digest(root: Path) -> str:
+    value = hashlib.sha256()
+    for relative, data in _repository_files(root).items():
+        value.update(relative.encode("utf-8"))
+        value.update(b"\0")
+        value.update(data)
+        value.update(b"\0")
+    return value.hexdigest()
+
+
+def _copy_library(source: Path, destination: Path) -> None:
+    source_files = _repository_files(source)
+    for current in sorted(destination.iterdir()):
+        if current.name == ".git":
+            continue
+        if current.is_dir():
+            shutil.rmtree(current)
+        else:
+            current.unlink()
+    for relative, data in source_files.items():
+        target = destination.joinpath(*PurePosixPath(relative).parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+
+
+class LibraryTransaction:
+    def __init__(
+        self,
+        state_dir: Path,
+        transaction_id: str | None = None,
+        *,
+        run: Callable[..., subprocess.CompletedProcess[str]] = _run,
+    ) -> None:
+        self.state_dir = state_dir.resolve() / "library-transactions"
+        self.transaction_id = transaction_id or uuid.uuid4().hex
+        if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", self.transaction_id):
+            raise SkillMagnetError("Invalid transaction id")
+        self.root = self.state_dir / self.transaction_id
+        self.journal_path = self.root / "journal.json"
+        self.receipt_path = self.root / "receipt.json"
+        self.workspace = self.root / "workspace"
+        self.verifier = self.root / "remote-verifier"
+        self.run = run
+
+    def _journal(self) -> dict[str, Any]:
+        if not self.journal_path.exists():
+            return {
+                "schema_version": TRANSACTION_VERSION,
+                "transaction_id": self.transaction_id,
+                "status": "draft",
+                "created_at": _utc_now(),
+            }
+        return _read_json(self.journal_path)
+
+    def _write_journal(self, journal: dict[str, Any]) -> None:
+        journal["updated_at"] = _utc_now()
+        _atomic_json(self.journal_path, journal)
+
+    def prepare(
+        self,
+        *,
+        draft: Path,
+        remote: str,
+        branch: str | None = None,
+    ) -> dict[str, Any]:
+        journal = self._journal()
+        if journal["status"] != "draft":
+            return journal["preview"]
+        if re.search(r"://[^/\s]+@", remote) or "?" in remote or "#" in remote:
+            raise SkillMagnetError(
+                "Remote URL must not contain credentials, query parameters or fragments"
+            )
+        draft = draft.resolve()
+        before = _tree_digest(draft)
+        validation = validate_library(draft)
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.run(["git", "clone", "--no-hardlinks", remote, str(self.workspace)])
+        default_branch = self.run(
+            ["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+            cwd=self.workspace,
+            check=False,
+        ).stdout.strip()
+        default_branch = default_branch.removeprefix("origin/") or "main"
+        branch_name = branch or f"codex/skill-library-{self.transaction_id[:12]}"
+        if branch_name == default_branch:
+            self.run(["git", "switch", default_branch], cwd=self.workspace)
+        else:
+            self.run(["git", "switch", "-c", branch_name], cwd=self.workspace)
+        _copy_library(draft, self.workspace)
+        if _tree_digest(draft) != before:
+            raise SkillMagnetError("Draft checkout changed during isolated preparation")
+        # Preview the bytes Git will actually publish. On Windows, checkout
+        # line-ending conversion can make working-tree bytes differ from blob
+        # bytes, so approval and remote verification must share the Git index.
+        self.run(["git", "add", "--all"], cwd=self.workspace)
+        staged_manifest: dict[str, str] = {}
+        for relative in validation.manifest:
+            blob = subprocess.run(
+                ["git", "show", f":{relative}"],
+                cwd=self.workspace,
+                capture_output=True,
+            )
+            if blob.returncode:
+                raise SkillMagnetError(f"Cannot read staged Git blob: {relative}")
+            staged_manifest[relative] = _sha256(blob.stdout)
+        changed = [
+            line
+            for line in self.run(
+                ["git", "status", "--short"], cwd=self.workspace
+            ).stdout.splitlines()
+            if line.strip()
+        ]
+        preview = {
+            "transaction_id": self.transaction_id,
+            "remote": remote,
+            "branch": branch_name,
+            "default_branch": default_branch,
+            "changed_files": changed,
+            "pack_ids": list(validation.pack_ids),
+            "skill_ids": list(validation.skill_ids),
+            "manifest": staged_manifest,
+            "menu_shape": validation.menu_shape,
+            "requires_confirmation": True,
+        }
+        journal.update(
+            status="prepared",
+            draft=str(draft),
+            remote=remote,
+            branch=branch_name,
+            default_branch=default_branch,
+            preview=preview,
+            draft_digest=before,
+        )
+        self._write_journal(journal)
+        return preview
+
+    def _remote_manifest(self, remote: str, commit: str) -> ValidationResult:
+        if self.verifier.exists():
+            shutil.rmtree(self.verifier)
+        self.run(["git", "clone", "--no-checkout", "--no-hardlinks", remote, str(self.verifier)])
+        self.run(["git", "checkout", "--detach", commit], cwd=self.verifier)
+        validation = validate_library(self.verifier)
+        remote_manifest: dict[str, str] = {}
+        for relative in validation.manifest:
+            blob = subprocess.run(
+                ["git", "show", f"{commit}:{relative}"],
+                cwd=self.verifier,
+                capture_output=True,
+            )
+            if blob.returncode:
+                raise SkillMagnetError(f"Cannot read remote Git blob: {relative}")
+            remote_manifest[relative] = _sha256(blob.stdout)
+        return ValidationResult(
+            repository_name=validation.repository_name,
+            pack_ids=validation.pack_ids,
+            skill_ids=validation.skill_ids,
+            manifest=remote_manifest,
+            menu_shape=validation.menu_shape,
+        )
+
+    def publish(
+        self,
+        *,
+        confirmed: bool,
+        direct: bool = False,
+        create_pr: bool = True,
+    ) -> dict[str, Any]:
+        if not confirmed:
+            raise SkillMagnetError("Publish requires explicit confirmation")
+        if not create_pr and not direct:
+            raise SkillMagnetError("Skipping a pull request requires explicit direct publish")
+        journal = self._journal()
+        if journal["status"] in {"published_pending", "verified", "active"}:
+            return journal
+        if journal["status"] != "prepared":
+            raise SkillMagnetError("Transaction must be prepared before publish")
+        if direct and journal["branch"] != journal["default_branch"]:
+            raise SkillMagnetError(
+                "Direct publish requires explicitly preparing the default branch"
+            )
+        self.run(["git", "add", "--all"], cwd=self.workspace)
+        staged = self.run(["git", "diff", "--cached", "--quiet"], cwd=self.workspace, check=False)
+        if staged.returncode not in {0, 1}:
+            raise SkillMagnetError("Cannot inspect staged library changes")
+        if staged.returncode == 1:
+            self.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=Skill Magnet",
+                    "-c",
+                    "user.email=skill-magnet@localhost",
+                    "commit",
+                    "-m",
+                    f"Update skill library ({self.transaction_id})",
+                ],
+                cwd=self.workspace,
+            )
+        commit = self.run(["git", "rev-parse", "HEAD"], cwd=self.workspace).stdout.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", commit):
+            raise SkillMagnetError("Git did not produce a full commit SHA")
+        remote_ref = self.run(
+            ["git", "ls-remote", "--heads", "origin", journal["branch"]],
+            cwd=self.workspace,
+        ).stdout.strip()
+        if not remote_ref.startswith(commit):
+            self.run(
+                ["git", "push", "origin", f"HEAD:refs/heads/{journal['branch']}"],
+                cwd=self.workspace,
+            )
+        remote_validation = self._remote_manifest(journal["remote"], commit)
+        if remote_validation.manifest != journal["preview"]["manifest"]:
+            raise SkillMagnetError("Remote bytes do not match the approved preview manifest")
+        pr_url = ""
+        status = "verified"
+        if create_pr and not direct:
+            if not re.match(r"https://github\.com/[^/]+/[^/]+(?:\.git)?$", journal["remote"]):
+                status = "published_pending"
+            else:
+                result = self.run(
+                    [
+                        "gh",
+                        "pr",
+                        "create",
+                        "--repo",
+                        journal["remote"].removesuffix(".git"),
+                        "--head",
+                        journal["branch"],
+                        "--base",
+                        journal["default_branch"],
+                        "--title",
+                        "Update Skill Magnet library",
+                        "--body",
+                        f"Transaction `{self.transaction_id}`. Remote digest verification passed.",
+                    ],
+                    cwd=self.workspace,
+                )
+                pr_url = result.stdout.strip()
+                status = "published_pending"
+        journal.update(
+            status=status,
+            commit=commit,
+            remote_manifest=remote_validation.manifest,
+            remote_menu_shape=remote_validation.menu_shape,
+            pr_url=pr_url,
+            published_at=_utc_now(),
+        )
+        self._write_journal(journal)
+        return journal
+
+    def mark_merged(self) -> dict[str, Any]:
+        journal = self._journal()
+        if journal["status"] == "verified":
+            return journal
+        if journal["status"] != "published_pending":
+            raise SkillMagnetError("Only a published-pending transaction can be verified")
+        commit = str(journal["commit"])
+        remote_validation = self._remote_manifest(journal["remote"], commit)
+        if remote_validation.manifest != journal["preview"]["manifest"]:
+            raise SkillMagnetError("Merged remote bytes do not match the approved preview")
+        if journal.get("pr_url"):
+            result = self.run(
+                ["gh", "pr", "view", journal["pr_url"], "--json", "state,mergeCommit"],
+                cwd=self.workspace,
+            )
+            pr = json.loads(result.stdout)
+            if pr.get("state") != "MERGED":
+                raise SkillMagnetError("Pull request is not merged")
+            merge_commit = (pr.get("mergeCommit") or {}).get("oid")
+            if isinstance(merge_commit, str) and re.fullmatch(r"[0-9a-fA-F]{40}", merge_commit):
+                commit = merge_commit.lower()
+                remote_validation = self._remote_manifest(journal["remote"], commit)
+        journal.update(
+            status="verified",
+            commit=commit,
+            remote_manifest=remote_validation.manifest,
+            remote_menu_shape=remote_validation.menu_shape,
+            verified_at=_utc_now(),
+        )
+        self._write_journal(journal)
+        return journal
+
+    @staticmethod
+    def _config_pack(pack: dict[str, Any], remote: str, commit: str) -> dict[str, Any]:
+        skills = list(map(str, pack["skills"]))
+        metadata = pack.get("skill_metadata", {})
+        return {
+            "id": str(pack["id"]),
+            "menu_label": str(pack.get("display_name", pack["id"])),
+            "selection_kind": "package",
+            "repo_url": remote,
+            "expected_commit": commit,
+            "purpose": str(pack.get("purpose", "Skill library pack")),
+            "approved_by": "Skill Library Manager",
+            "approved_at": _utc_now(),
+            "skill_metadata": {
+                skill: {
+                    "display_name": str(metadata.get(skill, {}).get("display_name", skill)),
+                    "purpose": str(metadata.get(skill, {}).get("purpose", pack.get("purpose", "Skill library skill"))),
+                }
+                for skill in skills
+            },
+            "skills": skills,
+        }
+
+    def activate(
+        self,
+        *,
+        config_path: Path,
+        confirmed: bool,
+        menu_update: Callable[[Path], Any] | None = None,
+    ) -> dict[str, Any]:
+        if not confirmed:
+            raise SkillMagnetError("Activation requires explicit confirmation")
+        journal = self._journal()
+        if journal["status"] == "active":
+            return _read_json(self.receipt_path)
+        if journal["status"] != "verified":
+            raise SkillMagnetError("Only a remotely verified commit can be activated")
+        remote_validation = self._remote_manifest(journal["remote"], journal["commit"])
+        if remote_validation.manifest != journal["remote_manifest"]:
+            raise SkillMagnetError("Remote verification drifted before activation")
+        catalog = _read_json(self.verifier / CATALOG_FILENAME)
+        config_path = config_path.resolve()
+        previous = config_path.read_bytes()
+        config = _read_json(config_path)
+        previous_packs = list(config.get("packs", []))
+        managed_ids = set(_pack_map(catalog))
+        retained = [pack for pack in previous_packs if str(pack.get("id")) not in managed_ids]
+        generated = [
+            self._config_pack(pack, journal["remote"], journal["commit"])
+            for pack in _pack_map(catalog).values()
+        ]
+        candidate = {**config, "packs": retained + generated}
+        previous_shape = _sha256(
+            _canonical(
+                [
+                    {
+                        "id": pack.get("id"),
+                        "label": pack.get("menu_label"),
+                        "skills": pack.get("skills", []),
+                    }
+                    for pack in previous_packs
+                    if str(pack.get("id")) in managed_ids
+                ]
+            )
+        )
+        temporary = config_path.with_name(f".{config_path.name}.{self.transaction_id}.candidate")
+        _atomic_json(temporary, candidate)
+        try:
+            Config.load(temporary)
+            os.replace(temporary, config_path)
+            menu_changed = previous_shape != remote_validation.menu_shape
+            menu_result: Any = {"updated": False, "reason": "menu_shape_unchanged"}
+            if menu_changed and menu_update is not None:
+                menu_result = menu_update(config_path)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            config_path.write_bytes(previous)
+            journal.update(status="verified", activation_error="rolled_back")
+            self._write_journal(journal)
+            try:
+                self.cleanup()
+            except OSError:
+                pass
+            raise
+        receipt = {
+            "schema_version": 1,
+            "transaction_id": self.transaction_id,
+            "status": "active",
+            "repository": journal["remote"],
+            "commit": journal["commit"],
+            "changed_files": journal["preview"]["changed_files"],
+            "manifest": journal["remote_manifest"],
+            "pack_ids": journal["preview"]["pack_ids"],
+            "skill_ids": journal["preview"]["skill_ids"],
+            "config": str(config_path),
+            "config_sha256": _sha256(config_path.read_bytes()),
+            "menu": menu_result,
+            "menu_changed": menu_changed,
+            "test_result": "remote_manifest_verified",
+            "completed_at": _utc_now(),
+        }
+        _atomic_json(self.receipt_path, receipt)
+        journal.update(status="active", activated_at=_utc_now(), receipt=str(self.receipt_path))
+        self._write_journal(journal)
+        self.cleanup()
+        return receipt
+
+    def status(self, config_path: Path | None = None) -> dict[str, Any]:
+        journal = self._journal()
+        status = str(journal["status"])
+        active_commit = ""
+        if config_path is not None and config_path.exists():
+            config = _read_json(config_path)
+            managed = set(journal.get("preview", {}).get("pack_ids", []))
+            commits = {
+                str(pack.get("expected_commit", ""))
+                for pack in config.get("packs", [])
+                if str(pack.get("id")) in managed
+            }
+            if len(commits) == 1:
+                active_commit = commits.pop()
+        published_commit = str(journal.get("commit", ""))
+        remote_head = published_commit
+        if journal.get("remote") and journal.get("branch"):
+            remote = self.run(
+                ["git", "ls-remote", "--heads", str(journal["remote"]), str(journal["branch"])],
+                check=False,
+            )
+            if remote.returncode == 0 and remote.stdout.strip():
+                remote_head = remote.stdout.split()[0].lower()
+        if status == "verified" and active_commit != published_commit:
+            display = "published_but_inactive"
+        elif status == "published_pending":
+            display = "published_pending"
+        elif status == "prepared":
+            display = "unpublished_edit"
+        else:
+            display = status
+        pack_ids = list(journal.get("preview", {}).get("pack_ids", []))
+        skill_ids = list(journal.get("preview", {}).get("skill_ids", []))
+        shared_platform_contract = {
+            "commit": active_commit,
+            "pack_ids": pack_ids,
+            "skill_ids": skill_ids,
+        }
+        return {
+            "transaction_id": self.transaction_id,
+            "status": display,
+            "remote_head": remote_head,
+            "verified_commit": published_commit if status in {"verified", "active"} else "",
+            "active_commit": active_commit,
+            "pack_ids": pack_ids,
+            "skill_ids": skill_ids,
+            "platforms": {
+                "windows": dict(shared_platform_contract),
+                "macos": dict(shared_platform_contract),
+            },
+            "platform_parity": True,
+            "receipt": str(self.receipt_path) if self.receipt_path.exists() else "",
+        }
+
+    def cleanup(self) -> None:
+        def make_writable(function: Any, path: str, _: BaseException) -> None:
+            os.chmod(path, stat.S_IWRITE)
+            function(path)
+
+        for path in (self.workspace, self.verifier):
+            if path.exists():
+                shutil.rmtree(path, onexc=make_writable)
+
+
+def list_transactions(state_dir: Path, config_path: Path | None = None) -> dict[str, Any]:
+    root = state_dir.resolve() / "library-transactions"
+    transactions: list[dict[str, Any]] = []
+    if root.is_dir():
+        for journal in sorted(root.glob("*/journal.json")):
+            transaction = LibraryTransaction(state_dir, journal.parent.name)
+            transactions.append(transaction.status(config_path))
+    return {"transactions": transactions}

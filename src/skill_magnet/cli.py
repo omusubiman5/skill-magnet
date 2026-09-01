@@ -9,6 +9,15 @@ from pathlib import Path
 
 from .activation import ActivationEngine
 from .core import Config, Engine, SkillMagnetError
+from .library_manager import (
+    DEFAULT_REPOSITORY_NAME,
+    LibraryTransaction,
+    add_skill,
+    initialize_library,
+    list_transactions,
+    validate_library,
+)
+from .library_ui import show_library_manager
 from .platforms import (
     context_menu_spec,
     finder_context_menu_status,
@@ -136,13 +145,118 @@ def _parser() -> argparse.ArgumentParser:
     menu_rollback = commands.add_parser("rollback-context-menu")
     menu_rollback.add_argument("--platform", required=True, choices=("windows",))
     menu_rollback.add_argument("--confirm", action="store_true")
+    library = commands.add_parser(
+        "library", help="Create, validate, publish and activate a skill library."
+    )
+    library_commands = library.add_subparsers(dest="library_command", required=True)
+    library_commands.add_parser("ui", help="Open the seven-step Skill Library Manager.")
+    library_init = library_commands.add_parser("init")
+    library_init.add_argument("--repository", required=True, type=Path)
+    library_init.add_argument("--name", default=DEFAULT_REPOSITORY_NAME)
+    library_add = library_commands.add_parser("add")
+    library_add.add_argument("--repository", required=True, type=Path)
+    library_add.add_argument("--skill-id", required=True)
+    library_add.add_argument("--display-name", required=True)
+    library_add.add_argument("--purpose", required=True)
+    library_add.add_argument("--pack-id", required=True)
+    library_add.add_argument("--pack-display-name")
+    library_add.add_argument("--source", type=Path)
+    library_validate = library_commands.add_parser("validate")
+    library_validate.add_argument("--repository", required=True, type=Path)
+    library_prepare = library_commands.add_parser("prepare")
+    library_prepare.add_argument("--draft", required=True, type=Path)
+    library_prepare.add_argument("--remote", required=True)
+    library_prepare.add_argument("--transaction-id")
+    library_prepare.add_argument("--branch")
+    library_publish = library_commands.add_parser("publish")
+    library_publish.add_argument("--transaction-id", required=True)
+    library_publish.add_argument("--confirm", action="store_true")
+    library_publish.add_argument("--direct", action="store_true")
+    library_publish.add_argument("--no-pr", action="store_true")
+    library_verify = library_commands.add_parser("verify-merged")
+    library_verify.add_argument("--transaction-id", required=True)
+    library_activate = library_commands.add_parser("activate")
+    library_activate.add_argument("--transaction-id", required=True)
+    library_activate.add_argument("--confirm", action="store_true")
+    library_activate.add_argument(
+        "--platform",
+        choices=("windows", "macos"),
+        default="windows" if os.name == "nt" else "macos",
+    )
+    library_status = library_commands.add_parser("status")
+    library_status.add_argument("--transaction-id")
     return parser
+
+
+def _library_state_dir(args: argparse.Namespace) -> Path:
+    return (args.state_dir or Path.home() / ".skill-magnet").resolve()
+
+
+def _run_library_command(args: argparse.Namespace) -> dict[str, object]:
+    command = args.library_command
+    if command == "ui":
+        def update_menu(config_path: Path, platform: str) -> object:
+            if platform == "windows":
+                return install_windows_context_menus(config_path)
+            return install_context_menu("macos", config_path)
+
+        return show_library_manager(
+            config_path=args.config,
+            state_dir=_library_state_dir(args),
+            menu_update=update_menu,
+        )
+    if command == "init":
+        return initialize_library(args.repository, args.name)
+    if command == "add":
+        return add_skill(
+            args.repository,
+            skill_id=args.skill_id,
+            display_name=args.display_name,
+            purpose=args.purpose,
+            pack_id=args.pack_id,
+            pack_display_name=args.pack_display_name,
+            skill_source=args.source,
+        )
+    if command == "validate":
+        return validate_library(args.repository).as_dict()
+    state_dir = _library_state_dir(args)
+    if command == "status" and args.transaction_id is None:
+        return list_transactions(state_dir, args.config)
+    transaction = LibraryTransaction(state_dir, args.transaction_id)
+    if command == "prepare":
+        return transaction.prepare(
+            draft=args.draft, remote=args.remote, branch=args.branch
+        )
+    if command == "publish":
+        return transaction.publish(
+            confirmed=args.confirm,
+            direct=args.direct,
+            create_pr=not args.no_pr,
+        )
+    if command == "verify-merged":
+        return transaction.mark_merged()
+    if command == "activate":
+        def update_menu(config_path: Path) -> object:
+            if args.platform == "windows":
+                return install_windows_context_menus(config_path)
+            return install_context_menu("macos", config_path)
+
+        return transaction.activate(
+            config_path=args.config,
+            confirmed=args.confirm,
+            menu_update=update_menu,
+        )
+    return transaction.status(args.config)
 
 
 def main(argv: list[str] | None = None) -> int:
     _configure_console_streams()
     args = _parser().parse_args(argv)
     try:
+        if args.command == "library":
+            result = _run_library_command(args)
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0
         config = Config.load(args.config)
         engine = Engine(config, args.state_dir)
         # Every CLI command is a public product entry. Recover abandoned
