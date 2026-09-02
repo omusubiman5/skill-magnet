@@ -11,7 +11,7 @@ status: implemented
 
 ## 結論
 
-`skill-library-management-requirements.md`のFR-1〜FR-22を、共通domain層、7画面GUI、右クリック入口、CLI、Git transaction、atomic activation、status/receipt、回帰試験として実装した。skill repositoryは特定skill名に結び付けず、既定名を`skill-magnet-skills`とした。既存repositoryはrenameせず接続できる。
+`skill-library-management-requirements.md`のFR-1〜FR-22を、共通domain層、通常1画面・最大2画面のGUI、右クリック入口、CLI、Git transaction、atomic activation、status/receipt、回帰試験として実装した。skill repositoryは特定skill名に結び付けず、既定名を`skill-magnet-skills`とした。
 
 公開処理は、draft検証 → isolated clone → staged blob preview → 明示確認 → non-force push/PR → remote Git blob再取得とSHA-256照合 → 明示確認 → config/menu有効化、という二段階transactionになった。remote検証前は現在のconfigを変更せず、menu更新失敗時はconfigをbyte単位で直前版へ戻す。同じtransaction IDの再実行は既存commit、push、activation receiptを再利用し、重複操作を行わない。
 
@@ -21,9 +21,11 @@ status: implemented
 
 - Windows Explorerでは右クリック`Skill Magnet` → `Skill Library Manager`から直接開く。
 - macOS Finderではクイックアクション`Skill Magnet`の共通画面内にある`Skill Library Manager`から開く。
-- 右クリックしたfolderをrepository候補へ事前入力する。画面を開くだけではpublishもactivateも実行しない。
-- `python -m skill_magnet library ui`で7画面のSkill Library Managerを開く。
-- 画面順はRepository、Skill、Pack & INDEX、Validation、Preview、Publish、Activate & Receipt。
+- GUIの作業用repositoryは製品state内で自動作成・再利用し、保存先、repository名、`Draft directory`を入力させない。右クリックしたfolderに`SKILL.md`がある場合だけskill import候補へ事前入力する。画面を開くだけではpublishもactivateも実行しない。
+- `python -m skill_magnet library ui`でコンパクトなSkill Library Managerを開く。
+- 標準構成のスキルfolderを右クリックした通常flowでは自動import後にPublishだけを表示する。新規作成時だけSkill、Publishの2画面とする。repository、catalog/INDEX、validation、preview、activationの独立画面は設けず、起動・登録・Publish画面内で処理する。
+- OSは実行環境から自動判定し、利用者へ選択させない。構成不備、URL不備、validation失敗は操作時のエラーダイアログで停止する。
+- 現在の設定にrepository URLが一意に存在する既存ユーザーには、そのURLをPublish画面へ自動表示する。複数候補は誤選択防止のため自動補完しない。
 - headless/運用用途として`init`、`add`、`validate`、`prepare`、`publish`、`verify-merged`、`activate`、`status`も提供する。
 - publishとactivateは独立した明示確認が必要で、未確認ならfail-closedで停止する。
 
@@ -37,7 +39,7 @@ status: implemented
 
 ### Publish transaction
 
-- 利用者のdraft checkoutは読取り入力に限定し、処理前後のtree digestが一致しなければ停止する。
+- アプリ管理下の未公開libraryは公開処理の読取り入力に限定し、処理前後のtree digestが一致しなければ停止する。
 - 製品state配下のtransaction固有workspaceへcloneし、そこだけを編集・commitする。
 - Windowsの改行変換差を吸収するため、preview digestはworking treeではなくGit index blobから計算する。
 - push後は別のremote-verifier cloneを作り、commitの全対象Git blobを再取得してpreview manifestと比較する。
@@ -90,7 +92,7 @@ status: implemented
 | File | 内容 |
 |---|---|
 | `src/skill_magnet/library_manager.py` | catalog、validation、publish transaction、activation、status、receipt |
-| `src/skill_magnet/library_ui.py` | 7画面GUI |
+| `src/skill_magnet/library_ui.py` | 通常1画面・最大2画面GUI、OS自動判定 |
 | `src/skill_magnet/cli.py` | `library` command群とGUI入口 |
 | `src/skill_magnet/platforms.py` | Explorer/Finder右クリックmanager actionと状態契約 |
 | `src/skill_magnet/ui.py` | Finder共通画面からmanager GUIへの遷移 |
@@ -100,7 +102,7 @@ status: implemented
 | `tests/test_product_policy.py` | policy境界検証 |
 | `README.md` | GUI/CLI利用手順と安全境界 |
 | `docs/mvp-redesign.md` | canonical policy mirror |
-| `docs/windows-explorer-leaf-launch-results.md` | 現行test count 149とmanager actionへ同期 |
+| `docs/windows-explorer-leaf-launch-results.md` | 現行test count 150とmanager actionへ同期 |
 
 ## 検証結果
 
@@ -108,10 +110,10 @@ status: implemented
 |---|---|
 | `python -m compileall -q src tests` | PASS |
 | `python -m unittest tests.test_library_manager tests.test_product_policy tests.test_results_gate -q` | 18 PASS |
-| `python -m unittest discover -s tests` | 149 PASS、1 environment-dependent skip |
+| `python -m unittest discover -s tests` | 152 PASS、1 environment-dependent skip |
 | `python -m pip wheel . --no-deps` | PASS、`library_manager.py`と`library_ui.py`のwheel収録を確認 |
 | `git diff --check` | PASS |
-| 実GUIスモーク | PASS、7画面すべてを実Windows UIで表示・遷移 |
+| 実GUIスモーク | PASS、標準folder選択時にPublishだけ、新規作成時にSkillとPublishを表示 |
 
 自動試験ではローカルbare Git remoteを用い、isolated clone、commit、direct push、別cloneからのremote blob検証、config activation、retry、menu failure rollbackまで実行した。GitHub PR経路は`gh pr create`／`gh pr view`へ接続済みであり、実repositoryでは既存GitHub credentialとbranch protectionが最終権限境界になる。
 

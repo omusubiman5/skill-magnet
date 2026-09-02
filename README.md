@@ -54,9 +54,23 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 
 ## Skill Library Manager
 
-新しいskillは、本体repositoryを直接編集せず、汎用名のskill repositoryへ追加します。repository名はskill IDやpack IDから生成されず、既定候補は`skill-magnet-skills`です。次のアプリcommandが、作成・import、catalog/INDEX検証、差分preview、isolated commit、push/PR、remote blob SHA-256照合、本体config有効化、status、receiptを担当します。
+Skill Library Managerは、スキルを追加してGitHubへ公開し、Skill Magnetで使える状態にするための案内画面です。作業途中のファイルはアプリ専用領域へ自動保存されます。利用者が作業用フォルダーやrepository名を決める必要はありません。
 
-通常は対象folderを右クリックし、Windows Explorerでは`Skill Magnet` → `Skill Library Manager`を選びます。macOS Finderではクイックアクション`Skill Magnet`を開き、画面内の`Skill Library Manager`を選びます。選択したfolderがrepository候補として入力された7画面GUIが開きます。Repository → Skill → Pack & INDEX → Validation → Preview → Publish → Activate & Receiptの順に進み、publishとactivateは別々に明示確認します。
+通常は、`SKILL.md`と`acceptance.json`が入ったスキルフォルダーを右クリックします。Windows Explorerでは`Skill Magnet` → `Skill Library Manager`、macOS Finderではクイックアクション`Skill Magnet` → `Skill Library Manager`を選びます。標準構成ならアプリが自動で取り込み、`Publish`画面だけを表示します。入力用の`Skill`画面は、標準構成のフォルダーを選ばず新規作成する場合だけ表示します。
+
+### 操作ガイド（通常1画面、最大2画面）
+
+#### 1. Skill — 追加するスキルを登録する
+
+この画面は新規作成時だけ使います。「スキル」はAIへ渡す作業手順です。重複しないID、画面に出す名前、目的、入れたいパックを入力します。既存スキルを手動選択する場合は、`SKILL.md`と`acceptance.json`が同じフォルダーに必要です。不足があればエラーで止まり、標準構成ならパック一覧とINDEXは自動生成されます。
+
+![Skill画面の入力項目](docs/images/skill-library-manager-step-1-skill.png)
+
+#### 2. Publish — GitHubへ送る内容を確認して公開する
+
+現在使っているスキル保管庫が1つなら、そのGitHub URLを既存設定から自動表示します。初回または別の保管庫へ変える時だけURLを入力します。`送信内容を確認する`を押すと、アプリがファイル構成、パック、INDEX、秘密情報、スキル同士の矛盾を自動検査し、送信予定の差分を表示します。不足や不正があればエラーダイアログで止まり、GitHubへは送りません。内容が正しい場合だけ確認欄へチェックして`Publish PR`を押します。PRをGitHubでマージした後に`Verify merged remote`、最後に`Skill Magnetへ反映`を押します。OSはアプリが自動判定します。反映前には確認ダイアログが出て、失敗時は直前の正常な状態へ戻ります。
+
+![Publish前の確認画面](docs/images/skill-library-manager-step-2-publish.png)
 
 CLIから直接開く次のcommandも、障害調査やheadless運用の入口として残しています。
 
@@ -65,7 +79,7 @@ python -m skill_magnet library ui
 ```
 
 ```powershell
-# 1. library draftを作る
+# 1. CLIでスキル保管庫を作る
 python -m skill_magnet library init --repository C:\path\to\skill-magnet-skills
 
 # 2. skillを追加する（--sourceで既存SKILL.md/acceptance.jsonもimport可能）
@@ -75,7 +89,7 @@ python -m skill_magnet library add --repository C:\path\to\skill-magnet-skills -
 python -m skill_magnet library validate --repository C:\path\to\skill-magnet-skills
 
 # 4. 隔離workspaceで差分previewを作る。出力されたtransaction_idを以後使う
-python -m skill_magnet library prepare --draft C:\path\to\skill-magnet-skills --remote https://github.com/OWNER/skill-magnet-skills.git
+python -m skill_magnet library prepare --library C:\path\to\skill-magnet-skills --remote https://github.com/OWNER/skill-magnet-skills.git
 
 # 5. 明示確認後、専用branchへnon-force pushしてPRを作る
 python -m skill_magnet library publish --transaction-id TRANSACTION_ID --confirm

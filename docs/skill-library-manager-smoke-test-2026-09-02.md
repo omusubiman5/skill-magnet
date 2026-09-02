@@ -9,7 +9,7 @@ result: PASS
 
 ## 結論
 
-Skill Library ManagerのCLI基本経路、実Windows GUIの7画面表示、Explorer右クリックからの起動をスモークし、すべてPASSした。外部repositoryへのpush、PR作成、本体config更新は不可逆または外部書込みを伴うため、本スモークでは確認画面までとした。これらのtransaction本体は自動E2EとWindows/macOS CIで検証済みである。
+Skill Library ManagerのCLI基本経路、実Windows GUIの通常1画面・最大2画面表示、Explorer右クリックからの起動をスモークし、すべてPASSした。外部repositoryへのpush、PR作成、本体config更新は不可逆または外部書込みを伴うため、本スモークでは確認画面までとした。これらのtransaction本体は自動E2EとWindows/macOS CIで検証済みである。
 
 ## 実行環境
 
@@ -18,8 +18,8 @@ Skill Library ManagerのCLI基本経路、実Windows GUIの7画面表示、Explo
 | Date | 2026-09-02 |
 | OS | Windows |
 | Repository | `C:\Projects\skill-magnet` |
-| Branch | `main` |
-| Commit | `d61eb7c57757846cbc11cd939aea239d013066dc` |
+| Branch | `codex/readme-library-manager-guide` |
+| Commit | release evidence台帳の`release_code_sha`を参照 |
 | UI | Tk Skill Library Manager |
 
 ## CLIスモーク
@@ -43,22 +43,18 @@ Skill Library ManagerのCLI基本経路、実Windows GUIの7画面表示、Explo
 
 ## 実GUIスモーク
 
-`python -m skill_magnet library ui`を実際に起動し、対象windowを一意に特定して次の全画面を順に表示した。
+`python -m skill_magnet library ui`を実際に起動し、対象windowを一意に特定して次の表示を確認した。
 
 | Step | Screen | Result |
 |---:|---|---|
-| 1 | Repository | PASS |
-| 2 | Skill | PASS |
-| 3 | Pack & INDEX | PASS |
-| 4 | Validation | PASS |
-| 5 | Preview | PASS |
-| 6 | Publish | PASS |
-| 7 | Activate & Receipt | PASS |
+| 1 | 標準folderを選択した通常flowはPublishだけ | PASS |
+| 2 | 新規作成flowはSkillとPublish | PASS |
 
 確認した安全境界:
 
-- Publish画面にtransaction ID、差分確認checkbox、`Publish PR`、`Verify merged remote`が表示される。
-- Activate画面にplatform選択、明示確認checkbox、`Publish and Activate`が表示される。
+- Publish画面に差分確認checkbox、`Publish PR`、`Verify merged remote`、`Skill Magnetへ反映`が表示される。
+- platform選択を表示せず、Windows/macOSを実行環境から自動判定する。
+- URL未入力、構成不備、validation失敗はエラーダイアログで停止する。
 - smoke中にpublish、activate、menu更新は実行されていない。
 
 ## Explorer右クリック起動スモーク
@@ -69,8 +65,10 @@ Skill Library ManagerのCLI基本経路、実Windows GUIの7画面表示、Explo
 |---|---|
 | 通常右クリックに`Skill Magnet`が1入口だけ表示 | PASS |
 | サブメニューに`Skill Library Manager`と`Delivery Assurance`の2 action | PASS |
-| `Skill Library Manager`選択で7画面GUIが起動 | PASS |
-| Draft directoryが`C:\Projects\skill-magnet`へ事前入力 | PASS |
+| 標準folderからの`Skill Library Manager`選択でPublishだけが起動 | PASS |
+| `Draft directory`、repository名、保存先の入力欄が表示されない | PASS |
+| 作業用repositoryがアプリ専用state内に自動決定される | PASS |
+| 右クリック対象は`SKILL.md`がある場合だけimport候補になる | PASS |
 | 起動だけでrepository作成、publish、activateが行われない | PASS |
 
 インストールstatusは`menu_contract_valid: true`、`menu_contract_matches_config: true`、`menu_leaf_count: 1`、`menu_action_count: 2`、`library_manager_entry_count: 1`、`usable_installed_state: true`だった。
@@ -80,9 +78,9 @@ Skill Library ManagerのCLI基本経路、実Windows GUIの7画面表示、Explo
 - GUI windowを正常終了した。
 - `pythonw.exe`の対象processが終了したことを確認した。
 - 製品所有の一時smoke directoryを削除した。
-- `tests.test_library_manager` 6件を再実行し、全件PASSした。
+- `tests.test_library_manager` 10件を再実行し、全件PASSした。
 - repositoryは`main...origin/main`、未コミット変更なしの状態から文書更新を開始した。
 
 ## 判定
 
-Skill Library Managerの右クリック起動、選択folderの事前入力、基本library作成、skill追加、fail-closed検証、全7画面の到達性にリリース阻害問題はない。
+Skill Library Managerの右クリック起動、標準folderの自動import、library/catalog/INDEX自動準備、skill追加、Publish時のfail-closed検証、OS自動判定にリリース阻害問題はない。
