@@ -318,7 +318,7 @@ public:
             const DWORD error = GetLastError();
             LogInvokeEvent(L"create_process_failed", launch_digest, error);
             const std::wstring message =
-                L"Skill Magnet could not start the selected AI task.\n\n" +
+                L"Skill Magnet could not start the selected action.\n\n" +
                 WindowsErrorDetail(error);
             MessageBoxW(nullptr, message.c_str(), L"Skill Magnet", MB_OK | MB_ICONERROR);
             return HRESULT_FROM_WIN32(error);
@@ -410,14 +410,15 @@ static MenuNode* LoadRoot() {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         start = end + 1;
         if (!header_seen) {
-            header_seen = line == "skill-magnet-menu-v3";
+            header_seen = line == "skill-magnet-menu-v4";
             if (!header_seen) break;
             continue;
         }
         if (line.empty()) continue;
         const auto fields = SplitFields(line);
         if (fields.size() != 7 || fields[0].empty() || fields[1] != L"Skill Magnet" ||
-            (fields[2] != L"package" && fields[2] != L"skill") ||
+            (fields[2] != L"package" && fields[2] != L"skill" &&
+             fields[2] != L"manager") ||
             fields[3].empty() || fields[4].empty() ||
             fields[5].empty() || fields[6].find(kProjectMarker) == std::wstring::npos) continue;
         // Windows 11's compact Explorer surface renders only the extension

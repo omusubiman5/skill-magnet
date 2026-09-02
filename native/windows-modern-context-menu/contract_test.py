@@ -59,7 +59,7 @@ def main() -> int:
         return 5
     menu_path = dll_path.with_name("SkillMagnetMenu.tsv")
     lines = menu_path.read_text(encoding="utf-8-sig").splitlines()
-    if not lines or lines[0] != "skill-magnet-menu-v3":
+    if not lines or lines[0] != "skill-magnet-menu-v4":
         return 3
     expected_titles = [line.split("\t")[4] for line in lines[1:] if line]
     if not expected_titles:

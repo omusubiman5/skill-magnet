@@ -1,6 +1,6 @@
 ---
 artifact: prd
-version: "1.0"
+version: "1.3"
 created: 2026-09-02
 status: implemented
 ---
@@ -138,6 +138,8 @@ Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデ�
 
 ### User Experience
 
+- FR-22: Skill Library ManagerはOSの右クリック`Skill Magnet`入口から開けなければならない。Windows Explorerでは`Skill Magnet`配下の固定actionとして直接選択でき、macOS Finderでは`Skill Magnet`クイックアクションが開く共通画面内から選択できる。いずれも右クリック対象folderをrepository候補へ事前入力するが、publishまたはactivateを自動実行してはならない。
+
 基本flowは次の7画面以内とする。
 
 1. `Skill Library`を開く。
@@ -240,6 +242,7 @@ Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデ�
 | FR-19 | config/menu各failure pointのrollback E2E | Automated |
 | FR-20 | 5状態のstatus表示snapshot test | Automated + QA |
 | FR-21 | 同一transaction retryのcommit・push・menu重複ゼロtest | Automated |
+| FR-22 | Explorer/Finder右クリック導線、選択folder prefill、no-auto-write test | Automated + Windows QA |
 
 ### Stop and Escalate
 
@@ -311,3 +314,4 @@ Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデ�
 | 1.0 | 2026-09-02 | Codex | 初版。汎用repository命名とアプリ内skill追加transactionを定義 |
 | 1.1 | 2026-09-02 | Codex | FR-1〜FR-21の実装・検証完了に伴いstatusをimplementedへ更新 |
 | 1.2 | 2026-09-02 | Codex | 実行ターゲットをCodex Desktopアプリ／Claude Codeデスクトップアプリとして明記 |
+| 1.3 | 2026-09-02 | Codex | OS右クリックからSkill Library Managerを開くFR-22を追加し、Windows実機で検証 |

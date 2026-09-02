@@ -278,10 +278,39 @@ def windows_command(parts: tuple[str, ...]) -> str:
 WINDOWS_MODERN_PROJECT_MARKER = "__SKILL_MAGNET_PROJECT__"
 
 
+def windows_library_manager_command_argv(
+    config: Path, project: str
+) -> tuple[str, ...]:
+    """Build the context-menu command for the standalone library manager GUI."""
+    return (
+        *_cli_prefix(config),
+        "library",
+        "ui",
+        "--repository",
+        project,
+    )
+
+
 def render_windows_modern_menu_manifest(config: Path) -> str:
     """Render the immutable, low-cost menu data consumed by IExplorerCommand."""
     loaded = Config.load(config)
-    lines = ["skill-magnet-menu-v3"]
+    manager_command = windows_command(
+        windows_library_manager_command_argv(config, WINDOWS_MODERN_PROJECT_MARKER)
+    )
+    lines = [
+        "skill-magnet-menu-v4",
+        "\t".join(
+            (
+                "__library_manager__",
+                "Skill Magnet",
+                "manager",
+                "library-manager",
+                "Skill Library Manager",
+                "GitHub skill libraryを追加・検証・公開・有効化します。",
+                manager_command,
+            )
+        ),
+    ]
     for leaf in windows_menu_leaves(config, WINDOWS_MODERN_PROJECT_MARKER):
         pack = loaded.packs[leaf.pack_id]
         fields = (
@@ -422,6 +451,8 @@ def windows_modern_context_menu_status(
     dll_exists = (content_root / "SkillMagnetCommand.dll").is_file()
     menu_manifest_exists = (content_root / "SkillMagnetMenu.tsv").is_file()
     menu_leaf_count = 0
+    menu_action_count = 0
+    library_manager_entry_count = 0
     menu_selection_kinds: list[str] = []
     menu_contract_valid = False
     menu_contract_matches_config: bool | None = None
@@ -434,16 +465,31 @@ def windows_modern_context_menu_status(
             menu_text = (content_root / "SkillMagnetMenu.tsv").read_text(encoding="utf-8-sig")
             lines = menu_text.splitlines()
             records = [line.split("\t") for line in lines[1:] if line]
-            menu_leaf_count = len(records)
-            menu_selection_kinds = [record[2] for record in records if len(record) == 7]
+            menu_action_count = len(records)
+            menu_leaf_count = sum(
+                1
+                for record in records
+                if len(record) == 7 and record[2] in {"package", "skill"}
+            )
+            library_manager_entry_count = sum(
+                1
+                for record in records
+                if len(record) == 7 and record[2] == "manager"
+            )
+            menu_selection_kinds = [
+                record[2]
+                for record in records
+                if len(record) == 7 and record[2] in {"package", "skill"}
+            ]
             menu_contract_valid = bool(
                 lines
-                and lines[0] == "skill-magnet-menu-v3"
+                and lines[0] == "skill-magnet-menu-v4"
                 and records
+                and library_manager_entry_count == 1
                 and all(
                     len(record) == 7
                     and record[1] == "Skill Magnet"
-                    and record[2] in {"package", "skill"}
+                    and record[2] in {"package", "skill", "manager"}
                     and all(record[index] for index in (0, 3, 4, 5, 6))
                     and WINDOWS_MODERN_PROJECT_MARKER in record[6]
                     for record in records
@@ -527,6 +573,8 @@ def windows_modern_context_menu_status(
             "menu_contract_valid": menu_contract_valid,
             "menu_contract_matches_config": menu_contract_matches_config,
             "menu_leaf_count": menu_leaf_count,
+            "menu_action_count": menu_action_count,
+            "library_manager_entry_count": library_manager_entry_count,
             "menu_selection_kinds": menu_selection_kinds,
             "manifest_contexts": manifest_contexts,
             "contexts": expected_contexts,
@@ -1001,6 +1049,19 @@ def _windows_registry_entries(config: Path, root: str, placeholder: str) -> list
                 (leaf_root + r"\command", "", windows_command(leaf.command)),
             ]
         )
+    manager_root = root + r"\shell\library-manager"
+    entries.extend(
+        [
+            (manager_root, "MUIVerb", "Skill Library Manager"),
+            (
+                manager_root + r"\command",
+                "",
+                windows_command(
+                    windows_library_manager_command_argv(config, placeholder)
+                ),
+            ),
+        ]
+    )
     return entries
 
 

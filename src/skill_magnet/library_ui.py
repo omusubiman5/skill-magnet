@@ -35,6 +35,7 @@ def show_library_manager(
     *,
     config_path: Path,
     state_dir: Path,
+    initial_repository: Path | None = None,
     menu_update: Callable[[Path, str], Any] | None = None,
 ) -> dict[str, Any]:
     """Open the seven-step library manager and return its final status."""
@@ -54,7 +55,9 @@ def show_library_manager(
     for title, page in zip(LIBRARY_WIZARD_STEPS, pages, strict=True):
         notebook.add(page, text=title)
 
-    repository = tk.StringVar()
+    repository = tk.StringVar(
+        value=str(initial_repository.resolve()) if initial_repository is not None else ""
+    )
     repository_name = tk.StringVar(value=DEFAULT_REPOSITORY_NAME)
     remote = tk.StringVar()
     skill_id = tk.StringVar()

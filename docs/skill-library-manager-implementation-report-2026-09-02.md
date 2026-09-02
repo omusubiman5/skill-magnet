@@ -1,6 +1,6 @@
 ---
 artifact: implementation-report
-version: "1.0"
+version: "1.1"
 created: 2026-09-02
 source: docs/skill-library-management-requirements.md
 plan: docs/skill-library-manager-implementation-plan-2026-09-02.md
@@ -11,7 +11,7 @@ status: implemented
 
 ## 結論
 
-`skill-library-management-requirements.md`のFR-1〜FR-21を、共通domain層、7画面GUI、CLI、Git transaction、atomic activation、status/receipt、回帰試験として実装した。skill repositoryは特定skill名に結び付けず、既定名を`skill-magnet-skills`とした。既存repositoryはrenameせず接続できる。
+`skill-library-management-requirements.md`のFR-1〜FR-22を、共通domain層、7画面GUI、右クリック入口、CLI、Git transaction、atomic activation、status/receipt、回帰試験として実装した。skill repositoryは特定skill名に結び付けず、既定名を`skill-magnet-skills`とした。既存repositoryはrenameせず接続できる。
 
 公開処理は、draft検証 → isolated clone → staged blob preview → 明示確認 → non-force push/PR → remote Git blob再取得とSHA-256照合 → 明示確認 → config/menu有効化、という二段階transactionになった。remote検証前は現在のconfigを変更せず、menu更新失敗時はconfigをbyte単位で直前版へ戻す。同じtransaction IDの再実行は既存commit、push、activation receiptを再利用し、重複操作を行わない。
 
@@ -19,6 +19,9 @@ status: implemented
 
 ### 製品入口
 
+- Windows Explorerでは右クリック`Skill Magnet` → `Skill Library Manager`から直接開く。
+- macOS Finderではクイックアクション`Skill Magnet`の共通画面内にある`Skill Library Manager`から開く。
+- 右クリックしたfolderをrepository候補へ事前入力する。画面を開くだけではpublishもactivateも実行しない。
 - `python -m skill_magnet library ui`で7画面のSkill Library Managerを開く。
 - 画面順はRepository、Skill、Pack & INDEX、Validation、Preview、Publish、Activate & Receipt。
 - headless/運用用途として`init`、`add`、`validate`、`prepare`、`publish`、`verify-merged`、`activate`、`status`も提供する。
@@ -76,6 +79,7 @@ status: implemented
 | FR-19 | menu failure時の旧config byte復元 | failure injection test |
 | FR-20 | remote/verified/active/edit/pending状態表示 | status assertions |
 | FR-21 | transaction ID再利用、commit/push/receipt重複防止 | retry commit-count test |
+| FR-22 | Explorer固定action、Finder共通画面button、選択folder prefill | manifest/registry/path/CLI callback tests |
 
 ## Policy整合
 
@@ -88,12 +92,15 @@ status: implemented
 | `src/skill_magnet/library_manager.py` | catalog、validation、publish transaction、activation、status、receipt |
 | `src/skill_magnet/library_ui.py` | 7画面GUI |
 | `src/skill_magnet/cli.py` | `library` command群とGUI入口 |
+| `src/skill_magnet/platforms.py` | Explorer/Finder右クリックmanager actionと状態契約 |
+| `src/skill_magnet/ui.py` | Finder共通画面からmanager GUIへの遷移 |
+| `native/windows-modern-context-menu/*` | Windows 11 modern menuのmanager action |
 | `tests/test_library_manager.py` | 正常系、negative、retry、rollback、CLI/GUI contract |
 | `policy/product-policy.json` | isolated authoring transaction境界 |
 | `tests/test_product_policy.py` | policy境界検証 |
 | `README.md` | GUI/CLI利用手順と安全境界 |
 | `docs/mvp-redesign.md` | canonical policy mirror |
-| `docs/windows-explorer-leaf-launch-results.md` | 現行test count 146へ同期 |
+| `docs/windows-explorer-leaf-launch-results.md` | 現行test count 149とmanager actionへ同期 |
 
 ## 検証結果
 
@@ -101,7 +108,7 @@ status: implemented
 |---|---|
 | `python -m compileall -q src tests` | PASS |
 | `python -m unittest tests.test_library_manager tests.test_product_policy tests.test_results_gate -q` | 18 PASS |
-| `python -m unittest discover -s tests` | 146 PASS、1 environment-dependent skip |
+| `python -m unittest discover -s tests` | 149 PASS、1 environment-dependent skip |
 | `python -m pip wheel . --no-deps` | PASS、`library_manager.py`と`library_ui.py`のwheel収録を確認 |
 | `git diff --check` | PASS |
 | 実GUIスモーク | PASS、7画面すべてを実Windows UIで表示・遷移 |

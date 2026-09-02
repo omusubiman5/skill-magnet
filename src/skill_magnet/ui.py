@@ -702,6 +702,7 @@ def show_context_selection(
     menu_skill_digest: str | None = None,
     menu_instruction_digest: str | None = None,
     menu_acceptance_digest: str | None = None,
+    library_manager: Callable[[Path], None] | None = None,
 ) -> LaunchContract | None:
     """Show one pack-first confirmation UI for both OS adapters."""
     import tkinter as tk
@@ -865,6 +866,7 @@ def show_context_selection(
 
     confirm_button = ttk.Button(root)
     cancel_button = ttk.Button(root, command=root.destroy)
+    manager_button = ttk.Button(root, text="Skill Library Manager")
 
     def refresh_selection() -> None:
         if not selected_pack.get():
@@ -1006,8 +1008,15 @@ def show_context_selection(
         root.destroy()
 
     confirm_button.configure(command=confirm)
-    confirm_button.grid(row=8, column=0, columnspan=2, padx=12, pady=12)
-    cancel_button.grid(row=8, column=2, columnspan=2, padx=12, pady=12)
+    if library_manager is not None:
+        def open_library_manager() -> None:
+            root.destroy()
+            library_manager(project.resolve())
+
+        manager_button.configure(command=open_library_manager)
+        manager_button.grid(row=8, column=0, columnspan=4, padx=12, pady=(8, 0))
+    confirm_button.grid(row=9, column=0, columnspan=2, padx=12, pady=12)
+    cancel_button.grid(row=9, column=2, columnspan=2, padx=12, pady=12)
     apply_language()
     root.protocol("WM_DELETE_WINDOW", root.destroy)
     root.mainloop()

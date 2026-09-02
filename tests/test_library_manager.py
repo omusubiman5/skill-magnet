@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from skill_magnet.cli import main as cli_main
 from skill_magnet.core import SkillMagnetError
@@ -306,6 +307,18 @@ class LibraryManagerTests(unittest.TestCase):
         self.assertEqual(
             cli_main(["library", "validate", "--repository", str(library)]), 0
         )
+
+    def test_context_entry_can_preselect_library_manager_repository(self) -> None:
+        selected = self.root / "selected library"
+        selected.mkdir()
+        with mock.patch(
+            "skill_magnet.cli.show_library_manager",
+            return_value={"status": "closed_without_activation"},
+        ) as show:
+            self.assertEqual(
+                cli_main(["library", "ui", "--repository", str(selected)]), 0
+            )
+        self.assertEqual(show.call_args.kwargs["initial_repository"], selected)
 
 
 if __name__ == "__main__":
