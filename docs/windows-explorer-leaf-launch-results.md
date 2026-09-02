@@ -9,9 +9,9 @@
 <!-- explorer-results-ledger:start
 {
   "release_scope": "one-package-leaf",
-  "release_version": "0.5.2",
+  "release_version": "0.5.3",
   "distribution_scope": "local-self-signed",
-  "full_test_count": 157,
+  "full_test_count": 163,
   "menu_leaf_count": 1,
   "menu_action_count": 2,
   "library_manager_entry_count": 1,
@@ -19,7 +19,7 @@
   "pack_skill_count": 9,
   "release_code_sha": "5154ff577b6aa3e5ec97cefc400f665f99be6b7e",
   "wheel_payload_sha256": "50a8e34971809707268945270ef249da893e4d7a8e5153f872c85067237b3f71",
-  "automated_status": "LOCAL_RELEASE_GATE_PASS_157",
+  "automated_status": "LOCAL_RELEASE_GATE_PASS_163",
   "windows_explorer_field_status": "PASS_REAL_RIGHT_CLICK_MENU_AND_CONFIRMATION_UI_0_5_1",
   "macos_finder_field_status": "CI_SEMANTIC_ONLY_REAL_UI_NOT_CLAIMED_FOR_0_5_2",
   "public_distribution_status": "NOT_CLAIMED_REQUIRES_EXTERNAL_PUBLISHER",
@@ -27,7 +27,7 @@
 }
 explorer-results-ledger:end -->
 
-- 統合テスト: `python -m unittest discover -s tests -v` — 157 tests PASS、環境依存1件skip
+- 統合テスト: `python -m unittest discover -s tests -v` — 163 tests PASS、環境依存1件skip
 - menu contract: `Skill Pack: Delivery Assurance` 1 package leaf / `Library Manager` 1 fixed action / selection kind `package` / pack内9 skills
 - 自動証拠: contract固定、GitHub固定commitのINDEX/全SKILL参照、archiveのメモリ内検証、deep-link binding、ローカルskill残留ゼロ
 - wheel再現性: 独立した2 directoryで0.4.0 wheelをbuildし、論理payload SHA-256が両方`c9a0ffe8f542fd475144ac8fecd284175a46863d69d1d44ec5be78ed901ba38f`で一致した。

@@ -23,7 +23,7 @@ CATALOG_VERSION = 1
 TRANSACTION_VERSION = 1
 DEFAULT_REPOSITORY_NAME = "skill-magnet-skills"
 RELATION_TYPES = ("depends-on", "composes-with", "contrasts-with")
-TERMINAL_STATES = {"active", "rolled_back", "abandoned"}
+TERMINAL_STATES = {"active", "rolled_back", "abandoned", "no_changes"}
 SECRET_RULES = (
     ("private-key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")),
     ("github-token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b")),
@@ -914,10 +914,11 @@ class LibraryTransaction:
             "skill_ids": list(validation.skill_ids),
             "manifest": staged_manifest,
             "menu_shape": validation.menu_shape,
-            "requires_confirmation": True,
+            "requires_confirmation": bool(changed),
+            "no_changes": not changed,
         }
         journal.update(
-            status="prepared",
+            status="prepared" if changed else "no_changes",
             draft=str(draft),
             remote=remote,
             branch=branch_name,
@@ -926,6 +927,11 @@ class LibraryTransaction:
             draft_digest=before,
         )
         self._write_journal(journal)
+        if not changed:
+            pending = self.cleanup()
+            if pending:
+                journal["cleanup_pending"] = pending
+                self._write_journal(journal)
         return preview
 
     def _remote_manifest(self, remote: str, commit: str) -> ValidationResult:
@@ -967,10 +973,16 @@ class LibraryTransaction:
         if not create_pr and not direct:
             raise SkillMagnetError("Skipping a pull request requires explicit direct publish")
         journal = self._journal()
+        if journal["status"] == "no_changes":
+            return journal
         if journal["status"] in {"published_pending", "verified", "active"}:
             return journal
         if journal["status"] != "prepared":
             raise SkillMagnetError("Transaction must be prepared before publish")
+        if create_pr and not direct and not re.match(
+            r"https://github\.com/[^/]+/[^/]+(?:\.git)?$", str(journal["remote"])
+        ):
+            raise SkillMagnetError("Pull request publishing requires a GitHub repository URL")
         if direct and journal["branch"] != journal["default_branch"]:
             raise SkillMagnetError(
                 "Direct publish requires explicitly preparing the default branch"
@@ -1013,43 +1025,40 @@ class LibraryTransaction:
         pr_url = ""
         status = "verified"
         if create_pr and not direct:
-            if not re.match(r"https://github\.com/[^/]+/[^/]+(?:\.git)?$", journal["remote"]):
-                status = "published_pending"
+            repository = journal["remote"].removesuffix(".git")
+            existing = self.run(
+                [
+                    "gh", "pr", "list", "--repo", repository,
+                    "--head", journal["branch"], "--state", "all",
+                    "--limit", "1", "--json", "url",
+                ],
+                cwd=self.workspace,
+                check=False,
+            )
+            existing_prs = json.loads(existing.stdout) if existing.returncode == 0 else []
+            if existing_prs:
+                pr_url = str(existing_prs[0]["url"])
             else:
-                repository = journal["remote"].removesuffix(".git")
-                existing = self.run(
+                result = self.run(
                     [
-                        "gh", "pr", "list", "--repo", repository,
-                        "--head", journal["branch"], "--state", "all",
-                        "--limit", "1", "--json", "url",
+                        "gh",
+                        "pr",
+                        "create",
+                        "--repo",
+                        repository,
+                        "--head",
+                        journal["branch"],
+                        "--base",
+                        journal["default_branch"],
+                        "--title",
+                        "Update Skill Magnet library",
+                        "--body",
+                        f"Transaction `{self.transaction_id}`. Remote digest verification passed.",
                     ],
                     cwd=self.workspace,
-                    check=False,
                 )
-                existing_prs = json.loads(existing.stdout) if existing.returncode == 0 else []
-                if existing_prs:
-                    pr_url = str(existing_prs[0]["url"])
-                else:
-                    result = self.run(
-                        [
-                            "gh",
-                            "pr",
-                            "create",
-                            "--repo",
-                            repository,
-                            "--head",
-                            journal["branch"],
-                            "--base",
-                            journal["default_branch"],
-                            "--title",
-                            "Update Skill Magnet library",
-                            "--body",
-                            f"Transaction `{self.transaction_id}`. Remote digest verification passed.",
-                        ],
-                        cwd=self.workspace,
-                    )
-                    pr_url = result.stdout.strip()
-                status = "published_pending"
+                pr_url = result.stdout.strip()
+            status = "published_pending"
         journal.update(
             status=status,
             commit=commit,
@@ -1068,9 +1077,6 @@ class LibraryTransaction:
         if journal["status"] != "published_pending":
             raise SkillMagnetError("Only a published-pending transaction can be verified")
         commit = str(journal["commit"])
-        remote_validation = self._remote_manifest(journal["remote"], commit)
-        if remote_validation.manifest != journal["preview"]["manifest"]:
-            raise SkillMagnetError("Merged remote bytes do not match the approved preview")
         if journal.get("pr_url"):
             command_cwd = self.workspace if self.workspace.is_dir() else self.root
             result = self.run(
@@ -1078,12 +1084,34 @@ class LibraryTransaction:
                 cwd=command_cwd,
             )
             pr = json.loads(result.stdout)
-            if pr.get("state") != "MERGED":
-                raise SkillMagnetError("Pull request is not merged")
+            pr_state = str(pr.get("state", "")).upper()
+            if pr_state == "OPEN":
+                journal.update(
+                    wait_state="waiting_for_merge",
+                    pr_state="OPEN",
+                    last_merge_check_at=_utc_now(),
+                )
+                self._write_journal(journal)
+                return journal
+            if pr_state == "CLOSED":
+                journal.update(
+                    wait_state="closed_unmerged",
+                    pr_state="CLOSED",
+                    last_merge_check_at=_utc_now(),
+                )
+                self._write_journal(journal)
+                return journal
+            if pr_state != "MERGED":
+                raise SkillMagnetError(f"GitHub returned an unknown pull request state: {pr_state or 'empty'}")
             merge_commit = (pr.get("mergeCommit") or {}).get("oid")
-            if isinstance(merge_commit, str) and re.fullmatch(r"[0-9a-fA-F]{40}", merge_commit):
-                commit = merge_commit.lower()
-                remote_validation = self._remote_manifest(journal["remote"], commit)
+            if not isinstance(merge_commit, str) or not re.fullmatch(
+                r"[0-9a-fA-F]{40}", merge_commit
+            ):
+                raise SkillMagnetError("GitHub reported a merged pull request without a valid merge commit")
+            commit = merge_commit.lower()
+        remote_validation = self._remote_manifest(journal["remote"], commit)
+        if remote_validation.manifest != journal["preview"]["manifest"]:
+            raise SkillMagnetError("Merged remote bytes do not match the approved preview")
         journal.update(
             status="verified",
             commit=commit,
@@ -1091,6 +1119,8 @@ class LibraryTransaction:
             remote_menu_shape=remote_validation.menu_shape,
             verified_at=_utc_now(),
         )
+        journal.pop("wait_state", None)
+        journal.pop("pr_state", None)
         self._write_journal(journal)
         return journal
 
@@ -1364,6 +1394,16 @@ class LibraryTransaction:
             raise SkillMagnetError("作業の破棄には確認が必要です")
         journal = self._journal()
         previous = str(journal.get("status", "draft"))
+        if journal.get("commit") or journal.get("pr_url") or previous in {
+            "publishing",
+            "published_pending",
+            "verified",
+            "active",
+        }:
+            raise SkillMagnetError(
+                "GitHubへ送信済み、または送信済みの可能性があるため、"
+                "ローカル作業だけを破棄できません。既存の作業を再開してください"
+            )
         pending = self.cleanup()
         journal.update(
             status="abandoned",
@@ -1388,3 +1428,32 @@ def list_transactions(state_dir: Path, config_path: Path | None = None) -> dict[
             transaction = LibraryTransaction(state_dir, journal.parent.name)
             transactions.append(transaction.status(config_path))
     return {"transactions": transactions}
+
+
+def find_resumable_transaction(
+    state_dir: Path, *, draft: Path, remote: str
+) -> LibraryTransaction | None:
+    """Find the newest non-terminal transaction for exactly this library and remote."""
+    root = state_dir.resolve() / "library-transactions"
+    if not root.is_dir():
+        return None
+    wanted_draft = os.path.normcase(str(draft.resolve()))
+    wanted_remote = remote.strip().removesuffix("/")
+    matches: list[tuple[str, LibraryTransaction]] = []
+    for path in root.glob("*/journal.json"):
+        try:
+            journal = _read_json(path)
+        except SkillMagnetError:
+            continue
+        if str(journal.get("status")) in TERMINAL_STATES:
+            continue
+        saved_draft = str(journal.get("draft", ""))
+        if not saved_draft:
+            continue
+        if os.path.normcase(str(Path(saved_draft).resolve())) != wanted_draft:
+            continue
+        if str(journal.get("remote", "")).strip().removesuffix("/") != wanted_remote:
+            continue
+        transaction = LibraryTransaction(state_dir, path.parent.name)
+        matches.append((str(journal.get("updated_at", journal.get("created_at", ""))), transaction))
+    return max(matches, key=lambda item: item[0])[1] if matches else None
