@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import os
 import re
 from pathlib import Path
@@ -19,8 +18,7 @@ from .library_manager import (
 
 
 LIBRARY_WIZARD_STEPS = (
-    "1. Skill",
-    "2. Publish",
+    "Skill Library Manager",
 )
 
 
@@ -51,8 +49,10 @@ def require_registration_source(value: str) -> Path:
     if not value.strip():
         raise SkillMagnetError("登録する作成済みスキルのフォルダーを選択してください")
     source = Path(value).resolve()
-    if not (source / "SKILL.md").is_file() or not (source / "acceptance.json").is_file():
-        raise SkillMagnetError("選択したフォルダーにはSKILL.mdとacceptance.jsonが必要です")
+    if not (source / "SKILL.md").is_file():
+        raise SkillMagnetError("選択したフォルダーにSKILL.mdがありません")
+    if not (source / "acceptance.json").is_file():
+        raise SkillMagnetError("選択したフォルダーにacceptance.jsonがありません")
     return source
 
 
@@ -70,19 +70,6 @@ def skill_registration_metadata(source: Path) -> tuple[str, str, str]:
     display_name = display_match.group(1).strip() if display_match else skill_id
     purpose = metadata("description") or f"Imported skill: {display_name}"
     return skill_id, display_name, purpose
-
-
-def pack_id_for_display(repository: Path, display_name: str) -> str:
-    """Resolve or derive an internal pack ID without exposing it in the UI."""
-    name = display_name.strip()
-    if not name:
-        raise SkillMagnetError("入れるパック名を入力してください")
-    catalog = json.loads((repository / CATALOG_FILENAME).read_text(encoding="utf-8"))
-    for pack in catalog.get("packs", []):
-        if str(pack.get("display_name", "")).strip() == name:
-            return str(pack["id"])
-    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-    return slug or f"pack-{hashlib.sha256(name.encode('utf-8')).hexdigest()[:12]}"
 
 
 def import_selected_skill(repository: Path, source: Path | None) -> bool:
@@ -124,11 +111,10 @@ def show_library_manager(
     root.title("Skill Magnet — Skill Library Manager")
     root.geometry("920x680")
     root.minsize(760, 560)
-    notebook = ttk.Notebook(root)
-    notebook.pack(fill="both", expand=True, padx=12, pady=12)
-    pages = [ttk.Frame(notebook, padding=12) for _ in LIBRARY_WIZARD_STEPS]
-    for title, page in zip(LIBRARY_WIZARD_STEPS, pages, strict=True):
-        notebook.add(page, text=title)
+    page = ttk.Frame(root, padding=12)
+    page.pack(fill="both", expand=True)
+    page.columnconfigure(0, weight=1)
+    page.rowconfigure(1, weight=1)
 
     repository_path = managed_repository_path(state_dir)
     catalog_path = repository_path / CATALOG_FILENAME
@@ -138,10 +124,6 @@ def show_library_manager(
         initialize_library(repository_path, DEFAULT_REPOSITORY_NAME)
     repository = tk.StringVar(value=str(repository_path))
     remote = tk.StringVar(value=configured_repository_url(config_path))
-    skill_id = tk.StringVar()
-    display_name = tk.StringVar()
-    purpose = tk.StringVar()
-    pack_display_name = tk.StringVar()
     import_source = tk.StringVar(
         value=(
             str(initial_repository.resolve())
@@ -169,11 +151,7 @@ def show_library_manager(
         if value:
             try:
                 source = require_registration_source(value)
-                derived_id, derived_name, derived_purpose = skill_registration_metadata(source)
                 import_source.set(str(source))
-                skill_id.set(derived_id)
-                display_name.set(derived_name)
-                purpose.set(derived_purpose)
             except Exception as exc:
                 show_error(exc)
 
@@ -191,43 +169,32 @@ def show_library_manager(
         selected_skill_imported = False
         show_error(exc)
 
-    page = pages[0]
-    ttk.Label(page, text="作成済みskillのSKILL.mdとacceptance.jsonを登録します。").grid(
+    registration = ttk.LabelFrame(page, text="作成済みスキルを登録", padding=10)
+    registration.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+    ttk.Label(registration, text="作成済みスキルのSKILL.mdとacceptance.jsonを登録します。").grid(
         row=0, column=0, columnspan=3, sticky="w", pady=(0, 12)
     )
-    row(page, 1, "作成済みスキルのフォルダー", import_source, select_import)
-    row(page, 2, "表示名（SKILL.mdから自動取得）", display_name)
-    row(page, 3, "目的（SKILL.mdから自動取得）", purpose)
-    row(page, 4, "入れるパック名", pack_display_name)
+    row(registration, 1, "作成済みスキルのフォルダー", import_source, select_import)
 
     def add() -> None:
         try:
             source = require_registration_source(import_source.get())
-            repository_path = require_repository()
-            add_skill(
-                repository_path,
-                skill_id=skill_id.get().strip(),
-                display_name=display_name.get().strip(),
-                purpose=purpose.get().strip(),
-                pack_id=pack_id_for_display(repository_path, pack_display_name.get()),
-                pack_display_name=pack_display_name.get().strip(),
-                skill_source=source,
-            )
+            import_selected_skill(require_repository(), source)
             messagebox.showinfo(
                 "Skill",
                 "スキルを登録し、パック一覧とINDEXを自動更新しました。",
                 parent=root,
             )
-            notebook.hide(0)
-            notebook.select(1)
+            registration.grid_remove()
         except Exception as exc:
             show_error(exc)
 
-    ttk.Button(page, text="登録", command=add).grid(row=5, column=1, sticky="e", pady=12)
+    ttk.Button(registration, text="登録", command=add).grid(
+        row=2, column=1, sticky="e", pady=(8, 0)
+    )
 
     if selected_skill_imported:
-        notebook.hide(0)
-        notebook.select(1)
+        registration.grid_remove()
 
     def set_text(widget: Any, value: Any) -> None:
         widget.configure(state="normal")
@@ -235,25 +202,26 @@ def show_library_manager(
         widget.insert("1.0", json.dumps(value, ensure_ascii=False, indent=2))
         widget.configure(state="disabled")
 
-    page = pages[1]
+    publish_frame = ttk.LabelFrame(page, text="GitHubへ送る", padding=10)
+    publish_frame.grid(row=1, column=0, sticky="nsew")
     ttk.Label(
-        page,
+        publish_frame,
         text=(
             "公開先のGitHub URLを入力し、送信予定のファイルを確認してからPRを作成します。"
             "URL未入力、ファイル構成不正、検査エラーがあれば送信せずエラーを表示します。"
         ),
         wraplength=820,
     ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
-    row(page, 1, "公開先のGitHub URL", remote)
+    row(publish_frame, 1, "公開先のGitHub URL", remote)
     ttk.Label(
-        page,
+        publish_frame,
         text="例: https://github.com/OWNER/skill-magnet-skills.git",
         wraplength=720,
     ).grid(row=2, column=1, columnspan=2, sticky="w", padx=4, pady=(0, 8))
-    preview_output = tk.Text(page, wrap="word", state="disabled")
+    preview_output = tk.Text(publish_frame, wrap="word", state="disabled")
     preview_output.grid(row=3, column=0, columnspan=3, sticky="nsew")
-    page.rowconfigure(3, weight=1)
-    page.columnconfigure(1, weight=1)
+    publish_frame.rowconfigure(3, weight=1)
+    publish_frame.columnconfigure(1, weight=1)
 
     def prepare() -> None:
         try:
@@ -269,14 +237,14 @@ def show_library_manager(
         except Exception as exc:
             show_error(exc)
 
-    ttk.Button(page, text="送信内容を確認する", command=prepare).grid(
-        row=4, column=0, sticky="w", pady=8
+    ttk.Button(publish_frame, text="送信内容を確認する", command=prepare).grid(
+        row=4, column=0, sticky="w", pady=(8, 4)
     )
     ttk.Checkbutton(
-        page,
+        publish_frame,
         text="表示された公開先とファイルを確認しました",
         variable=publish_confirmed,
-    ).grid(row=4, column=1, sticky="e", pady=8)
+    ).grid(row=5, column=0, columnspan=3, sticky="w", pady=4)
 
     def transaction() -> LibraryTransaction:
         if not transaction_id.get().strip():
@@ -324,8 +292,8 @@ def show_library_manager(
         except Exception as exc:
             show_error(exc)
 
-    buttons = ttk.Frame(page)
-    buttons.grid(row=4, column=2, sticky="e", pady=8)
+    buttons = ttk.Frame(publish_frame)
+    buttons.grid(row=6, column=0, columnspan=3, sticky="e", pady=(4, 0))
     ttk.Button(buttons, text="Publish PR", command=publish).pack(side="left", padx=4)
     ttk.Button(buttons, text="Verify merged remote", command=verify_merged).pack(side="left", padx=4)
     ttk.Button(buttons, text="Skill Magnetへ反映", command=activate).pack(side="left", padx=4)
