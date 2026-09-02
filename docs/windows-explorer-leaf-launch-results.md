@@ -17,8 +17,8 @@
   "library_manager_entry_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
-  "release_code_sha": "963bc813a16c2f93ee9eb0a818cabc81230b3b73",
-  "wheel_payload_sha256": "7e4b9e6268e9d8d672040c1da3da1d5ef0849fb0aa20ae16c11389fcb7363900",
+  "release_code_sha": "a0f684aa08807e48a2ad999849b4e13b918440a7",
+  "wheel_payload_sha256": "e78b33b6fe60c77c46b527e3bc21592025ae9d38bff6849b1cdc026bd03f7187",
   "automated_status": "LOCAL_RELEASE_GATE_PASS_152",
   "windows_explorer_field_status": "PASS_REAL_RIGHT_CLICK_MENU_AND_CONFIRMATION_UI_0_5_1",
   "macos_finder_field_status": "CI_SEMANTIC_ONLY_REAL_UI_NOT_CLAIMED_FOR_0_5_2",
@@ -43,6 +43,7 @@ explorer-results-ledger:end -->
 - 作業用repositoryをアプリ専用stateへ移し、`Draft directory`入力を廃止して初心者向け7画面ガイドを更新した0.5.2候補wheelは、独立した2 buildで共通の論理payload SHA-256 `337c81ac557ceb0109993a09416c08f5bec44f4b9757e5a06110568826184dcb`を確認した。release codeは`8232fdedb892d15a89f2181ecff4f8f66b15e877`である。
 - Skill Library Managerを通常1画面・最大2画面へ整理し、標準skill folderの自動import、既存GitHub URL表示、validationのエラー化、OS自動判定、Publish画面内activationを実装した0.5.2候補wheelは、独立した2 buildで共通の論理payload SHA-256 `93adcf89a0074673bd5a42f8fe760e81fc613618fa4433551272ece47b5be870`を確認した。release codeは`4e2a2557ff73df69e1bb676ccf9916c20d4e9dcc`である。
 - Skill画面の用途を「スキルを作る」から「作成済みスキルを登録する」へ訂正した0.5.2候補wheelは、独立した2 buildで共通の論理payload SHA-256 `7e4b9e6268e9d8d672040c1da3da1d5ef0849fb0aa20ae16c11389fcb7363900`を確認した。release codeは`963bc813a16c2f93ee9eb0a818cabc81230b3b73`である。
+- 手動登録で作成済みスキルfolderを必須化し、画面内でのskill新規作成を拒否する0.5.2候補wheelは、独立した2 buildで共通の論理payload SHA-256 `e78b33b6fe60c77c46b527e3bc21592025ae9d38bff6849b1cdc026bd03f7187`を確認した。release codeは`a0f684aa08807e48a2ad999849b4e13b918440a7`である。
 - 実機証拠: 0.5.1 wheelをWindowsへinstallし、modern context menuのstatusが`usable_installed_state: true`、`menu_contract_matches_config: true`、`menu_leaf_count: 1`を返した。File Explorerの`C:\Projects\skill-magnet`背景を実際に右クリックし、`Skill Magnet`→`Delivery Assurance`から`Skill Magnet — 実行確認`画面が起動すること、画面上のproject、pack、用途、実行AI、依頼内容、実行/取消UIを確認した。外部AIへのテスト依頼送信はフィールドUI受入の対象外とし、確認画面を取消で閉じた。実際のTSVはpack ID `codex-delivery-assurance`、表示名`Delivery Assurance`、固定commit `8f12af5ddfdd3b985f26d33dad09d6061d675342`を記録した。
 - Skill Library Manager右クリック実機証拠: 現行sourceからWindows 11 modern拡張をbuild・再登録し、`C:\Projects\skill-magnet` folderを実際に右クリックした。`Skill Magnet`配下に`Skill Library Manager`と`Delivery Assurance`が表示され、manager選択でGUIが起動した。標準構成のskill folderでは自動import後にPublishだけを表示し、作成済みskillの手動登録時だけSkillとPublishを表示する。作業用repository、catalog、INDEX、validation、OS判定は自動管理する。statusは`menu_contract_matches_config: true`、package leaf 1件、manager action 1件、合計2 action、`usable_installed_state: true`を返した。
 - 0.4.0実install: package `SkillMagnet.ContextMenu_0.4.0.0_x64__byy1sc3mfzfz4`を登録し、1 package leaf、Directory/Background、署名済みcommand target、`usable_installed_state: true`を確認した。
