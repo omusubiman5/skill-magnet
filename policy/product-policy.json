@@ -87,6 +87,12 @@
       ]
     }
   },
+  "library_manager_ui": {
+    "entrypoint": "skill_magnet_context_menu",
+    "selected_folder_prefill": true,
+    "automatic_publish": false,
+    "automatic_activation": false
+  },
   "skill_use_handoff": {
     "target_applications": ["codex_desktop", "claude_code_desktop"],
     "success_state": "desktop_handoff_ready",

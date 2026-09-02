@@ -9,7 +9,7 @@ result: PASS
 
 ## 結論
 
-Skill Library ManagerのCLI基本経路と実Windows GUIの7画面表示をスモークし、すべてPASSした。外部repositoryへのpush、PR作成、本体config更新、Explorer menu更新は不可逆または外部書込みを伴うため、本スモークでは確認画面までとした。これらのtransaction本体は自動E2EとWindows/macOS CIで検証済みである。
+Skill Library ManagerのCLI基本経路、実Windows GUIの7画面表示、Explorer右クリックからの起動をスモークし、すべてPASSした。外部repositoryへのpush、PR作成、本体config更新は不可逆または外部書込みを伴うため、本スモークでは確認画面までとした。これらのtransaction本体は自動E2EとWindows/macOS CIで検証済みである。
 
 ## 実行環境
 
@@ -61,6 +61,20 @@ Skill Library ManagerのCLI基本経路と実Windows GUIの7画面表示をス�
 - Activate画面にplatform選択、明示確認checkbox、`Publish and Activate`が表示される。
 - smoke中にpublish、activate、menu更新は実行されていない。
 
+## Explorer右クリック起動スモーク
+
+現行sourceからWindows 11 modern context menuをbuild・再登録し、`C:\Projects\skill-magnet` folderを実際に右クリックして確認した。
+
+| Check | Result |
+|---|---|
+| 通常右クリックに`Skill Magnet`が1入口だけ表示 | PASS |
+| サブメニューに`Skill Library Manager`と`Delivery Assurance`の2 action | PASS |
+| `Skill Library Manager`選択で7画面GUIが起動 | PASS |
+| Draft directoryが`C:\Projects\skill-magnet`へ事前入力 | PASS |
+| 起動だけでrepository作成、publish、activateが行われない | PASS |
+
+インストールstatusは`menu_contract_valid: true`、`menu_contract_matches_config: true`、`menu_leaf_count: 1`、`menu_action_count: 2`、`library_manager_entry_count: 1`、`usable_installed_state: true`だった。
+
 ## 後処理と再確認
 
 - GUI windowを正常終了した。
@@ -71,4 +85,4 @@ Skill Library ManagerのCLI基本経路と実Windows GUIの7画面表示をス�
 
 ## 判定
 
-Skill Library Managerの起動、基本library作成、skill追加、fail-closed検証、全7画面の到達性にリリース阻害問題はない。
+Skill Library Managerの右クリック起動、選択folderの事前入力、基本library作成、skill追加、fail-closed検証、全7画面の到達性にリリース阻害問題はない。

@@ -1,12 +1,20 @@
 ---
 artifact: implementation-plan
-version: "1.0"
+version: "1.1"
 created: 2026-09-02
 source: docs/skill-library-management-requirements.md
 status: completed
 ---
 
 # Skill Library Manager 実装計画
+
+## 追補: 右クリック製品入口
+
+- FR-22をP4の製品入口へ追加する。
+- Windows Explorerのmodern/classic `Skill Magnet`配下へ固定のmanager actionを追加し、選択folderを`library ui --repository`へ一つのargvとして渡す。
+- Finderは既存Quick Actionを維持し、共通選択画面内の`Skill Library Manager`ボタンから同じGUIへ遷移する。
+- manager actionはpack/skill leaf countへ混入させず、publish/activateの既存明示確認gateを維持する。
+- manifest parser、registry、特殊文字path、CLI prefill、Windows/macOS共通callbackを回帰試験する。
 
 ## Step 0: Source ledger
 
@@ -19,7 +27,7 @@ status: completed
 
 ## Section 0. Executive summary
 
-- **Situation classification:** Complicated（Cynefin）— Git、GitHub、設定、OSメニューの複数境界を扱うが、期待動作と検証条件はFR-1〜FR-21として明示されている。
+- **Situation classification:** Complicated（Cynefin）— Git、GitHub、設定、OSメニューの複数境界を扱うが、期待動作と検証条件はFR-1〜FR-22として明示されている。
 - **The binding constraint:** remote公開とローカル有効化を一つの安全な状態機械として扱う実装がないこと（TOC）。
 - **The critical next effort (P1):** catalog、検証器、transaction journal、receiptを備えたlibrary domain層を先に実装する。
 - **Overall plan confidence:** Medium-High — 既存の固定commit検証とmenu rollbackを再利用できるが、実GitHub権限と実機UXは環境依存である。
@@ -27,7 +35,7 @@ status: completed
 
 ## Section 1. Input mirror - what I understand
 
-- **What you gave me:** repository管理、skill作成／import、関係検証、preview、branch／PR公開、remote digest再検証、lock有効化、条件付きmenu更新、復旧、receiptまでを定義した21件の機能要件。
+- **What you gave me:** repository管理、skill作成／import、関係検証、preview、branch／PR公開、remote digest再検証、lock有効化、条件付きmenu更新、復旧、receipt、右クリック入口までを定義した22件の機能要件。
 - **What you appear to be trying to accomplish:** 従来の手作業をSkill Magnet自身の製品機能へ移し、安全性を落とさずskill libraryを継続更新できるようにすること。Confidence: High。
 - **Adjacent intents I noticed but did not assume:** 既存repositoryのrename、GitHub以外のprovider、LLMによるskill生成は対象外。
 

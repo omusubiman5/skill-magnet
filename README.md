@@ -56,7 +56,9 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 
 新しいskillは、本体repositoryを直接編集せず、汎用名のskill repositoryへ追加します。repository名はskill IDやpack IDから生成されず、既定候補は`skill-magnet-skills`です。次のアプリcommandが、作成・import、catalog/INDEX検証、差分preview、isolated commit、push/PR、remote blob SHA-256照合、本体config有効化、status、receiptを担当します。
 
-7画面のGUIを開く場合は次を実行します。Repository → Skill → Pack & INDEX → Validation → Preview → Publish → Activate & Receiptの順に進み、publishとactivateは別々に明示確認します。
+通常は対象folderを右クリックし、Windows Explorerでは`Skill Magnet` → `Skill Library Manager`を選びます。macOS Finderではクイックアクション`Skill Magnet`を開き、画面内の`Skill Library Manager`を選びます。選択したfolderがrepository候補として入力された7画面GUIが開きます。Repository → Skill → Pack & INDEX → Validation → Preview → Publish → Activate & Receiptの順に進み、publishとactivateは別々に明示確認します。
+
+CLIから直接開く次のcommandも、障害調査やheadless運用の入口として残しています。
 
 ```powershell
 python -m skill_magnet library ui
@@ -125,7 +127,7 @@ python -m skill_magnet library status
 
 4. Windowsの確認画面が出た場合は、次節の表と一致するときだけ「はい」を選びます。commandが完了すると、登録結果がJSONで表示されます。
 
-5. Explorerで対象folderそのもの、またはfolder内の何もない場所を通常右クリックします。`その他のオプションを表示`へ進まず、最初のメニューにある`Skill Magnet`から目的に合うskill packを一つ選びます。
+5. Explorerで対象folderそのもの、またはfolder内の何もない場所を通常右クリックします。`その他のオプションを表示`へ進まず、最初のメニューにある`Skill Magnet`から、skillを使う場合は目的に合うpackを、skill repositoryを管理する場合は`Skill Library Manager`を選びます。
 
 6. Skill Magnet画面でCodexまたはClaude、依頼内容を入力し、対象pack、含まれる全skill、用途を確認して実行します。CodexならDesktop appの新規taskが開きます。技術情報は既定で閉じた「詳細」にあります。
 
@@ -166,6 +168,9 @@ python -m skill_magnet context-menu-status --platform windows
   "command_target_signature_valid": true,
   "self_signed_launcher_referenced": false,
   "deprecated_launcher_exists": false,
+  "menu_leaf_count": 1,
+  "menu_action_count": 2,
+  "library_manager_entry_count": 1,
   "usable_installed_state": true
 }
 ```

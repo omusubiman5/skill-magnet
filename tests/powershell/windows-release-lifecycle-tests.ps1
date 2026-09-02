@@ -143,6 +143,10 @@ try {
         "Installed release status is not usable."
     Assert-True ([int]$status.menu_leaf_count -eq 1) `
         "Installed release does not expose exactly one package leaf."
+    Assert-True ([int]$status.menu_action_count -eq 2) `
+        "Installed release does not expose two Skill Magnet actions."
+    Assert-True ([int]$status.library_manager_entry_count -eq 1) `
+        "Installed release does not expose one Skill Library Manager action."
 
     $rollbackOutput = python -m skill_magnet rollback-context-menu `
         --platform windows --confirm | Out-String

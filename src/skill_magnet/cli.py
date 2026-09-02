@@ -149,7 +149,14 @@ def _parser() -> argparse.ArgumentParser:
         "library", help="Create, validate, publish and activate a skill library."
     )
     library_commands = library.add_subparsers(dest="library_command", required=True)
-    library_commands.add_parser("ui", help="Open the seven-step Skill Library Manager.")
+    library_ui = library_commands.add_parser(
+        "ui", help="Open the seven-step Skill Library Manager."
+    )
+    library_ui.add_argument(
+        "--repository",
+        type=Path,
+        help="Preselect a skill-library draft directory.",
+    )
     library_init = library_commands.add_parser("init")
     library_init.add_argument("--repository", required=True, type=Path)
     library_init.add_argument("--name", default=DEFAULT_REPOSITORY_NAME)
@@ -192,19 +199,26 @@ def _library_state_dir(args: argparse.Namespace) -> Path:
     return (args.state_dir or Path.home() / ".skill-magnet").resolve()
 
 
+def _show_library_manager_ui(
+    args: argparse.Namespace, initial_repository: Path | None = None
+) -> dict[str, object]:
+    def update_menu(config_path: Path, platform: str) -> object:
+        if platform == "windows":
+            return install_windows_context_menus(config_path)
+        return install_context_menu("macos", config_path)
+
+    return show_library_manager(
+        config_path=args.config,
+        state_dir=_library_state_dir(args),
+        initial_repository=initial_repository,
+        menu_update=update_menu,
+    )
+
+
 def _run_library_command(args: argparse.Namespace) -> dict[str, object]:
     command = args.library_command
     if command == "ui":
-        def update_menu(config_path: Path, platform: str) -> object:
-            if platform == "windows":
-                return install_windows_context_menus(config_path)
-            return install_context_menu("macos", config_path)
-
-        return show_library_manager(
-            config_path=args.config,
-            state_dir=_library_state_dir(args),
-            menu_update=update_menu,
-        )
+        return _show_library_manager_ui(args, args.repository)
     if command == "init":
         return initialize_library(args.repository, args.name)
     if command == "add":
@@ -457,6 +471,9 @@ def main(argv: list[str] | None = None) -> int:
                         menu_skill_digest=args.menu_skill_digest,
                         menu_instruction_digest=args.menu_instruction_digest,
                         menu_acceptance_digest=args.menu_acceptance_digest,
+                        library_manager=lambda selected: _show_library_manager_ui(
+                            args, selected
+                        ),
                     )
                 except SkillMagnetError as exc:
                     show_context_error(context_failure_message(exc))

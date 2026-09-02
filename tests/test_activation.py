@@ -47,6 +47,7 @@ from skill_magnet.platforms import (
     windows_command,
     windows_directory_registry_entries,
     windows_leaf_command_argv,
+    windows_library_manager_command_argv,
     windows_menu_leaves,
     render_windows_modern_menu_manifest,
     rollback_windows_context_menus,
@@ -1784,14 +1785,22 @@ class ActivationEndToEndTest(unittest.TestCase):
                 command_keys = [
                     key for key, _, _ in entries if key.endswith(r"\command")
                 ]
-                self.assertEqual(len(command_keys), 1)
+                self.assertEqual(len(command_keys), 2)
+                leaf_command_keys = [
+                    key for key in command_keys if r"\shell\leaf-" in key
+                ]
+                manager_command_keys = [
+                    key for key in command_keys if r"\shell\library-manager" in key
+                ]
+                self.assertEqual(len(leaf_command_keys), 1)
+                self.assertEqual(len(manager_command_keys), 1)
                 self.assertTrue(
                     all(
                         r"\shell\leaf-" in key
                         and r"\shell\skill-" not in key
                         and r"\shell\runtime-" not in key
                         and r"\shell\pack-" not in key
-                        for key in command_keys
+                        for key in leaf_command_keys
                     )
                 )
                 pack_labels = {
@@ -1801,7 +1810,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                 }
                 self.assertEqual(
                     pack_labels,
-                    {leaf.display_name for leaf in leaves},
+                    {leaf.display_name for leaf in leaves} | {"Skill Library Manager"},
                 )
 
     def test_both_roots_propagate_complete_pack_contract_and_reject_tampering(self) -> None:
@@ -2757,14 +2766,22 @@ class ActivationEndToEndTest(unittest.TestCase):
         ):
             with self.subTest(root=root_name):
                 command_keys = [key for key, _, _ in entries if key.endswith(r"\command")]
-                self.assertEqual(len(command_keys), 2)
+                self.assertEqual(len(command_keys), 3)
+                leaf_command_keys = [
+                    key for key in command_keys if r"\shell\leaf-" in key
+                ]
+                manager_command_keys = [
+                    key for key in command_keys if r"\shell\library-manager" in key
+                ]
+                self.assertEqual(len(leaf_command_keys), 2)
+                self.assertEqual(len(manager_command_keys), 1)
                 self.assertTrue(
                     all(
                         r"\shell\leaf-" in key
                         and r"\shell\skill-" not in key
                         and r"\shell\runtime-" not in key
                         and r"\shell\pack-" not in key
-                        for key in command_keys
+                        for key in leaf_command_keys
                     )
                 )
                 non_leaf_keys = {
@@ -2849,8 +2866,13 @@ class ActivationEndToEndTest(unittest.TestCase):
             windows_command(leaf.command)
             for leaf in windows_menu_leaves(self.config_path, "%1")
         ]
+        expected.append(
+            windows_command(
+                windows_library_manager_command_argv(self.config_path, "%1")
+            )
+        )
         self.assertCountEqual(commands, expected)
-        self.assertEqual(len(commands), 2)
+        self.assertEqual(len(commands), 3)
         for pack_id, skill_id in (
             ("bounded-pack", "bounded-answer"),
             ("unused-pack", "unused-skill"),
@@ -2881,8 +2903,13 @@ class ActivationEndToEndTest(unittest.TestCase):
             windows_command(leaf.command)
             for leaf in windows_menu_leaves(self.config_path, "%V")
         ]
+        expected.append(
+            windows_command(
+                windows_library_manager_command_argv(self.config_path, "%V")
+            )
+        )
         self.assertCountEqual(commands, expected)
-        self.assertEqual(len(commands), 2)
+        self.assertEqual(len(commands), 3)
         for pack_id, skill_id in (
             ("bounded-pack", "bounded-answer"),
             ("unused-pack", "unused-skill"),
@@ -2914,8 +2941,8 @@ class ActivationEndToEndTest(unittest.TestCase):
                     if key.endswith(r"\command") and not name
                 ]
                 leaves = windows_menu_leaves(config, placeholder)
-                self.assertEqual(len(commands), len(leaves))
-                for registered, leaf in zip(commands, leaves, strict=True):
+                self.assertEqual(len(commands), len(leaves) + 1)
+                for registered, leaf in zip(commands[:-1], leaves, strict=True):
                     quoted_placeholder = f'"{placeholder}"'
                     self.assertEqual(registered.count(quoted_placeholder), 1)
                     substituted = registered.replace(
@@ -2937,6 +2964,18 @@ class ActivationEndToEndTest(unittest.TestCase):
                         expected_argv[expected_argv.index("--project") + 1],
                         project_path,
                     )
+                manager_registered = commands[-1]
+                quoted_placeholder = f'"{placeholder}"'
+                self.assertEqual(manager_registered.count(quoted_placeholder), 1)
+                manager_substituted = manager_registered.replace(
+                    quoted_placeholder, windows_command((project_path,)), 1
+                )
+                self.assertEqual(
+                    manager_substituted,
+                    windows_command(
+                        windows_library_manager_command_argv(config, project_path)
+                    ),
+                )
 
     def test_context_cancel_and_supported_claude_contract(self) -> None:
         engine = ActivationEngine(self.config, self.state)
@@ -3096,8 +3135,11 @@ class ActivationEndToEndTest(unittest.TestCase):
             all(any(call[2].startswith(root) for root in classic_roots) for call in adds)
         )
         commands = [call[call.index("/d") + 1] for call in adds if "\\command" in call[2]]
-        self.assertEqual(len(commands), 4)
-        self.assertTrue(all("--pack" in command for command in commands))
+        self.assertEqual(len(commands), 6)
+        pack_commands = [command for command in commands if "--pack" in command]
+        manager_commands = [command for command in commands if "library ui" in command]
+        self.assertEqual(len(pack_commands), 4)
+        self.assertEqual(len(manager_commands), 2)
         self.assertTrue(all("--runtime" not in command for command in commands))
         self.assertTrue(result["reinstall_required_after_pack_change"])
         self.assertFalse(self.state.exists())
@@ -3160,21 +3202,36 @@ class ActivationEndToEndTest(unittest.TestCase):
             self.assertIn("%1", command)
             self.assertIn("--menu-skill-digest", command)
 
-    def test_windows_modern_manifest_has_one_immutable_leaf_per_skill(self) -> None:
+    def test_windows_modern_manifest_has_manager_and_immutable_skill_leaves(self) -> None:
         rendered = render_windows_modern_menu_manifest(self.config_path)
         lines = rendered.splitlines()
-        self.assertEqual(lines[0], "skill-magnet-menu-v3")
-        self.assertEqual(len(lines), 3)
+        self.assertEqual(lines[0], "skill-magnet-menu-v4")
+        self.assertEqual(len(lines), 4)
         records = [line.split("\t") for line in lines[1:]]
         self.assertTrue(all(len(record) == 7 for record in records))
+        manager = records[0]
+        self.assertEqual(
+            manager[:5],
+            [
+                "__library_manager__",
+                "Skill Magnet",
+                "manager",
+                "library-manager",
+                "Skill Library Manager",
+            ],
+        )
+        self.assertEqual(manager[6].count("__SKILL_MAGNET_PROJECT__"), 1)
+        self.assertIn("library ui", manager[6])
+        self.assertIn("--repository", manager[6])
+        skill_records = records[1:]
         self.assertCountEqual(
-            [(record[0], record[3], record[4]) for record in records],
+            [(record[0], record[3], record[4]) for record in skill_records],
             [
                 ("bounded-pack", "bounded-answer", "bounded-answer"),
                 ("unused-pack", "unused-skill", "unused-skill"),
             ],
         )
-        for _, menu_label, selection_kind, _, display_name, purpose, command in records:
+        for _, menu_label, selection_kind, _, display_name, purpose, command in skill_records:
             self.assertEqual(menu_label, "Skill Magnet")
             self.assertEqual(selection_kind, "skill")
             self.assertTrue(display_name)
@@ -3185,6 +3242,18 @@ class ActivationEndToEndTest(unittest.TestCase):
             self.assertIn("--menu-instruction-digest", command)
             self.assertIn("--menu-acceptance-digest", command)
             self.assertNotIn("--runtime", command)
+
+    def test_library_manager_context_command_preselects_selected_folder(self) -> None:
+        command = windows_library_manager_command_argv(
+            self.config_path, "C:\\selected library"
+        )
+        self.assertIn("library", command)
+        self.assertIn("ui", command)
+        self.assertEqual(
+            command[command.index("--repository") + 1], "C:\\selected library"
+        )
+        self.assertNotIn("--pack", command)
+        self.assertNotIn("--runtime", command)
 
     def test_windows_modern_appx_registers_both_explorer_contexts(self) -> None:
         manifest = (

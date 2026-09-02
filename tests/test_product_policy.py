@@ -194,6 +194,13 @@ class ProductPolicyTest(unittest.TestCase):
                     self.policy["principles_ja"],
                 )
 
+    def test_library_manager_is_reachable_from_context_menu_without_auto_writes(self) -> None:
+        manager = self.policy["library_manager_ui"]
+        self.assertEqual(manager["entrypoint"], "skill_magnet_context_menu")
+        self.assertTrue(manager["selected_folder_prefill"])
+        self.assertFalse(manager["automatic_publish"])
+        self.assertFalse(manager["automatic_activation"])
+
 
 if __name__ == "__main__":
     unittest.main()
