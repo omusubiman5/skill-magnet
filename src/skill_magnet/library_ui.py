@@ -86,6 +86,54 @@ def skill_registration_metadata(source: Path) -> tuple[str, str, str]:
     return skill_id, display_name, purpose
 
 
+def source_already_registered(repository: Path, source: Path) -> bool:
+    """Return true for an exact registered source and reject partial pack overlap."""
+    discovered = discover_skill_sources(source)
+    catalog_path = repository / CATALOG_FILENAME
+    if not catalog_path.is_file():
+        return False
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    existing = {
+        str(pack.get("id", "")): set(pack.get("skills", []))
+        for pack in catalog.get("packs", [])
+    }
+    regular = [pack for pack in discovered if pack["id"] != "custom-skills"]
+    overlapping = [pack for pack in regular if pack["id"] in existing]
+    if overlapping:
+        exact = len(overlapping) == len(regular) and all(
+            existing[pack["id"]] == set(pack["skills"])
+            and all((repository / skill).is_dir() for skill in pack["skills"])
+            for pack in regular
+        )
+        if exact:
+            return True
+        raise SkillMagnetError(
+            "同じパックIDの登録情報と保存ファイルが一致しません。"
+            "一部だけを上書きせず処理を停止しました"
+        )
+    if regular:
+        return False
+    incoming = {skill for pack in discovered for skill in pack["skills"]}
+    custom = existing.get("custom-skills", set())
+    return incoming <= custom and all((repository / skill).is_dir() for skill in incoming)
+
+
+def register_skill_source(repository: Path, source: Path) -> dict[str, Any]:
+    """Register once or return a successful no-op for the same complete source."""
+    discovered = discover_skill_sources(source)
+    pack_ids = [str(pack["id"]) for pack in discovered]
+    skill_ids = [skill for pack in discovered for skill in pack["skills"]]
+    if source_already_registered(repository, source):
+        return {
+            "already_registered": True,
+            "imported_pack_ids": pack_ids,
+            "imported_skill_ids": skill_ids,
+        }
+    result = import_skill_source(repository, source)
+    result["already_registered"] = False
+    return result
+
+
 def import_selected_skill(repository: Path, source: Path | None) -> bool:
     """Import a skill, a complete pack, or a directory containing packs."""
     if source is None:
@@ -94,10 +142,7 @@ def import_selected_skill(repository: Path, source: Path | None) -> bool:
         discovered = discover_skill_sources(source)
     except SkillMagnetError:
         return False
-    incoming = {skill for pack in discovered for skill in pack["skills"]}
-    if incoming and all((repository / skill).is_dir() for skill in incoming):
-        return True
-    import_skill_source(repository, source)
+    register_skill_source(repository, source)
     return True
 
 
@@ -187,7 +232,16 @@ def show_library_manager(
     def add() -> None:
         try:
             source = require_registration_source(import_source.get())
-            imported = import_skill_source(require_repository(), source)
+            repository_root = require_repository()
+            imported = register_skill_source(repository_root, source)
+            if imported["already_registered"]:
+                messagebox.showinfo(
+                    "スキルを登録",
+                    "選択したスキルまたはスキルパックは登録済みです。",
+                    parent=root,
+                )
+                registration.grid_remove()
+                return
             messagebox.showinfo(
                 "Skill",
                 f"{len(imported['imported_pack_ids'])}パック、"
