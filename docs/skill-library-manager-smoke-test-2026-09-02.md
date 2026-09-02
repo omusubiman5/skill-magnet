@@ -50,12 +50,14 @@ Skill Library ManagerのCLI基本経路、実Windows GUIのタブのない1画�
 | 1 | 標準folderを選択した通常flowは登録欄を隠し、GitHub公開欄だけを表示 | PASS |
 | 2 | 手動登録flowはfolder登録とGitHub公開を同じ画面に表示 | PASS |
 | 3 | `C:\Projects\cangjie-skill-clean\books`から3 pack・33 skillを一括検出・登録 | PASS |
+| 4 | 実ユーザーstateへ登録済みの`books\codex-cli`を手動で再選択 | PASS、`already_registered=true`、9 skill、catalog SHA-256不変 |
 
 確認した安全境界:
 
 - Publish画面の操作ボタンは1個だけで、初期状態では`送信内容を確認する`だけが表示される。成功した段階に応じて`GitHubへ送る`、`GitHubのマージを確認する`、`Skill Magnetへ反映`へ切り替わり、Transaction未作成時に後続操作を選べない。
 - platform選択を表示せず、Windows/macOSを実行環境から自動判定する。
 - URL未入力、SKILL.md不在、INDEX参照先欠落、重複、validation失敗はエラーダイアログで停止する。
+- 同じ登録済みpackの再選択はエラーにせず`登録済み`として終了し、catalogへ再書込みしない。登録情報と保存directoryが部分一致なら明示的な不整合エラーで停止する。
 - 登録元に`acceptance.json`がない33 skillは内部互換メタデータを自動生成した。`test-prompts.json`が存在する32 skillは、そのSHA-256へ結び付けた。残るpack入口skillは元ファイルが存在しないためdigestを捏造しない。
 - smoke中にpublish、activate、menu更新は実行されていない。
 

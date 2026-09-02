@@ -27,7 +27,9 @@ from skill_magnet.library_ui import (
     library_action_label,
     library_wizard_steps,
     managed_repository_path,
+    register_skill_source,
     require_registration_source,
+    source_already_registered,
     skill_registration_metadata,
 )
 
@@ -85,6 +87,12 @@ class LibraryManagerTests(unittest.TestCase):
         self.assertEqual(catalog["packs"][0]["id"], "custom-skills")
         self.assertEqual(catalog["packs"][0]["skills"], ["sample-skill"])
         self.assertTrue((repository / "sample-skill" / "SKILL.md").is_file())
+        self.assertTrue(source_already_registered(repository, source))
+        before = (repository / CATALOG_FILENAME).read_bytes()
+        repeated = register_skill_source(repository, source)
+        self.assertTrue(repeated["already_registered"])
+        self.assertEqual((repository / CATALOG_FILENAME).read_bytes(), before)
+        self.assertTrue(import_selected_skill(repository, source))
 
     def test_books_folder_imports_every_pack_and_skill_without_candidate_omission(self) -> None:
         repository = managed_repository_path(self.root)
@@ -174,6 +182,10 @@ class LibraryManagerTests(unittest.TestCase):
             )
             self.assertEqual(acceptance["generated_by"], "Skill Magnet Library Manager")
             self.assertIn("source_test_prompts_sha256", acceptance)
+        self.assertTrue(source_already_registered(repository, books))
+        shutil.rmtree(repository / "first-a")
+        with self.assertRaisesRegex(SkillMagnetError, "登録情報と保存ファイル"):
+            source_already_registered(repository, first)
 
     def test_existing_repository_url_is_prefilled_when_unambiguous(self) -> None:
         config = self.root / "config.json"

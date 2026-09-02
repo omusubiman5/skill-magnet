@@ -29,6 +29,7 @@ status: implemented
 - 現在の設定にrepository URLが一意に存在する既存ユーザーには、そのURLをPublish画面へ自動表示する。複数候補は誤選択防止のため自動補完しない。
 - 手動登録画面の入力はfolder 1つだけとし、単一skill、1 pack、複数pack collectionを判別する。pack／skill ID、表示名、目的、順序、関係はfolder、`SKILL.md`、`INDEX.md`から取得する。登録元に`acceptance.json`がなければ内部互換メタデータを生成し、`test-prompts.json`がある場合はそのSHA-256を記録する。
 - `C:\Projects\cangjie-skill-clean\books`の実データで3 pack・33 skillを母集合として固定し、3 pack・33 skillすべての一括登録を確認した。`conflict-clarity`のroot `SKILL.md`もentry skillとして含め、子skillへの相対linkを配置先に合わせる。
+- 登録済みsourceの再選択を冪等なno-opにした。pack ID、skill集合、保存directoryが完全一致すれば`登録済み`として成功し、catalogを変更しない。一部だけ一致する場合は破損を隠さず停止する。
 - headless/運用用途として`init`、`add`、`validate`、`prepare`、`publish`、`verify-merged`、`activate`、`status`も提供する。
 - publishとactivateは独立した明示確認が必要で、未確認ならfail-closedで停止する。
 
