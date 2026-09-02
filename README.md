@@ -90,6 +90,14 @@ python -m skill_magnet library status
 
 `publish`と`activate`はそれぞれ確認なしでは動きません。default branchへの直接pushは、`prepare --branch <default-branch>`と`publish --direct --no-pr --confirm`を両方明示し、repository policyがpushを許可した場合だけ成立します。PR未merge、remote digest不一致、secret候補、symlink、path traversal、dependency cycle、同一pack内のcontrastは有効化されません。GitHub tokenを引数、config、journal、receiptへ保存しません。
 
+関連文書:
+
+- [Skill Library Manager要件定義](docs/skill-library-management-requirements.md)
+- [実装計画](docs/skill-library-manager-implementation-plan-2026-09-02.md)
+- [実装報告](docs/skill-library-manager-implementation-report-2026-09-02.md)
+- [スモークテスト結果](docs/skill-library-manager-smoke-test-2026-09-02.md)
+- [skill repository契約](docs/skill-repository-contract.md)
+
 ## Windows 11 Quick Start
 
 前提はWindows 11、Python 3.12以降、Visual Studio Build Tools（Desktop development with C++）、Windows 10/11 SDKです。以下はPowerShellで実行します。

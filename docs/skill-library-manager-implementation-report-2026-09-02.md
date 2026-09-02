@@ -104,8 +104,11 @@ status: implemented
 | `python -m unittest discover -s tests` | 146 PASS、1 environment-dependent skip |
 | `python -m pip wheel . --no-deps` | PASS、`library_manager.py`と`library_ui.py`のwheel収録を確認 |
 | `git diff --check` | PASS |
+| 実GUIスモーク | PASS、7画面すべてを実Windows UIで表示・遷移 |
 
 自動試験ではローカルbare Git remoteを用い、isolated clone、commit、direct push、別cloneからのremote blob検証、config activation、retry、menu failure rollbackまで実行した。GitHub PR経路は`gh pr create`／`gh pr view`へ接続済みであり、実repositoryでは既存GitHub credentialとbranch protectionが最終権限境界になる。
+
+実GUIのスモーク結果は[Skill Library Managerスモークテスト結果](skill-library-manager-smoke-test-2026-09-02.md)へ記録した。
 
 ## 完了判定
 
