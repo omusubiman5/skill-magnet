@@ -351,9 +351,9 @@ def show_context_result(result: dict[str, object]) -> None:
     root.mainloop()
 
 
-_WEB_CLAUDE_DESTINATION = "https://claude.ai/new"
-_WEB_CLAUDE_MAX_PROMPT_CHARS = 8_000
-_WEB_CLAUDE_MAX_URL_CHARS = 16_384
+_CLAUDE_DESKTOP_DESTINATION = "claude://code/new"
+_CLAUDE_DESKTOP_MAX_PROMPT_CHARS = 12_000
+_CLAUDE_DESKTOP_MAX_URL_CHARS = 32_767
 
 _CODEX_DESKTOP_DESTINATION = "codex://threads/new"
 _CODEX_DESKTOP_MAX_PROMPT_CHARS = 12_000
@@ -404,35 +404,63 @@ def deliver_prepared_codex_handoff(
             str(prepared["destination"]),
         )
     except Exception:
-        engine.record_codex_desktop_launch_failure(prepared)
+        engine.record_desktop_launch_failure(prepared)
         raise
-    return engine.record_codex_desktop_handoff(prepared)
+    return engine.record_desktop_handoff(prepared)
 
 
-def web_claude_prefill_url(prompt: str, destination: str) -> str:
-    """Build the supported new-conversation URL without touching an existing draft."""
-    if destination != _WEB_CLAUDE_DESTINATION:
-        raise SkillMagnetError("Unexpected Web Claude destination")
+def claude_desktop_deep_link(prompt: str, project: str, destination: str) -> str:
+    """Build a new Claude Code Desktop session deep link."""
+    if destination != _CLAUDE_DESKTOP_DESTINATION:
+        raise SkillMagnetError("Unexpected Claude Desktop destination")
     if not prompt:
-        raise SkillMagnetError("Web Claude prompt is empty")
-    if len(prompt) > _WEB_CLAUDE_MAX_PROMPT_CHARS:
-        raise SkillMagnetError("Web Claude prompt exceeds the safe prefill limit")
-    url = f"{destination}?{urlencode({'q': prompt})}"
-    if len(url) > _WEB_CLAUDE_MAX_URL_CHARS:
-        raise SkillMagnetError("Web Claude prefill URL exceeds the safe URL limit")
+        raise SkillMagnetError("Claude Desktop prompt is empty")
+    if not project:
+        raise SkillMagnetError("Claude Desktop project is empty")
+    if len(prompt) > _CLAUDE_DESKTOP_MAX_PROMPT_CHARS:
+        raise SkillMagnetError("Claude Desktop prompt exceeds the safe handoff limit")
+    query = urlencode({"q": prompt, "folder": project}, quote_via=quote)
+    url = f"{destination}?{query}"
+    if len(url) > _CLAUDE_DESKTOP_MAX_URL_CHARS:
+        raise SkillMagnetError("Claude Desktop deep link exceeds the safe URL limit")
     return url
 
 
-def deliver_web_claude_prompt(prompt: str, destination: str) -> None:
-    """Open a new Web Claude conversation prefilled with the complete prompt."""
-    url = web_claude_prefill_url(prompt, destination)
+def deliver_claude_desktop_prompt(
+    prompt: str, project: str, destination: str
+) -> None:
+    """Open Claude Code in Claude Desktop with the prompt and project prefilled."""
+    url = claude_desktop_deep_link(prompt, project, destination)
     try:
-        if not webbrowser.open(url, new=2):
-            raise SkillMagnetError("Web Claude could not be opened")
+        if os.name == "nt":
+            os.startfile(url)  # type: ignore[attr-defined]
+        elif not webbrowser.open(url, new=2):
+            raise SkillMagnetError("Claude Desktop could not be opened")
     except SkillMagnetError:
         raise
     except Exception as exc:
-        raise SkillMagnetError("Web Claude could not be opened") from exc
+        raise SkillMagnetError("Claude Desktop could not be opened") from exc
+
+
+def deliver_prepared_claude_handoff(
+    engine: ActivationEngine,
+    contract_id: str,
+    *,
+    delivery: Callable[[str, str, str], None] | None = None,
+) -> dict[str, object]:
+    """Deliver one Claude Code Desktop prompt and record handoff readiness."""
+    prepared = engine.prepare_claude_desktop_handoff(contract_id)
+    opener = delivery or deliver_claude_desktop_prompt
+    try:
+        opener(
+            str(prepared["prompt"]),
+            str(prepared["project"]),
+            str(prepared["destination"]),
+        )
+    except Exception:
+        engine.record_desktop_launch_failure(prepared)
+        raise
+    return engine.record_desktop_handoff(prepared)
 
 
 def context_selection_details(
@@ -601,7 +629,7 @@ def launch_context_leaf(
     codex_executable: str | tuple[str, ...] = "codex",
     interactive_handoff: bool = False,
     destination: str = "verified_runtime",
-    web_delivery: Callable[[str, str], None] | None = None,
+    claude_desktop_delivery: Callable[[str, str, str], None] | None = None,
     desktop_delivery: Callable[[str, str, str], None] | None = None,
     error_ui: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
@@ -645,11 +673,12 @@ def launch_context_leaf(
                 contract.contract_id,
                 delivery=desktop_delivery,
             )
-        if destination == "web":
-            handoff = engine.prepare_web_handoff(contract.contract_id)
-            delivery = web_delivery or deliver_web_claude_prompt
-            delivery(str(handoff["prompt"]), str(handoff["destination"]))
-            return {key: value for key, value in handoff.items() if key != "prompt"}
+        if destination == "desktop":
+            return deliver_prepared_claude_handoff(
+                engine,
+                contract.contract_id,
+                delivery=claude_desktop_delivery,
+            )
         return engine.execute(
             contract.contract_id,
             codex_executable=codex_executable,

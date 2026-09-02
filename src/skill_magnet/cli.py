@@ -34,7 +34,7 @@ from .platforms import (
 from .ui import (
     context_failure_message,
     deliver_prepared_codex_handoff,
-    deliver_web_claude_prompt,
+    deliver_prepared_claude_handoff,
     show_context_error,
     show_context_result,
     show_context_selection,
@@ -350,7 +350,9 @@ def main(argv: list[str] | None = None) -> int:
                         "answer_completion_claimed"
                     ]
                 else:
-                    handoff = activation.prepare_web_handoff(contract.contract_id)
+                    handoff = activation.prepare_claude_desktop_handoff(
+                        contract.contract_id
+                    )
                     capture_delivery(
                         str(handoff["prompt"]),
                         str(handoff["project"]),
@@ -431,17 +433,9 @@ def main(argv: list[str] | None = None) -> int:
                             activation, contract.contract_id
                         )
                     else:
-                        handoff = activation.prepare_web_handoff(
-                            contract.contract_id
+                        result = deliver_prepared_claude_handoff(
+                            activation, contract.contract_id
                         )
-                        deliver_web_claude_prompt(
-                            str(handoff["prompt"]), str(handoff["destination"])
-                        )
-                        result = {
-                            key: value
-                            for key, value in handoff.items()
-                            if key != "prompt"
-                        }
                 except SkillMagnetError as exc:
                     show_context_error(context_failure_message(exc))
                     raise
@@ -475,17 +469,9 @@ def main(argv: list[str] | None = None) -> int:
                             activation, contract.contract_id
                         )
                     else:
-                        handoff = activation.prepare_web_handoff(
-                            contract.contract_id
+                        result = deliver_prepared_claude_handoff(
+                            activation, contract.contract_id
                         )
-                        deliver_web_claude_prompt(
-                            str(handoff["prompt"]), str(handoff["destination"])
-                        )
-                        result = {
-                            key: value
-                            for key, value in handoff.items()
-                            if key != "prompt"
-                        }
                 except SkillMagnetError as exc:
                     show_context_error(context_failure_message(exc))
                     raise

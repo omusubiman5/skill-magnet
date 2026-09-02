@@ -7,12 +7,12 @@
 <!-- product-policy:begin -->
 - GitHubのユーザー所有保管庫を唯一の正本とする。
 - Skill Magnetはスキルの目的に沿って、必要なパックだけを明示選択して呼び出す。
-- Codex/Claudeへの全件・常設・暗黙同期を既定にしない。
+- Codex Desktopアプリ／Claude Codeデスクトップアプリへの全件・常設・暗黙同期を既定にしない。
 - skillの永続保管は該当するユーザー所有GitHub repositoryだけとする。明示したlibrary編集transaction中だけ製品所有の隔離workspaceへ一時複製できるが、実行用materializeには使わず完了後に削除する。
 - 保管庫の版・来歴・承認を保持する。
 - ローカル配置の成功を、スキルの読み込み成功または使用成功とみなさない。
 - 選択したpackとversionをタスクへ明示し、全skillの読了、最低1つの実作業への適用、存在する場合だけINDEX関係の適用をpromptで必須にする。読了や要約だけを実行完了とみなさない。
-- Codex/Claudeの既存利用プランを使い、API key、従量課金API、追加支払いを製品経路で要求しない。
+- Codex Desktop／Claudeの既存利用プランを使い、API key、従量課金API、追加支払いを製品経路で要求しない。
 - 公式に確認できる経路または必要な証拠がない場合はfail-closedで停止し、保証外であることを明示する。
 - 起動はユーザーの右クリックメニューからの明示選択を条件とし、自動提案・自動配布・自動有効化をしない。
 - Windows ExplorerとmacOS Finderで同じ選択・確認・起動の意味と安全ポリシーを提供する。
@@ -20,14 +20,14 @@
 
 ## 目的・成果物・完了条件
 
-目的は、ユーザー所有GitHub保管庫の固定commitから目的に合うskill packを一つ選び、全skillの指示とactual requestをCodex DesktopまたはClaudeの新規taskへ一体でhandoffし、trigger/boundaryに合う必要最小集合の規則を実作業へ適用した完成成果を得ることです。INDEXは存在するpackだけで読了・適用します。skillの読了、要約、候補列挙だけでは完了ではありません。成果形式は実際の依頼とskillに従い、自然文、JSON、コード、ファイル等を一律に禁止しません。
+目的は、ユーザー所有GitHub保管庫の固定commitから目的に合うskill packを一つ選び、全skillの指示とactual requestをCodex DesktopアプリまたはClaude Codeデスクトップアプリの新規task/sessionへ一体でhandoffし、trigger/boundaryに合う必要最小集合の規則を実作業へ適用した完成成果を得ることです。INDEXは存在するpackだけで読了・適用します。skillの読了、要約、候補列挙だけでは完了ではありません。成果形式は実際の依頼とskillに従い、自然文、JSON、コード、ファイル等を一律に禁止しません。
 
 成果物は二つです。
 
 1. Skill Magnet本体。共通コア、CLI、Windows/macOS UIアダプター、検証・証拠機構を含む。
 2. Skill Magnetとは別の、ユーザー所有スキル保管庫。pack metadata、skill、version、skill固有acceptance checkを保持する。
 
-自動テストはcontract、skill適用必須prompt、URL encoding、handoff、fail-closedを検証します。handoff受理を回答完了と同一視せず、Skill MagnetはDesktop taskの回答取得・検証を主張しません。製品経路ではAPI key、従量課金API、追加支払いを要求せず、利用者が契約済みのCodex DesktopまたはClaudeの利用枠へ渡します。
+自動テストはcontract、skill適用必須prompt、URL encoding、handoff、fail-closedを検証します。handoff受理を回答完了と同一視せず、Skill MagnetはDesktop task/sessionの回答取得・検証を主張しません。製品経路ではAPI key、従量課金API、追加支払いを要求せず、利用者が契約済みのCodex DesktopまたはClaudeの利用枠へ渡します。
 
 ## 最小アーキテクチャ
 
@@ -59,7 +59,7 @@ WindowsのExplorer→Python/TkはGUI-subsystem launcherが所有します。Code
 
 ## Codex Desktopの正式ルート
 
-Codexの製品targetはCodex Desktop appです。スキルを常設配置したりCodex CLIへ渡したりせず、固定commitから検証したinstruction全文を新規Desktop taskのpromptへ含めます。
+Codexの製品targetはCodex Desktopアプリです。スキルを常設配置したりCodex CLIへ渡したりせず、固定commitから検証したinstruction全文を新規Desktop taskのpromptへ含めます。
 
 既定候補は次の通りです。
 
@@ -74,7 +74,7 @@ deep linkの受理はモデル挙動や回答完了の保証ではありませ�
 
 ## Claude
 
-WindowsとmacOSの製品経路は、検証済みpackとactual requestを一つのpromptへ束縛し、`https://claude.ai/new`の新規conversationへprefillします。Claudeには全skillを読むだけで終わらず、選んだskillの手順・判断基準・境界を実際の分析、編集、生成、検証と最終成果へ具体的に反映するよう明示します。INDEXは存在する場合だけ関係を適用します。clipboard、既存conversation、常設plugin、headless `claude --print`へfallbackしません。Web handoffはtask deliveryの境界であり、回答完了の証拠へは昇格させません。CLIのstructured-output adapterは回帰試験用であり、context-menu製品経路から到達させません。
+WindowsとmacOSの製品経路は、検証済みpackとactual requestを一つのpromptへ束縛し、`claude://code/new`でClaude Codeデスクトップアプリの新規sessionへprefillします。対象projectは`folder` parameterへ渡します。Claudeには全skillを読むだけで終わらず、選んだskillの手順・判断基準・境界を実際の分析、編集、生成、検証と最終成果へ具体的に反映するよう明示します。INDEXは存在する場合だけ関係を適用します。Webブラウザ、clipboard、既存conversation、常設plugin、headless `claude --print`へfallbackしません。Desktop handoffはtask deliveryの境界であり、回答完了の証拠へは昇格させません。CLIのstructured-output adapterは回帰試験用であり、context-menu製品経路から到達させません。
 
 ## テスト可能な受入条件
 
@@ -98,6 +98,6 @@ WindowsとmacOSの製品経路は、検証済みpackとactual requestを一つ�
 
 - [OpenAI: Build skills](https://learn.chatgpt.com/docs/build-skills) — Codexの明示・暗黙呼び出し、progressive disclosure、repository/user/admin/systemの探索位置。
 - 成功比較実装 `C:\Projects\news-obsidian-pipeline` — `codex://threads/new?path=...&prompt=...` の新規task handoff。
-- [Claude](https://claude.ai/new) — 製品が新規conversation prefillに用いる固定destination。
+- [Claude Desktop deep link](https://support.claude.com/en/articles/14729294-open-claude-desktop-with-a-link) — 製品が新規Claude Code sessionのprefillに用いる公式destination仕様。
 
 過去のCodex CLI検証はDesktop targetの完成証拠には使用しません。

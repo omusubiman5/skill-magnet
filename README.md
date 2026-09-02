@@ -1,6 +1,6 @@
 # Skill Magnet
 
-Skill Magnetは、ユーザー自身のGitHub保管庫でスキルを保存・版管理し、仕事に必要なスキルパックを選んでCodex Desktop appまたはClaudeへ渡すローカルツールです。
+Skill Magnetは、GitHubをスキルの保管庫として利用し、必要なスキルパックを選んでCodex DesktopアプリまたはClaude Codeデスクトップアプリへ安全に受け渡すローカルツールです。
 
 ## 目的
 
@@ -8,7 +8,7 @@ Skill Magnetの目的は、GitHub固定commitに保管されたskillをLLMへ単
 
 ## 現在の状態
 
-GitHub中心の手動activation経路は、スキルパックを一つ選ぶUXです。通常右クリックの正規入口は `Skill Magnet` 一つで、対象パックを選び、確認画面でCodexまたはClaudeと依頼内容を明示します。Codexを選ぶと、CLI/TUIではなくCodex Desktop appの新規taskへ、パック内の全スキルと依頼が渡されます。skill contentの永続的な正本は該当するユーザー所有GitHub repositoryだけで、Skill Magnetは固定commitをメモリ上で検証します。promptには固定commitの全SKILL.md URLとdigestを渡し、INDEXが存在するpackではINDEXのURLとdigestも渡します。library編集時だけ製品所有の隔離workspaceを使い、実行用にはmaterializeせず、有効化完了後に削除します。CodexとClaudeには全skillの読了、trigger/boundaryと存在する場合のINDEX関係に基づく必要最小集合の選定、最低1つの具体的適用、実依頼の完了を必須化します。skillの説明・一覧・準備確認だけで終了することを禁止します。Skill MagnetはAPI keyや従量課金APIを使わず、既存のCodex DesktopまたはClaude利用プランへhandoffします。handoff受理は回答完了を意味せず、Skill MagnetはLLM回答を取得・検証したとは主張しません。Windows ExplorerとmacOS Finderは規範policy上のsupported adapterです。
+GitHub中心の手動activation経路は、スキルパックを一つ選ぶUXです。通常右クリックの正規入口は `Skill Magnet` 一つで、対象パックを選び、確認画面でCodex DesktopアプリまたはClaude Codeデスクトップアプリと依頼内容を明示します。Codexを選ぶとCodex Desktopの新規taskへ、Claudeを選ぶとClaude Desktop内の新規Claude Code sessionへ、パック内の全スキルと依頼が渡されます。CLI/TUIやWebブラウザは製品handoff先にしません。skill contentの永続的な正本は該当するユーザー所有GitHub repositoryだけで、Skill Magnetは固定commitをメモリ上で検証します。promptには固定commitの全SKILL.md URLとdigestを渡し、INDEXが存在するpackではINDEXのURLとdigestも渡します。library編集時だけ製品所有の隔離workspaceを使い、実行用にはmaterializeせず、有効化完了後に削除します。両デスクトップアプリには全skillの読了、trigger/boundaryと存在する場合のINDEX関係に基づく必要最小集合の選定、最低1つの具体的適用、実依頼の完了を必須化します。skillの説明・一覧・準備確認だけで終了することを禁止します。Skill MagnetはAPI keyや従量課金APIを使わず、既存のCodex DesktopまたはClaude利用プランへhandoffします。handoff受理は回答完了を意味せず、Skill MagnetはLLM回答を取得・検証したとは主張しません。Windows ExplorerとmacOS Finderは規範policy上のsupported adapterです。
 
 旧MVPの `sync` は `~/.agents/skills` と `~/.claude/skills` への常設コピーを前提とし、現在の製品ポリシーに適合しません。CLIから恒久的に無効化しており、overrideはありません。
 
@@ -19,12 +19,12 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 <!-- product-policy:begin -->
 - GitHubのユーザー所有保管庫を唯一の正本とする。
 - Skill Magnetはスキルの目的に沿って、必要なパックだけを明示選択して呼び出す。
-- Codex/Claudeへの全件・常設・暗黙同期を既定にしない。
+- Codex Desktopアプリ／Claude Codeデスクトップアプリへの全件・常設・暗黙同期を既定にしない。
 - skillの永続保管は該当するユーザー所有GitHub repositoryだけとする。明示したlibrary編集transaction中だけ製品所有の隔離workspaceへ一時複製できるが、実行用materializeには使わず完了後に削除する。
 - 保管庫の版・来歴・承認を保持する。
 - ローカル配置の成功を、スキルの読み込み成功または使用成功とみなさない。
 - 選択したpackとversionをタスクへ明示し、全skillの読了、最低1つの実作業への適用、存在する場合だけINDEX関係の適用をpromptで必須にする。読了や要約だけを実行完了とみなさない。
-- Codex/Claudeの既存利用プランを使い、API key、従量課金API、追加支払いを製品経路で要求しない。
+- Codex Desktop／Claudeの既存利用プランを使い、API key、従量課金API、追加支払いを製品経路で要求しない。
 - 公式に確認できる経路または必要な証拠がない場合はfail-closedで停止し、保証外であることを明示する。
 - 起動はユーザーの右クリックメニューからの明示選択を条件とし、自動提案・自動配布・自動有効化をしない。
 - Windows ExplorerとmacOS Finderで同じ選択・確認・起動の意味と安全ポリシーを提供する。
@@ -44,11 +44,11 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 現行MVPは、以下の確定済みCLIと右クリック統合でこの流れを実装しています。
 
 1. ユーザー所有GitHub保管庫から利用可能なパックと、その目的・版・承認状態を一覧する。
-2. 必要な時にユーザーが右クリックメニューで目的に合うスキルパックを一つ選び、画面でCodexまたはClaudeを明示選択する。
+2. 必要な時にユーザーが右クリックメニューで目的に合うスキルパックを一つ選び、画面でCodex DesktopアプリまたはClaude Codeデスクトップアプリを明示選択する。
 3. GitHub固定commit、対象、承認、全skillと任意のINDEXをメモリ内で検証する。
 4. 選択したpack ID、GitHub URL、commit SHA、全skill ID、instruction digestをタスクへ明示注入する。
-5. CodexではDesktop appの新規taskを開き、全skillの読了と最低1つの適用を必須とする一つのpromptを渡す。
-6. 利用者はDesktop appまたはClaudeの新規conversationで自然文回答を確認する。Skill Magnetはhandoff成功と回答完了を混同しない。
+5. 選択したデスクトップアプリで新規taskまたは新規Claude Code sessionを開き、全skillの読了と最低1つの適用を必須とする一つのpromptを渡す。
+6. 利用者は選択したデスクトップアプリで自然文回答を確認する。Skill Magnetはhandoff成功と回答完了を混同しない。
 
 `dry-run` を通していない有効化は拒否する設計です。
 
@@ -96,6 +96,7 @@ python -m skill_magnet library status
 - [実装計画](docs/skill-library-manager-implementation-plan-2026-09-02.md)
 - [実装報告](docs/skill-library-manager-implementation-report-2026-09-02.md)
 - [スモークテスト結果](docs/skill-library-manager-smoke-test-2026-09-02.md)
+- [Claude Codeデスクトップアプリ handoff対応報告](docs/claude-code-desktop-handoff-report-2026-09-02.md)
 - [skill repository契約](docs/skill-repository-contract.md)
 
 ## Windows 11 Quick Start
@@ -270,16 +271,16 @@ python -m skill_magnet activation-plan --platform windows --project C:\path\to\t
 
 ## 実行先の現状
 
-- Claude: WindowsとmacOSの製品経路は、検証済みpackと依頼を一つのpromptに束縛し、`https://claude.ai/new`の新規conversationへprefillします。全skillの読了だけでなく、選んだskillの規則を実作業と最終成果へ具体的に反映するよう要求します。clipboard、既存conversation、常設plugin、headless `claude --print`へfallbackしません。handoffは回答完了を意味しません。
-- Codex: `codex://threads/new?path=...&prompt=...` を使い、Codex Desktop appの新規taskへhandoffします。`path`と`prompt`は別々にURL encodeし、日本語、改行、空白、`&`、`#`を保持します。Skill MagnetのCodex実行先として `codex exec`、`codex resume`、CLI/TUI、cmd、Windows Terminalは起動しません。
+- Claude: `claude://code/new?q=...&folder=...`を使い、Claude Codeデスクトップアプリの新規sessionへhandoffします。検証済みpackと依頼を一つのpromptへ束縛し、対象projectを`folder`へ渡します。全skillの読了だけでなく、選んだskillの規則を実作業と最終成果へ具体的に反映するよう要求します。Webブラウザ、clipboard、既存conversation、常設plugin、headless `claude --print`へfallbackしません。handoffは回答完了を意味しません。
+- Codex: `codex://threads/new?path=...&prompt=...` を使い、Codex Desktopアプリの新規taskへhandoffします。`path`と`prompt`は別々にURL encodeし、日本語、改行、空白、`&`、`#`を保持します。Skill MagnetのCodex実行先として `codex exec`、`codex resume`、CLI/TUI、cmd、Windows Terminalは起動しません。
 
-Codex DesktopとClaudeのpromptには、選択pack ID、全skill ID、GitHub固定commitのSKILL.md URLとdigest、actual request、非デモ実行の指示、期待成果、contract/attemptを人が読める形で含めます。INDEXはpackに存在する場合だけURLとdigestを含め、その関係を適用させます。LLMには参照ファイルの全文読了とdigest照合に加え、選んだskillの手順・判断基準・境界を実際の分析・編集・生成・検証へ反映して依頼を完了するよう要求します。読む、要約する、候補を挙げるだけでは完了にしません。成果形式は依頼とskillに委ね、JSONを含む特定形式を一律禁止しません。skill contentはローカルへ保存せず、API key、従量課金API、追加支払いも要求しません。handoff時点では回答完了を主張しません。詳細は [`docs/mvp-redesign.md`](docs/mvp-redesign.md) にあります。
+Codex DesktopアプリとClaude Codeデスクトップアプリのpromptには、選択pack ID、全skill ID、GitHub固定commitのSKILL.md URLとdigest、actual request、非デモ実行の指示、期待成果、contract/attemptを人が読める形で含めます。INDEXはpackに存在する場合だけURLとdigestを含め、その関係を適用させます。LLMには参照ファイルの全文読了とdigest照合に加え、選んだskillの手順・判断基準・境界を実際の分析・編集・生成・検証へ反映して依頼を完了するよう要求します。読む、要約する、候補を挙げるだけでは完了にしません。成果形式は依頼とskillに委ね、JSONを含む特定形式を一律禁止しません。skill contentはローカルへ保存せず、API key、従量課金API、追加支払いも要求しません。handoff時点では回答完了を主張しません。詳細は [`docs/mvp-redesign.md`](docs/mvp-redesign.md) にあります。
 
 旧CLI verification adapterは回帰試験用コードとして残っていますが、Codex Desktop製品経路からは到達しません。global/user Codex configは変更しません。Desktop app自身の設定と認証はDesktop appが所有します。
 
 ## 成果物と完了条件
 
-成果物は、Skill Magnet本体と、そこから独立したユーザー所有のスキル保管庫です。MVPの目的は、保管庫の固定commitから一つのpackageを選び、全skillと、存在する場合だけINDEXをCodex DesktopまたはClaudeの新規taskへ依頼と一体で渡し、必要なskillの規則を実作業へ適用した完成成果を得ることです。
+成果物は、Skill Magnet本体と、そこから独立したユーザー所有のスキル保管庫です。MVPの目的は、保管庫の固定commitから一つのpackageを選び、全skillと、存在する場合だけINDEXをCodex DesktopアプリまたはClaude Codeデスクトップアプリの新規task/sessionへ依頼と一体で渡し、必要なskillの規則を実作業へ適用した完成成果を得ることです。
 
 この一連を両方の成果物を使ったend-to-end自動テストで合格した時だけ完成とします。ローカル配置、候補表示、旧syncテストの成功だけでは完成ではありません。
 
@@ -299,4 +300,4 @@ python -m unittest discover -s tests -v
 
 GitHub ActionsはWindowsとmacOSの両jobを必須の同一テストsuiteとして定義しています。片方だけの成功を完成扱いにしません。
 
-過去に実施したCodex CLI runtime acceptanceは、CLI adapter自体の回帰資料です。Codex Desktop appを実行先とする現製品の完成証拠には転用しません。
+過去に実施したCodex CLI runtime acceptanceは、CLI adapter自体の回帰資料です。デスクトップアプリを実行先とする現製品の完成証拠には転用しません。

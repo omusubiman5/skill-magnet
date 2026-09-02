@@ -110,6 +110,10 @@ class ProductPolicyTest(unittest.TestCase):
             {"skill_read", "skill_application"},
         )
         self.assertEqual(handoff["success_state"], "desktop_handoff_ready")
+        self.assertEqual(
+            set(handoff["target_applications"]),
+            {"codex_desktop", "claude_code_desktop"},
+        )
         self.assertFalse(handoff["answer_completion_claimed"])
         self.assertEqual(
             handoff["desktop_result_verification"], "not_claimed_by_design"

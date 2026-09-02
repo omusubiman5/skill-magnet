@@ -5,12 +5,12 @@
   "principles_ja": [
     "GitHubのユーザー所有保管庫を唯一の正本とする。",
     "Skill Magnetはスキルの目的に沿って、必要なパックだけを明示選択して呼び出す。",
-    "Codex/Claudeへの全件・常設・暗黙同期を既定にしない。",
+    "Codex Desktopアプリ／Claude Codeデスクトップアプリへの全件・常設・暗黙同期を既定にしない。",
     "skillの永続保管は該当するユーザー所有GitHub repositoryだけとする。明示したlibrary編集transaction中だけ製品所有の隔離workspaceへ一時複製できるが、実行用materializeには使わず完了後に削除する。",
     "保管庫の版・来歴・承認を保持する。",
     "ローカル配置の成功を、スキルの読み込み成功または使用成功とみなさない。",
     "選択したpackとversionをタスクへ明示し、全skillの読了、最低1つの実作業への適用、存在する場合だけINDEX関係の適用をpromptで必須にする。読了や要約だけを実行完了とみなさない。",
-    "Codex/Claudeの既存利用プランを使い、API key、従量課金API、追加支払いを製品経路で要求しない。",
+    "Codex Desktop／Claudeの既存利用プランを使い、API key、従量課金API、追加支払いを製品経路で要求しない。",
     "公式に確認できる経路または必要な証拠がない場合はfail-closedで停止し、保証外であることを明示する。",
     "起動はユーザーの右クリックメニューからの明示選択を条件とし、自動提案・自動配布・自動有効化をしない。",
     "Windows ExplorerとmacOS Finderで同じ選択・確認・起動の意味と安全ポリシーを提供する。"
@@ -88,6 +88,7 @@
     }
   },
   "skill_use_handoff": {
+    "target_applications": ["codex_desktop", "claude_code_desktop"],
     "success_state": "desktop_handoff_ready",
     "success_proves_only": "prompt_delivery_to_new_desktop_task",
     "prompt_requires": [

@@ -42,4 +42,4 @@ MVPの `acceptance.json` は、Codexの構造化結果 `result` に対する完�
 
 現在のMVPで許可するpathは `result.<field>` の一階層だけです。複数skillのassertionが同じfieldへ異なる値を要求する場合はfail-closedです。acceptanceがない、空、壊れている、判定不能、またはCodex結果と一致しない場合、`verified_applied` は発行されません。
 
-`acceptance.json` は単なる自己申告ではなく、skillの目的に固有で機械判定可能な結果を要求してください。ただし、LLMの内部状態を公式に保証するものではありません。これは回帰試験用のstructured verification adapterで使用するmetadataであり、Codex DesktopまたはClaudeの利用者向けpromptへJSON出力形式を強制するものではありません。製品promptの成果形式は実際の依頼と適用skillに従います。
+`acceptance.json` は単なる自己申告ではなく、skillの目的に固有で機械判定可能な結果を要求してください。ただし、LLMの内部状態を公式に保証するものではありません。これは回帰試験用のstructured verification adapterで使用するmetadataであり、Codex DesktopアプリまたはClaude Codeデスクトップアプリの利用者向けpromptへJSON出力形式を強制するものではありません。製品promptの成果形式は実際の依頼と適用skillに従います。

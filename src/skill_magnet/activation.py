@@ -863,7 +863,7 @@ class ActivationEngine:
             "skill_content_storage": "github_only",
         }
 
-    def record_codex_desktop_handoff(
+    def record_desktop_handoff(
         self, prepared: dict[str, Any]
     ) -> dict[str, Any]:
         """Persist shell-accepted handoff evidence without inventing completion."""
@@ -901,7 +901,7 @@ class ActivationEngine:
         )
         return evidence
 
-    def record_codex_desktop_launch_failure(
+    def record_desktop_launch_failure(
         self, prepared: dict[str, Any]
     ) -> dict[str, Any]:
         """Close a prepared handoff when the OS rejects the Desktop deep link."""
@@ -932,29 +932,24 @@ class ActivationEngine:
         )
         return failure
 
-    def prepare_web_handoff(self, contract_id: str) -> dict[str, Any]:
-        """Consume one verified selection and return its single Web Claude prompt.
-
-        Web Codex deliberately has no fallback here.  Its currently supported,
-        authenticated prompt-input surface is absent, so calling code must show
-        that leaf-specific error instead of relabelling ChatGPT or opening a CLI.
-        """
+    def prepare_claude_desktop_handoff(self, contract_id: str) -> dict[str, Any]:
+        """Consume one verified selection for a new Claude Code Desktop session."""
         self.recover_interrupted_attempts()
         contract = self._read_contract(contract_id)
         if contract.runtime != "claude":
-            raise _LaunchFailed(
-                "Web Codex has no supported authenticated prompt input on this account"
-            )
+            raise _LaunchFailed("Claude Desktop handoff requires the Claude runtime")
         pack, commit, _, _ = self._validated_pack(contract.pack_id)
         if commit != contract.commit_sha or pack.repo_url != contract.repository_url:
             raise SafetyError("Pack provenance changed after confirmation")
-        prompt = self._desktop_task_prompt(contract, pack, runtime_name="Claude")
+        prompt = self._desktop_task_prompt(
+            contract, pack, runtime_name="Claude Code Desktop"
+        )
         prompt_digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
         self._consume(contract)
         return {
-            "status": "web_prompt_ready",
+            "status": "desktop_handoff_prepared",
             "runtime": "claude",
-            "destination": "https://claude.ai/new",
+            "destination": "claude://code/new",
             "contract_id": contract.contract_id,
             "attempt_id": contract.attempt_id,
             "project": contract.project,
