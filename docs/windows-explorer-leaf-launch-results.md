@@ -2,7 +2,7 @@
 
 ## 文書の位置づけ
 
-この文書は現行のExplorer統合だけを記録する正本です。旧「skillごとのleaf」方式の実験記録は現行仕様の証拠に使用しません。現行仕様は、ExplorerのDirectory/Backgroundごとに`Delivery Assurance`という単一package leafを表示し、その新規Codex Desktopタスク内でINDEXと全9スキルを読み、依頼に必要な最小集合を選ぶものです。
+この文書は現行のExplorer統合だけを記録する正本です。旧「skillごとのleaf」方式の実験記録は現行仕様の証拠に使用しません。現行仕様は、ExplorerのDirectory/Backgroundごとに`Skill Pack: Delivery Assurance`という単一package leafと`Library Manager`という管理actionを表示し、その新規Codex Desktopタスク内でINDEXと全9スキルを読み、依頼に必要な最小集合を選ぶものです。
 
 ## 現在の集約結果
 
@@ -17,8 +17,8 @@
   "library_manager_entry_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
-  "release_code_sha": "c8067f801f433e4913a29db525ef162548eca170",
-  "wheel_payload_sha256": "0bc22e25db24ebd02ebb3a0502edc39a4d123e5a98e76b8dcd09ab1304722df3",
+  "release_code_sha": "d92e0797a99988a21541edc4f89a82ee0c7a5b4a",
+  "wheel_payload_sha256": "1a34219857a02b20ce3a3623c26e3891aa745ccd1dae99470dc6a27639f589cb",
   "automated_status": "LOCAL_RELEASE_GATE_PASS_152",
   "windows_explorer_field_status": "PASS_REAL_RIGHT_CLICK_MENU_AND_CONFIRMATION_UI_0_5_1",
   "macos_finder_field_status": "CI_SEMANTIC_ONLY_REAL_UI_NOT_CLAIMED_FOR_0_5_2",
@@ -28,7 +28,7 @@
 explorer-results-ledger:end -->
 
 - 統合テスト: `python -m unittest discover -s tests -v` — 152 tests PASS、環境依存1件skip
-- menu contract: 1 package leaf / 1 fixed Skill Library Manager action / selection kind `package` / pack内9 skills
+- menu contract: `Skill Pack: Delivery Assurance` 1 package leaf / `Library Manager` 1 fixed action / selection kind `package` / pack内9 skills
 - 自動証拠: contract固定、GitHub固定commitのINDEX/全SKILL参照、archiveのメモリ内検証、deep-link binding、ローカルskill残留ゼロ
 - wheel再現性: 独立した2 directoryで0.4.0 wheelをbuildし、論理payload SHA-256が両方`c9a0ffe8f542fd475144ac8fecd284175a46863d69d1d44ec5be78ed901ba38f`で一致した。
 - 0.4.1 path修正版も独立した2 directoryでbuildし、論理payload SHA-256が両方`c8da150b48878b11dccb709902e93ebe05d8f360c83433787259aab9f921c2a1`で一致した。
@@ -46,6 +46,7 @@ explorer-results-ledger:end -->
 - 手動登録で作成済みスキルfolderを必須化し、画面内でのskill新規作成を拒否する0.5.2候補wheelは、独立した2 buildで共通の論理payload SHA-256 `e78b33b6fe60c77c46b527e3bc21592025ae9d38bff6849b1cdc026bd03f7187`を確認した。release codeは`a0f684aa08807e48a2ad999849b4e13b918440a7`である。
 - Skill IDとPack IDの入力欄を廃止し、SKILL.mdとpack表示名から内部キーを自動決定する0.5.2候補wheelは、独立した2 buildで共通の論理payload SHA-256 `109e0915d14b82c736031fbf97f09023b36ace554eceb9e7d93ece69832a1fbd`を確認した。release codeは`061c85d9a8a4ab27d91cb9fe6d0cf38eafc447c8`である。
 - Skill Library Managerをタブのない1画面へ統合し、手動登録をfolder指定だけに限定して`SKILL.md`／`acceptance.json`不足を登録前に拒否する0.5.2候補wheelは、独立した2 buildで共通の論理payload SHA-256 `0bc22e25db24ebd02ebb3a0502edc39a4d123e5a98e76b8dcd09ab1304722df3`を確認した。release codeは`c8067f801f433e4913a29db525ef162548eca170`である。
+- 右クリック項目を`Library Manager`、`Skill Pack: <表示名>`、`Skill: <表示名>`へ分類した0.5.2候補wheelは、独立した2 buildで共通の論理payload SHA-256 `1a34219857a02b20ce3a3623c26e3891aa745ccd1dae99470dc6a27639f589cb`を確認した。release codeは`d92e0797a99988a21541edc4f89a82ee0c7a5b4a`である。
 - 実機証拠: 0.5.1 wheelをWindowsへinstallし、modern context menuのstatusが`usable_installed_state: true`、`menu_contract_matches_config: true`、`menu_leaf_count: 1`を返した。File Explorerの`C:\Projects\skill-magnet`背景を実際に右クリックし、`Skill Magnet`→`Delivery Assurance`から`Skill Magnet — 実行確認`画面が起動すること、画面上のproject、pack、用途、実行AI、依頼内容、実行/取消UIを確認した。外部AIへのテスト依頼送信はフィールドUI受入の対象外とし、確認画面を取消で閉じた。実際のTSVはpack ID `codex-delivery-assurance`、表示名`Delivery Assurance`、固定commit `8f12af5ddfdd3b985f26d33dad09d6061d675342`を記録した。
 - Skill Library Manager右クリック実機証拠: 現行sourceからWindows 11 modern拡張をbuild・再登録し、`C:\Projects\skill-magnet` folderを実際に右クリックした。`Skill Magnet`配下に`Skill Library Manager`と`Delivery Assurance`が表示され、manager選択でGUIが起動した。標準構成のskill folderでは自動import後にPublishだけを表示し、作成済みskillの手動登録時だけSkillとPublishを表示する。作業用repository、catalog、INDEX、validation、OS判定は自動管理する。statusは`menu_contract_matches_config: true`、package leaf 1件、manager action 1件、合計2 action、`usable_installed_state: true`を返した。
 - 0.4.0実install: package `SkillMagnet.ContextMenu_0.4.0.0_x64__byy1sc3mfzfz4`を登録し、1 package leaf、Directory/Background、署名済みcommand target、`usable_installed_state: true`を確認した。
@@ -61,7 +62,7 @@ explorer-results-ledger:end -->
 
 Windows 0.5.1ローカル自己署名版では、次をリリース証拠として固定した。
 
-1. wheelからのnative build、MSIX署名・install、Directory/Backgroundの単一`Delivery Assurance`契約と、Explorer実UIでの単一leaf表示。
+1. wheelからのnative build、MSIX署名・install、Directory/Backgroundの単一`Skill Pack: Delivery Assurance`契約と、Explorer実UIでの単一leaf表示。
 2. package leafから実行確認画面が起動し、全SKILL、任意INDEX、最低1つのskill規則の実作業適用を必須にしたhandoff契約が表示対象packへ結び付くこと。
 3. update、rollback、uninstall後のAppx・証明書・ContextMenu/rollback残留ゼロ。CIでは旧自己署名trust 2世代のupgrade cleanupも含めて確認済み。
 
