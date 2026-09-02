@@ -22,7 +22,9 @@ from skill_magnet.library_ui import (
     import_selected_skill,
     library_wizard_steps,
     managed_repository_path,
+    pack_id_for_display,
     require_registration_source,
+    skill_registration_metadata,
 )
 
 
@@ -54,11 +56,18 @@ class LibraryManagerTests(unittest.TestCase):
         with self.assertRaisesRegex(SkillMagnetError, "作成済みスキル"):
             require_registration_source("")
         self.assertEqual(require_registration_source(str(source)), source.resolve())
+        self.assertEqual(
+            skill_registration_metadata(source),
+            ("sample-skill", "Sample skill", "Sample purpose"),
+        )
+        self.assertEqual(pack_id_for_display(repository, "My Skills"), "my-skills")
+        self.assertTrue(pack_id_for_display(repository, "日本語").startswith("pack-"))
 
         self.assertTrue(import_selected_skill(repository, source))
         catalog = json.loads((repository / CATALOG_FILENAME).read_text(encoding="utf-8"))
         self.assertEqual(catalog["packs"][0]["id"], "custom-skills")
         self.assertEqual(catalog["packs"][0]["skills"], ["sample-skill"])
+        self.assertEqual(pack_id_for_display(repository, "Custom skills"), "custom-skills")
         self.assertTrue((repository / "sample-skill" / "SKILL.md").is_file())
 
     def test_existing_repository_url_is_prefilled_when_unambiguous(self) -> None:
