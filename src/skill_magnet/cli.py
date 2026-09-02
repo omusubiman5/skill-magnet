@@ -150,7 +150,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     library_commands = library.add_subparsers(dest="library_command", required=True)
     library_ui = library_commands.add_parser(
-        "ui", help="Open the seven-step Skill Library Manager."
+        "ui", help="Open the compact Skill Library Manager."
     )
     library_ui.add_argument(
         "--repository",

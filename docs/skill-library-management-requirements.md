@@ -140,15 +140,13 @@ Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデ�
 
 - FR-22: Skill Library ManagerはOSの右クリック`Skill Magnet`入口から開けなければならない。Windows Explorerでは`Skill Magnet`配下の固定actionとして直接選択でき、macOS Finderでは`Skill Magnet`クイックアクションが開く共通画面内から選択できる。作業用repositoryはアプリ専用state内で自動管理し、利用者へ保存先やrepository名を入力させない。右クリック対象に`SKILL.md`がある場合だけskill import候補へ事前入力し、publishまたはactivateを自動実行してはならない。
 
-基本flowは次の7画面以内とする。
+基本flowは通常1画面、最大2画面とする。作業用repository、catalog、INDEX、validation、preview、activationのためだけの独立画面は設けず、自動処理またはPublish画面へ統合する。
 
-1. `Skill Library`を開く。
-2. repositoryを作成または接続する。
-3. `Skillを追加`で作成またはimportする。
-4. pack所属とINDEX関係を設定する。
-5. validation結果と全差分を確認する。
-6. `Publish and Activate`を明示確認する。
-7. commit、PR、active version、menu、testsをreceiptで確認する。
+1. 右クリック対象が標準構成（同一folderの`SKILL.md`と`acceptance.json`）なら自動importし、`Skill`画面を表示しない。標準構成を選ばず新規作成する場合だけ`Skill`画面を表示し、pack情報からcatalogとINDEXを自動生成する。
+2. `Publish`でGitHub URLを入力し、validationと全差分を確認してからPRを明示公開し、merge後のremoteを照合する。同じ画面でOSを自動判定してactivationを明示確認し、active version、menu、testsをreceiptで確認する。
+
+OSは利用者へ選択させず実行環境から自動判定する。URL未入力、標準構成不備、validation失敗、未mergeなどはその操作時のエラーとして表示し、外部書込みまたはactivationを行わない。
+現在の有効設定にGitHub repository URLが一意に存在する場合はPublish画面へ自動表示する。候補が複数あり一意に決められない場合だけ空欄とし、誤ったrepositoryを自動選択しない。
 
 画面ではrepository、pack、skillを別の概念として表示する。repository名をskill名として表示したり、pack名をrepository名として補完したりしない。
 

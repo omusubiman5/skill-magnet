@@ -56,51 +56,21 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 
 Skill Library Managerは、スキルを追加してGitHubへ公開し、Skill Magnetで使える状態にするための案内画面です。作業途中のファイルはアプリ専用領域へ自動保存されます。利用者が作業用フォルダーやrepository名を決める必要はありません。
 
-通常は追加したいスキルのフォルダーを右クリックします。Windows Explorerでは`Skill Magnet` → `Skill Library Manager`、macOS Finderではクイックアクション`Skill Magnet` → `Skill Library Manager`を選びます。右クリックしたフォルダーに`SKILL.md`があれば、取り込み元として自動入力されます。7画面を左から順番に進めます。
+通常は、`SKILL.md`と`acceptance.json`が入ったスキルフォルダーを右クリックします。Windows Explorerでは`Skill Magnet` → `Skill Library Manager`、macOS Finderではクイックアクション`Skill Magnet` → `Skill Library Manager`を選びます。標準構成ならアプリが自動で取り込み、`Publish`画面だけを表示します。入力用の`Skill`画面は、標準構成のフォルダーを選ばず新規作成する場合だけ表示します。
 
-### 7画面の操作ガイド
+### 操作ガイド（通常1画面、最大2画面）
 
-#### 1. Repository — 作業を始める
+#### 1. Skill — 追加するスキルを登録する
 
-ここで入力するものはありません。`スキル管理を始める`を押してください。初回はアプリが保管庫を自動作成し、2回目以降は前回の続きが開きます。この時点ではGitHubへ何も送りません。
+この画面は新規作成時だけ使います。「スキル」はAIへ渡す作業手順です。重複しないID、画面に出す名前、目的、入れたいパックを入力します。既存スキルを手動選択する場合は、`SKILL.md`と`acceptance.json`が同じフォルダーに必要です。不足があればエラーで止まり、標準構成ならパック一覧とINDEXは自動生成されます。
 
-![Repository画面の入力項目と安全境界](docs/images/skill-library-manager-step-1-repository.png)
+![Skill画面の入力項目](docs/images/skill-library-manager-step-1-skill.png)
 
-#### 2. Skill — 追加するスキルを登録する
+#### 2. Publish — GitHubへ送る内容を確認して公開する
 
-「スキル」は、AIへ渡す作業手順です。新しく作る場合は、重複しないID、画面に出す名前、何をする手順か、入れたいパックを入力します。すでに`SKILL.md`がある場合は、そのフォルダーを選んで`Add / Import`を押します。
+現在使っているスキル保管庫が1つなら、そのGitHub URLを既存設定から自動表示します。初回または別の保管庫へ変える時だけURLを入力します。`送信内容を確認する`を押すと、アプリがファイル構成、パック、INDEX、秘密情報、スキル同士の矛盾を自動検査し、送信予定の差分を表示します。不足や不正があればエラーダイアログで止まり、GitHubへは送りません。内容が正しい場合だけ確認欄へチェックして`Publish PR`を押します。PRをGitHubでマージした後に`Verify merged remote`、最後に`Skill Magnetへ反映`を押します。OSはアプリが自動判定します。反映前には確認ダイアログが出て、失敗時は直前の正常な状態へ戻ります。
 
-![Skill画面の入力項目](docs/images/skill-library-manager-step-2-skill.png)
-
-#### 3. Pack & INDEX — どのパックに入るか確認する
-
-「パック」は、一緒に選べるスキルのセットです。追加したスキルが正しいパックに入っているか確認します。ほかのスキルを先に必要とする場合だけ関係を設定します。内容を変えない場合はそのまま`Validate & Save`を押します。スキル一覧の`INDEX.md`はアプリが作ります。
-
-![PackとINDEX関係の設定画面](docs/images/skill-library-manager-step-3-pack-index.png)
-
-#### 4. Validation — 壊れていないか検査する
-
-`Run fail-closed validation`を押します。名前の重複、必要ファイルの不足、秘密情報の混入、危険なファイル名、スキル同士の矛盾を自動検査します。問題があれば止まり、GitHubへは送りません。結果に`"valid": true`と出れば次へ進めます。
-
-![Fail-closed validation画面](docs/images/skill-library-manager-step-4-validation.png)
-
-#### 5. Preview — GitHubへ送る前に内容を確認する
-
-公開先の欄へ、スキル保管庫のGitHub URLを入力します。例は`https://github.com/OWNER/skill-magnet-skills.git`です。`送信前の変更内容を作る`を押すと、追加・変更されるファイルが表示されます。GitHubから比較用データを読み取りますが、まだファイルは送りません。
-
-![隔離workspaceでのPreview画面](docs/images/skill-library-manager-step-5-preview.png)
-
-#### 6. Publish — 確認した内容をGitHubへ送る
-
-表示されたファイルと公開先が正しい場合だけ確認欄にチェックし、`Publish PR`を押します。ここで初めてGitHubへファイルを送り、確認・承認用のPRを作ります。PRをGitHubでマージした後に`Verify merged remote`を押すと、公開結果が途中で変わっていないか照合します。
-
-![Publishとremote検証画面](docs/images/skill-library-manager-step-6-publish.png)
-
-#### 7. Activate & Receipt — Skill Magnetで使えるようにする
-
-使うPCのOSを選び、最後の確認欄へチェックして`Publish and Activate`を押します。GitHubで確認済みのスキルがSkill Magnetの選択肢へ反映されます。下の欄に完了結果が表示されれば終了です。失敗した場合は直前の正常な状態へ戻ります。
-
-![有効化とReceipt画面](docs/images/skill-library-manager-step-7-activate-receipt.png)
+![Publish前の確認画面](docs/images/skill-library-manager-step-2-publish.png)
 
 CLIから直接開く次のcommandも、障害調査やheadless運用の入口として残しています。
 

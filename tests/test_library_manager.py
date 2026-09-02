@@ -17,7 +17,12 @@ from skill_magnet.library_manager import (
     initialize_library,
     validate_library,
 )
-from skill_magnet.library_ui import library_wizard_steps, managed_repository_path
+from skill_magnet.library_ui import (
+    configured_repository_url,
+    import_selected_skill,
+    library_wizard_steps,
+    managed_repository_path,
+)
 
 
 class LibraryManagerTests(unittest.TestCase):
@@ -26,6 +31,61 @@ class LibraryManagerTests(unittest.TestCase):
             managed_repository_path(self.root),
             (self.root / "library" / "skill-magnet-skills").resolve(),
         )
+
+    def test_standard_selected_skill_is_imported_automatically(self) -> None:
+        repository = managed_repository_path(self.root)
+        initialize_library(repository, DEFAULT_REPOSITORY_NAME)
+        source = self.root / "sample-skill"
+        source.mkdir()
+        (source / "SKILL.md").write_text(
+            "---\nname: sample-skill\ndescription: Sample purpose\n---\n\n"
+            "# Sample skill\n\n## Trigger\n\nUse for a sample task.\n\n"
+            "## Boundary\n\nDo not modify unrelated files.\n",
+            encoding="utf-8",
+        )
+        (source / "acceptance.json").write_text(
+            json.dumps(
+                {"version": 1, "assertions": [{"path": "result.applied", "equals": True}]}
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertTrue(import_selected_skill(repository, source))
+        catalog = json.loads((repository / CATALOG_FILENAME).read_text(encoding="utf-8"))
+        self.assertEqual(catalog["packs"][0]["id"], "custom-skills")
+        self.assertEqual(catalog["packs"][0]["skills"], ["sample-skill"])
+        self.assertTrue((repository / "sample-skill" / "SKILL.md").is_file())
+
+    def test_existing_repository_url_is_prefilled_when_unambiguous(self) -> None:
+        config = self.root / "config.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "packs": [
+                        {"repo_url": "https://github.com/example/skills.git"},
+                        {"repo_url": "https://github.com/example/skills.git"},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            configured_repository_url(config),
+            "https://github.com/example/skills.git",
+        )
+
+        config.write_text(
+            json.dumps(
+                {
+                    "packs": [
+                        {"repo_url": "https://github.com/example/one.git"},
+                        {"repo_url": "https://github.com/example/two.git"},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(configured_repository_url(config), "")
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -284,9 +344,9 @@ class LibraryManagerTests(unittest.TestCase):
         self.assertEqual(transaction.status(config)["status"], "published_but_inactive")
 
     def test_cli_exposes_guided_library_flow(self) -> None:
-        self.assertEqual(len(library_wizard_steps()), 7)
-        self.assertEqual(library_wizard_steps()[0], "1. Repository")
-        self.assertEqual(library_wizard_steps()[-1], "7. Activate & Receipt")
+        self.assertEqual(len(library_wizard_steps()), 2)
+        self.assertEqual(library_wizard_steps()[0], "1. Skill")
+        self.assertEqual(library_wizard_steps()[1], "2. Publish")
         library = self.root / "cli-library"
         self.assertEqual(
             cli_main(["library", "init", "--repository", str(library)]), 0
