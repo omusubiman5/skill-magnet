@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest import mock
 
@@ -17,6 +18,7 @@ from skill_magnet.library_manager import (
     LibraryTransaction,
     add_skill,
     discover_skill_sources,
+    find_resumable_transaction,
     import_skill_source,
     initialize_library,
     render_index,
@@ -524,6 +526,31 @@ class LibraryManagerTests(unittest.TestCase):
         self.assertTrue(transaction.journal_path.is_file())
         self.assertFalse(transaction.workspace.exists())
 
+    def test_remote_side_effects_cannot_be_abandoned_locally(self) -> None:
+        transaction = LibraryTransaction(self.root / "state", "transaction-remote")
+        transaction._write_journal(
+            {
+                "transaction_id": transaction.transaction_id,
+                "status": "published_pending",
+                "commit": "a" * 40,
+                "pr_url": "https://github.com/example/skills/pull/1",
+            }
+        )
+        with self.assertRaisesRegex(SkillMagnetError, "ローカル作業だけを破棄できません"):
+            transaction.abandon(confirmed=True)
+
+    def test_no_changes_is_terminal_and_never_publishes(self) -> None:
+        _, remote = self.make_remote()
+        draft = self.root / "unchanged"
+        subprocess.run(["git", "clone", str(remote), str(draft)], check=True, capture_output=True)
+        transaction = LibraryTransaction(self.root / "state", "transaction-unchanged")
+        preview = transaction.prepare(draft=draft, remote=str(remote), branch="main")
+        self.assertTrue(preview["no_changes"])
+        self.assertFalse(preview["requires_confirmation"])
+        published = transaction.publish(confirmed=True, direct=True, create_pr=False)
+        self.assertEqual(published["status"], "no_changes")
+        self.assertFalse(transaction.workspace.exists())
+
     def test_cleanup_retries_windows_access_denied_without_losing_journal(self) -> None:
         transaction = LibraryTransaction(self.root / "state", "transaction-cleanup")
         transaction.root.mkdir(parents=True)
@@ -545,6 +572,94 @@ class LibraryManagerTests(unittest.TestCase):
         self.assertGreaterEqual(calls, 2)
         self.assertTrue(transaction.journal_path.is_file())
         self.assertFalse(transaction.verifier.exists())
+
+    def test_open_pull_request_is_a_wait_state_not_an_error(self) -> None:
+        transaction = LibraryTransaction(self.root / "state", "transaction-open")
+        transaction._write_journal(
+            {
+                "schema_version": 1,
+                "transaction_id": transaction.transaction_id,
+                "status": "published_pending",
+                "commit": "a" * 40,
+                "remote": "https://github.com/example/skills.git",
+                "pr_url": "https://github.com/example/skills/pull/1",
+                "preview": {"manifest": {"INDEX.md": "digest"}},
+            }
+        )
+        completed = subprocess.CompletedProcess([], 0, '{"state":"OPEN","mergeCommit":null}', "")
+        transaction.run = mock.Mock(return_value=completed)
+        with mock.patch.object(transaction, "_remote_manifest") as remote_manifest:
+            result = transaction.mark_merged()
+        self.assertEqual(result["status"], "published_pending")
+        self.assertEqual(result["wait_state"], "waiting_for_merge")
+        remote_manifest.assert_not_called()
+
+    def test_closed_pull_request_is_distinct_from_waiting_and_failure(self) -> None:
+        transaction = LibraryTransaction(self.root / "state", "transaction-closed")
+        transaction._write_journal(
+            {
+                "schema_version": 1,
+                "transaction_id": transaction.transaction_id,
+                "status": "published_pending",
+                "commit": "a" * 40,
+                "remote": "https://github.com/example/skills.git",
+                "pr_url": "https://github.com/example/skills/pull/1",
+                "preview": {"manifest": {}},
+            }
+        )
+        transaction.run = mock.Mock(
+            return_value=subprocess.CompletedProcess(
+                [], 0, '{"state":"CLOSED","mergeCommit":null}', ""
+            )
+        )
+        with mock.patch.object(transaction, "_remote_manifest") as remote_manifest:
+            result = transaction.mark_merged()
+        self.assertEqual(result["wait_state"], "closed_unmerged")
+        remote_manifest.assert_not_called()
+
+    def test_merged_pull_request_verifies_the_merge_commit(self) -> None:
+        transaction = LibraryTransaction(self.root / "state", "transaction-merged")
+        merge_commit = "b" * 40
+        manifest = {"INDEX.md": "digest"}
+        transaction._write_journal(
+            {
+                "schema_version": 1,
+                "transaction_id": transaction.transaction_id,
+                "status": "published_pending",
+                "commit": "a" * 40,
+                "remote": "https://github.com/example/skills.git",
+                "pr_url": "https://github.com/example/skills/pull/1",
+                "preview": {"manifest": manifest},
+            }
+        )
+        transaction.run = mock.Mock(
+            return_value=subprocess.CompletedProcess(
+                [], 0, json.dumps({"state": "MERGED", "mergeCommit": {"oid": merge_commit}}), ""
+            )
+        )
+        verified = SimpleNamespace(manifest=manifest, menu_shape="menu")
+        with mock.patch.object(transaction, "_remote_manifest", return_value=verified) as check:
+            result = transaction.mark_merged()
+        self.assertEqual(result["status"], "verified")
+        self.assertEqual(result["commit"], merge_commit)
+        check.assert_called_once_with("https://github.com/example/skills.git", merge_commit)
+
+    def test_find_resumable_transaction_reuses_latest_matching_work(self) -> None:
+        state = self.root / "state"
+        draft = self.root / "draft"
+        draft.mkdir()
+        remote = "https://github.com/example/skills.git"
+        old = LibraryTransaction(state, "transaction-old")
+        old._write_journal(
+            {"transaction_id": old.transaction_id, "status": "prepared", "draft": str(draft), "remote": remote}
+        )
+        abandoned = LibraryTransaction(state, "transaction-abandoned")
+        abandoned._write_journal(
+            {"transaction_id": abandoned.transaction_id, "status": "abandoned", "draft": str(draft), "remote": remote}
+        )
+        found = find_resumable_transaction(state, draft=draft, remote=remote)
+        self.assertIsNotNone(found)
+        self.assertEqual(found.transaction_id, old.transaction_id)
 
     def test_activation_failure_restores_previous_config(self) -> None:
         seed, remote = self.make_remote()
@@ -599,10 +714,11 @@ class LibraryManagerTests(unittest.TestCase):
     def test_cli_exposes_guided_library_flow(self) -> None:
         self.assertEqual(library_wizard_steps(), ("Skill Library Manager",))
         self.assertEqual(
-            [library_action_label(stage) for stage in ("prepare", "publish", "verify", "activate")],
+            [library_action_label(stage) for stage in ("prepare", "publish", "open_pr", "verify", "activate")],
             [
                 "送信内容を確認する",
                 "GitHubへ送る",
+                "GitHubでPRを開く",
                 "GitHubのマージを確認する",
                 "Skill Magnetへ反映",
             ],

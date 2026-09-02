@@ -70,9 +70,9 @@ Windows Explorerでは登録元フォルダーを右クリックして`Skill Mag
 
 #### 2. 同じ画面でGitHubへ送る
 
-現在使っているスキル保管庫が1つなら、そのGitHub URLを既存設定から自動表示します。初回または別の保管庫へ変える時だけURLを入力します。操作ボタンは常に1個だけです。最初は`送信内容を確認する`と表示され、検査が終わると同じ場所のボタンが`GitHubへ送る`、`GitHubのマージを確認する`、`Skill Magnetへ反映`の順に切り替わります。今の段階で押せない操作は表示されません。不足や不正があればエラーダイアログで止まり、GitHubへは送りません。OSはアプリが自動判定し、反映失敗時は直前の正常な状態へ戻します。
+現在使っているスキル保管庫が1つなら、そのGitHub URLを既存設定から自動表示します。初回または別の保管庫へ変える時だけURLを入力します。操作ボタンは常に1個だけです。最初は`送信内容を確認する`と表示され、検査が終わると同じ場所のボタンが`GitHubへ送る`、`GitHubでPRを開く`、`GitHubのマージを確認する`、`Skill Magnetへ反映`の順に切り替わります。PRがOPENなら正常なマージ待ちとして保持し、エラーや復旧画面にはしません。今の段階で押せない操作は表示されません。不足や不正があればエラーダイアログで止まり、GitHubへは送りません。差分が0件ならPRを作らず完了します。OSはアプリが自動判定し、反映失敗時は直前の正常な状態へ戻します。
 
-途中でGit、Windows、通信などのエラーが起きた場合は、同じ画面で「復旧して再試行」「ローカル作業を破棄して最初から」「状態を保存して後で再開」を選べます。アプリを閉じても、次回起動時に未完了作業を検出して同じ選択肢を表示します。ローカル作業を破棄しても、すでにGitHubへ送ったbranchやPRは勝手に削除しません。公開処理は管理対象ファイルだけを上書きし、GitHubに元からあるREADME、監査資料、テスト資料などを削除しません。削除差分が1件でも検出された場合は送信前に停止します。
+途中でGit、Windows、通信などのエラーが起きた場合は、同じtransactionを保存して再試行できます。commit／push／PRというGitHub側の副作用がないと確認できる段階だけ「ローカル作業を破棄」を選べます。送信済み、または送信済みか不明な段階では破棄を禁止し、remote状態を照合して既存branch／PRを再利用します。アプリを閉じても、次回起動時に未完了作業を検出し、新しいtransactionやPRを作らず続きから再開します。公開処理は管理対象ファイルだけを上書きし、GitHubに元からあるREADME、監査資料、テスト資料などを削除しません。削除差分が1件でも検出された場合は送信前に停止します。
 
 ![フォルダー登録とGitHub公開を一つにまとめた画面](docs/images/skill-library-manager-step-1-skill.png)
 
@@ -110,7 +110,7 @@ python -m skill_magnet library status
 # GUIを開けない場合も、同じtransactionを復旧できる
 python -m skill_magnet library recover --transaction-id TRANSACTION_ID
 
-# ローカルの一時作業だけを破棄する（GitHub上のbranch／PRは保持）
+# GitHubへ未送信のローカル作業だけを破棄する
 python -m skill_magnet library abandon --transaction-id TRANSACTION_ID --confirm
 ```
 
@@ -142,7 +142,7 @@ python -m skill_magnet library abandon --transaction-id TRANSACTION_ID --confirm
 
    ```powershell
    python -m pip wheel . --no-deps --wheel-dir .\dist
-   python -m pip install --force-reinstall .\dist\skill_magnet-0.5.2-py3-none-any.whl
+   python -m pip install --force-reinstall .\dist\skill_magnet-0.5.3-py3-none-any.whl
    ```
 
 3. Windowsの右クリックメニューを登録します。このcommandはrepository rootで、そのままcopy/pasteできます。

@@ -135,7 +135,9 @@ Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデ�
 - FR-19: 本体lock更新またはメニュー再登録が途中失敗した場合、直前のlockとmenuを復元し、部分成功を完了表示してはならない。
 - FR-20: アプリはremote HEAD、検証済みcommit、現在有効なcommit、未公開編集、published-but-inactive更新を区別して表示しなければならない。
 - FR-21: retryは同じtransaction IDを使用し、同じcommitを重複作成・重複push・重複登録してはならない。
-- FR-23: どの処理段階で中断してもjournalから再開でき、GUIとCLIの両方で「同じ処理を再試行」「ローカル作業を破棄」「状態を保持して後で再開」を利用者自身が選べなければならない。破棄はremote branch／PRを暗黙に削除してはならない。公開は管理対象ファイルのoverlayに限定し、既存remoteファイルの削除差分をfail-closedで拒否しなければならない。
+- FR-23: どの処理段階で中断してもjournalから同じtransactionを再開できなければならない。remote副作用がないことを確認できる段階だけ、GUIとCLIで「ローカル作業を破棄」を許可する。commit／push／PRが存在する、または存在が不明な段階ではlocal-only破棄を禁止し、remote状態を照合して既存branch／PRを再利用する。公開は管理対象ファイルのoverlayに限定し、既存remoteファイルの削除差分をfail-closedで拒否しなければならない。
+- FR-24: PRのOPENは正常な`waiting_for_merge`であり、例外、処理中断、復旧対象として表示してはならない。CLOSED未merge、MERGED、未知状態、merge後digest不一致を別状態として扱う。差分0件ではcommit、push、PRを作成してはならない。
+- FR-25: 同一libraryとremoteに非終端transactionがある場合、新transactionを作らず最新の対象を再開しなければならない。操作中は実行ボタンを無効化し、二重clickで段階を跨いだ操作を実行してはならない。
 
 ### User Experience
 
@@ -146,7 +148,7 @@ Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデ�
 1. 右クリック対象が単一skill、1 pack、または複数pack collectionの標準構成なら、全候補を自動importして登録欄を隠す。作成済みskill／packを手動登録する場合だけ同じ画面の上部へfolder指定欄を表示する。画面内でskillを新規作成してはならない。pack情報からcatalogと統合INDEXを自動生成する。
 2. 同じ画面でGitHub URLを入力し、validationと全差分を確認してからPRを明示公開し、merge後のremoteを照合する。OSを自動判定してactivationを明示確認し、active version、menu、testsをreceiptで確認する。
 
-OSは利用者へ選択させず実行環境から自動判定する。URL未入力、標準構成不備、validation失敗、未mergeなどはその操作時のエラーとして表示し、外部書込みまたはactivationを行わない。
+OSは利用者へ選択させず実行環境から自動判定する。URL未入力、標準構成不備、validation失敗はその操作時のエラーとして表示し、外部書込みまたはactivationを行わない。PRのOPENはエラーではなく正常なマージ待ちとして表示する。
 手動登録画面で利用者が指定するのはfolderだけとする。単一skillでは`Custom skills`へ登録し、pack folderではfolder名をPack IDにして直下の全skillを登録し、collection folderでは直下の全packを一括登録する。`SKILL.md`が一件もない、INDEX参照先がない、IDが衝突するなど完全性を証明できない場合は、全体をrollbackしてエラー停止する。
 現在の有効設定にGitHub repository URLが一意に存在する場合はPublish画面へ自動表示する。候補が複数あり一意に決められない場合だけ空欄とし、誤ったrepositoryを自動選択しない。
 
@@ -162,6 +164,10 @@ OSは利用者へ選択させず実行環境から自動判定する。URL未入
 | contrasts-withの両方が同じ必須集合に入る | packを有効化せず、関係修正を要求する |
 | push後にremote branchが更新された | force pushせず、再取得・再base・再previewする |
 | PRが未merge | commitをpublished-pendingとして表示し、有効版は変更しない |
+| PRがOPEN | 正常なマージ待ちとしてPRを開く導線を表示し、破棄／復旧ダイアログを出さない |
+| PRがCLOSED未merge | 再openまたは状態保持を案内し、新PRを自動作成しない |
+| 同じlibrary／remoteの操作を再開 | 既存transaction、branch、PRを再利用する |
+| 差分0件 | GitHubへ送信せず「変更なし」で完了する |
 | GitHub接続が切れた | local temporary編集を安全に保持し、外部成功を主張しない |
 | config更新後にmenu登録が失敗した | configとmenuを直前版へrollbackする |
 | 既存repository名がdomain固有 | そのまま接続可能。renameを強制・自動実行しない |
