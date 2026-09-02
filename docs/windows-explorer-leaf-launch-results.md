@@ -15,8 +15,8 @@
   "menu_leaf_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
-  "release_code_sha": "c9e31898e3e281b7f8e3daef50078f6b65092d9a",
-  "wheel_payload_sha256": "9dfb351b6a3416c7b4e3e82d4fe9064bd1af29473f98c527e1293e960b2900ff",
+  "release_code_sha": "6f5f1b7d39a653ef229b05ca45e8463d6bb0e16b",
+  "wheel_payload_sha256": "c79ffa8f81b9f086dc7bdaace4a357b7b8108dc1bfad88ff030b6555fb7b3a3f",
   "automated_status": "LOCAL_RELEASE_GATE_PASS_146",
   "windows_explorer_field_status": "PASS_REAL_RIGHT_CLICK_MENU_AND_CONFIRMATION_UI_0_5_1",
   "macos_finder_field_status": "CI_SEMANTIC_ONLY_REAL_UI_NOT_CLAIMED_FOR_0_5_2",
@@ -35,6 +35,7 @@ explorer-results-ledger:end -->
 - 0.5.2ローカル導入候補wheelの論理payload SHA-256は`c96f964a9799de4fec3240797f4f2b07dae4f3920d531a7632cbcf7651a3ce9d`、wheel file SHA-256は`8082dfa1d0c21ca505e8cd1a5fbcc96c6faccd938db4319ceb6a0e461e5c23a2`である。macOSの実Finder UIは友人実機受入まで未主張とする。
 - Skill Library Manager実装後の0.5.2候補wheelは、Windows/macOS CIで共通の論理payload SHA-256 `c73348437122644e57b16ece587667b7dca1850ed2f370c7c38331c8a7ccf178`をrelease gateに固定する。
 - READMEへSkill Library Manager関連文書への導線を追加した0.5.2候補wheelは、Windows/macOS CIで共通の論理payload SHA-256 `9dfb351b6a3416c7b4e3e82d4fe9064bd1af29473f98c527e1293e960b2900ff`をrelease gateに固定する。
+- Claude実行先を公式`claude://code/new`経路へ変更し、Codex Desktopアプリ／Claude Codeデスクトップアプリの二ターゲットを明記した0.5.2候補wheelは、独立した2 buildで共通の論理payload SHA-256 `c79ffa8f81b9f086dc7bdaace4a357b7b8108dc1bfad88ff030b6555fb7b3a3f`を確認した。release codeは`6f5f1b7d39a653ef229b05ca45e8463d6bb0e16b`である。
 - 実機証拠: 0.5.1 wheelをWindowsへinstallし、modern context menuのstatusが`usable_installed_state: true`、`menu_contract_matches_config: true`、`menu_leaf_count: 1`を返した。File Explorerの`C:\Projects\skill-magnet`背景を実際に右クリックし、`Skill Magnet`→`Delivery Assurance`から`Skill Magnet — 実行確認`画面が起動すること、画面上のproject、pack、用途、実行AI、依頼内容、実行/取消UIを確認した。外部AIへのテスト依頼送信はフィールドUI受入の対象外とし、確認画面を取消で閉じた。実際のTSVはpack ID `codex-delivery-assurance`、表示名`Delivery Assurance`、固定commit `8f12af5ddfdd3b985f26d33dad09d6061d675342`を記録した。
 - 0.4.0実install: package `SkillMagnet.ContextMenu_0.4.0.0_x64__byy1sc3mfzfz4`を登録し、1 package leaf、Directory/Background、署名済みcommand target、`usable_installed_state: true`を確認した。
 - 0.4.1実installのローカルskill path方式は廃止対象の過去実績であり、現行合格証拠には使用しない。現行版はGitHub固定commit URLとSHA-256だけをpromptへ出力する。
