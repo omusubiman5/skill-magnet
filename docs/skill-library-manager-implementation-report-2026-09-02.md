@@ -21,12 +21,13 @@ status: implemented
 
 - Windows Explorerでは右クリック`Skill Magnet` → `Library Manager`から直接開く。pack実行項目は`Skill Pack: <表示名>`、単体skill項目は`Skill: <表示名>`として種別を明示する。
 - macOS Finderではクイックアクション`Skill Magnet`の共通画面内にある`Library Manager`から開く。
-- GUIの作業用repositoryは製品state内で自動作成・再利用し、保存先、repository名、`Draft directory`を入力させない。右クリックしたfolderに`SKILL.md`がある場合だけskill import候補へ事前入力する。画面を開くだけではpublishもactivateも実行しない。
+- GUIの作業用repositoryは製品state内で自動作成・再利用し、保存先、repository名、`Draft directory`を入力させない。右クリックしたfolderから単一skill、pack、pack collectionを自動判定する。画面を開くだけではpublishもactivateも実行しない。
 - `python -m skill_magnet library ui`でコンパクトなSkill Library Managerを開く。
 - 登録とGitHub公開をタブのない1画面へ統合した。標準構成の作成済みスキルfolderを右クリックした場合は自動importして登録欄を隠し、手動登録時だけ同じ画面上部へfolder欄を表示する。repository、catalog/INDEX、validation、preview、activationの独立画面は設けない。
 - OSは実行環境から自動判定し、利用者へ選択させない。構成不備、URL不備、validation失敗は操作時のエラーダイアログで停止する。
 - 現在の設定にrepository URLが一意に存在する既存ユーザーには、そのURLをPublish画面へ自動表示する。複数候補は誤選択防止のため自動補完しない。
-- 手動登録画面の入力を作成済みskill folderだけにした。Skill ID、表示名、目的は`SKILL.md`から自動取得し、packはアプリ管理の`Custom skills`を使う。`SKILL.md`または`acceptance.json`がなければ登録処理前に停止する。
+- 手動登録画面の入力はfolder 1つだけとし、単一skill、1 pack、複数pack collectionを判別する。pack／skill ID、表示名、目的、順序、関係はfolder、`SKILL.md`、`INDEX.md`から取得する。登録元に`acceptance.json`がなければ内部互換メタデータを生成し、`test-prompts.json`がある場合はそのSHA-256を記録する。
+- `C:\Projects\cangjie-skill-clean\books`の実データで3 pack・33 skillを母集合として固定し、3 pack・33 skillすべての一括登録を確認した。`conflict-clarity`のroot `SKILL.md`もentry skillとして含め、子skillへの相対linkを配置先に合わせる。
 - headless/運用用途として`init`、`add`、`validate`、`prepare`、`publish`、`verify-merged`、`activate`、`status`も提供する。
 - publishとactivateは独立した明示確認が必要で、未確認ならfail-closedで停止する。
 
@@ -34,9 +35,9 @@ status: implemented
 
 - repository rootに`skill-magnet.catalog.json` schema v1を導入した。
 - 一repository内の複数pack、複数skill、表示順、metadata、relationsをcatalogで管理する。
-- `INDEX.md`はcatalog relationsから決定的に生成し、手動で乖離したINDEXを拒否する。
-- skill ID重複、unsafe path、symlink、secret候補、SKILL.md/acceptance.json不足、frontmatter名不一致、trigger/boundary不足、acceptance assertion不正を拒否する。
-- `depends-on`の未知skill・欠落依存・cycle、`contrasts-with`の同一pack選択を拒否する。`composes-with`は既知skillだけを許可する。
+- packごとの元`INDEX.md`をcatalogへ保持し、複数packでは決定的な統合`INDEX.md`を生成する。元INDEXがないpackはcatalog relationsから生成する。
+- skill／pack ID重複、INDEX参照先欠落、unsafe path、symlink、secret候補、SKILL.md不足、frontmatter名不一致、trigger/boundary不足、acceptance assertion不正を拒否する。
+- `depends-on`の未知skill・欠落依存・cycleを拒否する。`contrasts-with`は同一pack内の候補関係として保持し、実依頼での同時適用禁止をINDEX経由でLLMへ渡す。
 
 ### Publish transaction
 
@@ -65,10 +66,10 @@ status: implemented
 | FR-2 | catalogの複数pack/skill model | add/publish E2E |
 | FR-3 | machine-readable catalog schema v1 | catalog validation/manifest test |
 | FR-4 | 既存directory接続、既存名維持、remote default branch読取 | GUI connect、prepare E2E |
-| FR-5 | GUIは作成済みskill folderだけを受け取り、metadataを自動取得。CLIは運用向けimportを提供 | folder-only UI、必須file不足test、CLI flow test |
-| FR-6 | path/symlink/secret/frontmatter/trigger/boundary/acceptance検証 | negative tests |
+| FR-5 | folder 1つからskill／pack／collectionを判別し、候補母集合を一括import | collection completeness test、実`books` smoke |
+| FR-6 | path/symlink/secret/frontmatter/trigger/boundary/acceptance検証、不在acceptance生成 | negative tests、generated metadata test |
 | FR-7 | pack ID指定で既存追加／新規作成 | add round-trip test |
-| FR-8 | 3 relation、unknown/cycle/contrast検証 | relation negative tests |
+| FR-8 | 3 relation、unknown/cycle検証、contrast共存 | relation parse/negative tests |
 | FR-9 | staged blob manifestを含むpreviewと確認gate | publish confirmation test |
 | FR-10 | transaction固有clone、draft digest不変 | isolated publish E2E |
 | FR-11 | branch/PR既定、directの複合明示gate、non-force push | publish E2E/guard test |
@@ -103,15 +104,15 @@ status: implemented
 | `tests/test_product_policy.py` | policy境界検証 |
 | `README.md` | GUI/CLI利用手順と安全境界 |
 | `docs/mvp-redesign.md` | canonical policy mirror |
-| `docs/windows-explorer-leaf-launch-results.md` | 現行test count 150とmanager actionへ同期 |
+| `docs/windows-explorer-leaf-launch-results.md` | 現行test countとmanager actionへ同期 |
 
 ## 検証結果
 
 | Command / check | Result |
 |---|---|
 | `python -m compileall -q src tests` | PASS |
-| `python -m unittest tests.test_library_manager tests.test_product_policy tests.test_results_gate -q` | 18 PASS |
-| `python -m unittest discover -s tests` | 152 PASS、1 environment-dependent skip |
+| `python -m unittest tests.test_library_manager tests.test_product_policy tests.test_results_gate -q` | PASS |
+| `python -m unittest discover -s tests` | 153 PASS、1 environment-dependent skip |
 | `python -m pip wheel . --no-deps` | PASS、`library_manager.py`と`library_ui.py`のwheel収録を確認 |
 | `git diff --check` | PASS |
 | 実GUIスモーク | PASS、登録と公開を同じ画面に表示し、標準folder選択時は登録欄を非表示 |

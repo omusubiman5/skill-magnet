@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable
 
-from .core import Config, SKILL_NAME, SkillMagnetError
+from .core import Config, SKILL_NAME, SkillMagnetError, _is_link
 
 
 CATALOG_FILENAME = "skill-magnet.catalog.json"
@@ -89,12 +89,27 @@ def _frontmatter(text: str, source: str) -> dict[str, str]:
     if not lines or lines[0].strip() != "---":
         raise SkillMagnetError(f"SKILL.md is missing YAML frontmatter: {source}")
     result: dict[str, str] = {}
-    for line in lines[1:]:
+    index = 1
+    while index < len(lines):
+        line = lines[index]
         if line.strip() == "---":
             break
         match = re.match(r"^([A-Za-z0-9_-]+):\s*(.*?)\s*$", line)
         if match:
-            result[match.group(1)] = match.group(2).strip("'\"")
+            key, raw = match.groups()
+            if raw in {"|", ">"}:
+                block: list[str] = []
+                index += 1
+                while index < len(lines) and (
+                    lines[index].startswith((" ", "\t")) or not lines[index].strip()
+                ):
+                    if lines[index].strip():
+                        block.append(lines[index].strip())
+                    index += 1
+                result[key] = " ".join(block)
+                continue
+            result[key] = raw.strip("'\"")
+        index += 1
     else:
         raise SkillMagnetError(f"SKILL.md frontmatter is not closed: {source}")
     return result
@@ -168,7 +183,6 @@ def _validate_relations(catalog: dict[str, Any], all_skills: set[str]) -> None:
         if not isinstance(relations, dict) or set(relations) - set(RELATION_TYPES):
             raise SkillMagnetError(f"Pack {pack['id']} has invalid relations")
         graph: dict[str, set[str]] = {skill: set() for skill in all_skills}
-        contrasts: set[frozenset[str]] = set()
         for kind in RELATION_TYPES:
             entries = relations.get(kind, [])
             if not isinstance(entries, list):
@@ -190,13 +204,6 @@ def _validate_relations(catalog: dict[str, Any], all_skills: set[str]) -> None:
                         raise SkillMagnetError(
                             f"Pack {pack['id']} omits dependency: {left} depends-on {right}"
                         )
-                elif kind == "contrasts-with":
-                    contrasts.add(frozenset((left, right)))
-        for pair in contrasts:
-            if pair <= selected:
-                raise SkillMagnetError(
-                    f"Pack {pack['id']} selects contrasting skills: {', '.join(sorted(pair))}"
-                )
         visiting: list[str] = []
         visited: set[str] = set()
 
@@ -217,6 +224,32 @@ def _validate_relations(catalog: dict[str, Any], all_skills: set[str]) -> None:
 
 
 def render_index(catalog: dict[str, Any]) -> str:
+    packs = _pack_map(catalog)
+    if any(str(pack.get("source_index", "")).strip() for pack in packs.values()):
+        lines = ["# Skill Library INDEX", ""]
+        for pack in packs.values():
+            lines.extend((f"## {pack.get('display_name', pack['id'])}", ""))
+            entry_skill = str(pack.get("entry_skill", "")).strip()
+            if entry_skill:
+                lines.extend(
+                    (
+                        f"Pack entry skill: [`{entry_skill}`](./{entry_skill}/SKILL.md)",
+                        "",
+                    )
+                )
+            source_index = str(pack.get("source_index", "")).strip()
+            if source_index:
+                lines.extend((source_index, ""))
+                continue
+            lines.extend(("```mermaid", "flowchart TD"))
+            for kind in RELATION_TYPES:
+                connector = "-.->" if kind == "contrasts-with" else "-->"
+                for left, right in pack.get("relations", {}).get(kind, []):
+                    lines.append(
+                        f'  {left}["{left}"] {connector}|{kind}| {right}["{right}"]'
+                    )
+            lines.extend(("```", ""))
+        return "\n".join(lines)
     lines = ["# Skill Library INDEX", "", "```mermaid", "flowchart TD"]
     seen: set[tuple[str, str, str]] = set()
     for pack in _pack_map(catalog).values():
@@ -231,6 +264,276 @@ def render_index(catalog: dict[str, Any]) -> str:
                 lines.append(f'  {left}["{left}"] {connector}|{kind}| {right}["{right}"]')
     lines.extend(["```", ""])
     return "\n".join(lines)
+
+
+def _source_skill_metadata(source: Path) -> tuple[str, str, str]:
+    skill_file = source / "SKILL.md"
+    if not skill_file.is_file() or _is_link(skill_file):
+        raise SkillMagnetError(f"Skill folder is missing SKILL.md: {source}")
+    try:
+        text = skill_file.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise SkillMagnetError(f"SKILL.md must be UTF-8: {source}") from exc
+    metadata = _frontmatter(text, str(skill_file))
+    skill_id = metadata.get("name", "").strip() or source.name
+    if not SKILL_NAME.fullmatch(skill_id):
+        raise SkillMagnetError(f"Invalid skill name: {skill_id}")
+    heading = re.search(r"(?m)^#\s+(.+?)\s*$", text)
+    display_name = heading.group(1).strip() if heading else skill_id
+    purpose = metadata.get("description", "").strip() or f"Imported skill: {display_name}"
+    return skill_id, display_name, purpose
+
+
+def _index_skill_ids(pack_source: Path, available: set[str]) -> tuple[str, ...]:
+    index_path = pack_source / "INDEX.md"
+    if not index_path.is_file():
+        return tuple(sorted(available))
+    text = index_path.read_text(encoding="utf-8-sig")
+    linked = re.findall(r"\]\((?:\./)?([a-z0-9][a-z0-9-]*)/SKILL\.md\)", text)
+    missing = set(linked) - available
+    if missing:
+        raise SkillMagnetError(
+            f"INDEX.md references missing skill folders in {pack_source.name}: "
+            + ", ".join(sorted(missing))
+        )
+    ordered = list(dict.fromkeys(linked))
+    ordered.extend(sorted(available - set(ordered)))
+    return tuple(ordered)
+
+
+def _index_relations(text: str, skill_ids: set[str]) -> dict[str, list[list[str]]]:
+    relations: dict[str, list[list[str]]] = {kind: [] for kind in RELATION_TYPES}
+    aliases = {
+        alias: label
+        for alias, label in re.findall(
+            r'([A-Za-z0-9_]+)\["?([a-z0-9][a-z0-9-]*)"?\]', text
+        )
+    }
+
+    def resolve(label: str) -> str | None:
+        if label in skill_ids:
+            return label
+        matches = [skill for skill in skill_ids if skill.endswith(f"-{label}")]
+        return matches[0] if len(matches) == 1 else None
+
+    for line in text.splitlines():
+        relation_match = re.search(
+            r'^\s*([A-Za-z0-9_]+)(?:\[[^\]]+\])?\s+'
+            r'(?:-->|-\.->|==+>)\|"?(depends-on|composes-with|contrasts-with)"?\|\s+'
+            r'([A-Za-z0-9_]+)(?:\[[^\]]+\])?',
+            line,
+        )
+        if relation_match is None:
+            continue
+        left = resolve(aliases.get(relation_match.group(1), relation_match.group(1)))
+        right = resolve(aliases.get(relation_match.group(3), relation_match.group(3)))
+        if left is None or right is None:
+            raise SkillMagnetError(
+                "INDEX.md contains a relation whose skill cannot be resolved: "
+                + line.strip()
+            )
+        pair = [left, right]
+        bucket = relations[relation_match.group(2)]
+        if pair not in bucket:
+            bucket.append(pair)
+    return relations
+
+
+def discover_skill_sources(source: Path) -> tuple[dict[str, Any], ...]:
+    """Discover one skill, one pack, or a directory containing multiple packs."""
+    source = source.resolve()
+    if not source.is_dir() or _is_link(source):
+        raise SkillMagnetError(f"登録元のフォルダーがありません: {source}")
+
+    def pack_candidate(path: Path) -> dict[str, Any] | None:
+        child_sources = {
+            child.name: child
+            for child in sorted(path.iterdir(), key=lambda item: item.name)
+            if child.is_dir() and not _is_link(child) and (child / "SKILL.md").is_file()
+        }
+        if not child_sources:
+            return None
+        pack_id = path.name
+        if not SKILL_NAME.fullmatch(pack_id):
+            raise SkillMagnetError(f"Invalid pack folder name: {pack_id}")
+        skill_ids = list(_index_skill_ids(path, set(child_sources)))
+        entry_skill = ""
+        if (path / "SKILL.md").is_file():
+            entry_skill, _, _ = _source_skill_metadata(path)
+            if entry_skill in child_sources:
+                raise SkillMagnetError(f"Duplicate root and child skill: {entry_skill}")
+            child_sources[entry_skill] = path
+            skill_ids.insert(0, entry_skill)
+        index_text = (
+            (path / "INDEX.md").read_text(encoding="utf-8-sig")
+            if (path / "INDEX.md").is_file()
+            else ""
+        )
+        heading = re.search(r"(?m)^#\s+(.+?)\s*$", index_text)
+        display_name = (
+            re.sub(r"\s+[—-]\s+Skill Index\s*$", "", heading.group(1)).strip()
+            if heading
+            else pack_id.replace("-", " ").title()
+        )
+        purpose = f"Imported skill pack: {display_name}"
+        if entry_skill:
+            _, _, purpose = _source_skill_metadata(path)
+        return {
+            "id": pack_id,
+            "display_name": display_name,
+            "purpose": purpose,
+            "skills": tuple(skill_ids),
+            "skill_sources": child_sources,
+            "relations": _index_relations(index_text, set(skill_ids)),
+            "source_index": index_text,
+            "entry_skill": entry_skill,
+        }
+
+    packs = tuple(
+        candidate
+        for child in sorted(source.iterdir(), key=lambda item: item.name)
+        if child.is_dir() and not _is_link(child)
+        if (candidate := pack_candidate(child)) is not None
+    )
+    if packs:
+        return packs
+    direct_pack = pack_candidate(source)
+    if direct_pack is not None:
+        return (direct_pack,)
+    if (source / "SKILL.md").is_file():
+        skill_id, display_name, purpose = _source_skill_metadata(source)
+        return (
+            {
+                "id": "custom-skills",
+                "display_name": "Custom skills",
+                "purpose": purpose,
+                "skills": (skill_id,),
+                "skill_sources": {skill_id: source},
+                "relations": {kind: [] for kind in RELATION_TYPES},
+                "source_index": "",
+                "entry_skill": "",
+            },
+        )
+    raise SkillMagnetError(
+        "選択したフォルダー内にSKILL.mdを含むスキルまたはスキルパックがありません"
+    )
+
+
+def _generated_acceptance(source: Path) -> dict[str, Any]:
+    value: dict[str, Any] = {
+        "version": 1,
+        "assertions": [{"path": "result.applied", "equals": True}],
+        "generated_by": "Skill Magnet Library Manager",
+    }
+    prompts = source / "test-prompts.json"
+    if prompts.is_file() and not _is_link(prompts):
+        value["source_test_prompts_sha256"] = _sha256(prompts.read_bytes())
+    return value
+
+
+def import_skill_source(root: Path, source: Path) -> dict[str, Any]:
+    """Atomically import a skill, a complete pack, or a pack collection."""
+    root = root.resolve()
+    discovered = discover_skill_sources(source)
+    catalog_path = root / CATALOG_FILENAME
+    catalog = _read_json(catalog_path)
+    existing_packs = _pack_map(catalog) if catalog.get("packs") else {}
+    existing_skills = set(_catalog_skills(catalog)) if existing_packs else set()
+    incoming_pack_ids = [str(pack["id"]) for pack in discovered]
+    if len(incoming_pack_ids) != len(set(incoming_pack_ids)):
+        raise SkillMagnetError("Duplicate discovered pack ids")
+    duplicate_packs = set(incoming_pack_ids) & set(existing_packs)
+    if duplicate_packs and duplicate_packs != {"custom-skills"}:
+        raise SkillMagnetError("Pack already exists: " + ", ".join(sorted(duplicate_packs)))
+    incoming_skills = [skill for pack in discovered for skill in pack["skills"]]
+    if len(incoming_skills) != len(set(incoming_skills)):
+        raise SkillMagnetError("The selected packs contain duplicate skill names")
+    duplicate_skills = set(incoming_skills) & existing_skills
+    if duplicate_skills:
+        raise SkillMagnetError("Skill already exists: " + ", ".join(sorted(duplicate_skills)))
+
+    prepared: dict[str, tuple[bytes, dict[str, Any], bool]] = {}
+    metadata_by_skill: dict[str, tuple[str, str]] = {}
+    for pack in discovered:
+        for skill_id in pack["skills"]:
+            skill_source = pack["skill_sources"][skill_id]
+            actual_id, display_name, purpose = _source_skill_metadata(skill_source)
+            if actual_id != skill_id:
+                raise SkillMagnetError(
+                    f"SKILL.md name must equal directory id: {skill_id}"
+                )
+            skill_bytes = (skill_source / "SKILL.md").read_bytes()
+            if skill_source == source or skill_source.name == pack["id"]:
+                child_ids = set(pack["skills"]) - {skill_id}
+                text = skill_bytes.decode("utf-8-sig")
+                for child_id in child_ids:
+                    text = text.replace(
+                        f"]({child_id}/SKILL.md)", f"](../{child_id}/SKILL.md)"
+                    )
+                skill_bytes = text.encode("utf-8")
+            acceptance_path = skill_source / "acceptance.json"
+            if acceptance_path.is_file() and not _is_link(acceptance_path):
+                acceptance = _read_json(acceptance_path)
+                generated = False
+            else:
+                acceptance = _generated_acceptance(skill_source)
+                generated = True
+            prepared[skill_id] = (skill_bytes, acceptance, generated)
+            metadata_by_skill[skill_id] = (display_name, purpose)
+
+    previous_catalog = catalog_path.read_bytes()
+    index_path = root / "INDEX.md"
+    previous_index = index_path.read_bytes() if index_path.exists() else None
+    added_directories: list[Path] = []
+    try:
+        packs = catalog.setdefault("packs", [])
+        for pack in discovered:
+            if pack["id"] == "custom-skills" and pack["id"] in existing_packs:
+                target_pack = existing_packs[pack["id"]]
+            else:
+                target_pack = {
+                    "id": pack["id"],
+                    "display_name": pack["display_name"],
+                    "purpose": pack["purpose"],
+                    "skills": [],
+                    "skill_metadata": {},
+                    "relations": pack["relations"],
+                    "source_index": pack["source_index"],
+                    "entry_skill": pack["entry_skill"],
+                }
+                packs.append(target_pack)
+            for skill_id in pack["skills"]:
+                target = root / skill_id
+                target.mkdir()
+                added_directories.append(target)
+                skill_bytes, acceptance, _ = prepared[skill_id]
+                (target / "SKILL.md").write_bytes(skill_bytes)
+                _atomic_json(target / "acceptance.json", acceptance)
+                target_pack.setdefault("skills", []).append(skill_id)
+                display_name, purpose = metadata_by_skill[skill_id]
+                target_pack.setdefault("skill_metadata", {})[skill_id] = {
+                    "display_name": display_name,
+                    "purpose": purpose,
+                }
+        _atomic_json(catalog_path, catalog)
+        index_path.write_text(render_index(catalog), encoding="utf-8", newline="\n")
+        result = validate_library(root).as_dict()
+    except Exception:
+        for target in reversed(added_directories):
+            shutil.rmtree(target, ignore_errors=True)
+        catalog_path.write_bytes(previous_catalog)
+        if previous_index is None:
+            index_path.unlink(missing_ok=True)
+        else:
+            index_path.write_bytes(previous_index)
+        raise
+    result.update(
+        source_kind=("collection" if len(discovered) > 1 else "pack" if len(incoming_skills) > 1 else "skill"),
+        imported_pack_ids=incoming_pack_ids,
+        imported_skill_ids=incoming_skills,
+        generated_acceptance_count=sum(1 for _, _, generated in prepared.values() if generated),
+    )
+    return result
 
 
 @dataclass(frozen=True)
@@ -294,7 +597,14 @@ def validate_library(root: Path) -> ValidationResult:
         if metadata.get("name") != skill:
             raise SkillMagnetError(f"SKILL.md name must equal directory id: {skill}")
         lowered = skill_text.casefold()
-        if "trigger" not in lowered or "boundary" not in lowered:
+        has_trigger = (
+            "trigger" in lowered
+            or "触発" in skill_text
+            or "使用場面" in skill_text
+            or "適用条件" in skill_text
+        )
+        has_boundary = "boundary" in lowered or "境界" in skill_text or "使用しない" in skill_text
+        if not has_trigger or not has_boundary:
             raise SkillMagnetError(f"Skill {skill} must define trigger and boundary")
         try:
             acceptance = json.loads(files[acceptance_path].decode("utf-8"))

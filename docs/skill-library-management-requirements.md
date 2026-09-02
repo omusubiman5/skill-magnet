@@ -109,10 +109,10 @@ Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデ�
 
 ### Skill Authoring and Validation
 
-- FR-5: 利用者は作成済みskill folderだけを指定して登録できなければならない。アプリは`SKILL.md`から内部ID、表示名、目的を取得し、`SKILL.md`または`acceptance.json`がなければ登録前に停止しなければならない。
-- FR-6: 公開前検証はskill ID重複、path traversal、symlink、secret候補、必須file、frontmatter、trigger、boundary、acceptance schemaをfail-closedで検査しなければならない。
+- FR-5: 利用者はfolderを1つ指定し、単一skill、1 pack、または複数pack collectionを登録できなければならない。アプリは直下構造、`SKILL.md`、`INDEX.md`からpack／skillの母集合、ID、表示名、目的、順序、関係、root entry skillを自動取得しなければならない。全候補を登録または理由付き拒否へ分類し、一部だけを黙って登録してはならない。
+- FR-6: 公開前検証はskill／pack ID重複、INDEX参照先欠落、path traversal、symlink、secret候補、`SKILL.md`、frontmatter、trigger、boundary、acceptance schemaをfail-closedで検査しなければならない。登録元の`acceptance.json`は任意とし、不在時は内部互換メタデータを生成する。`test-prompts.json`があれば、そのSHA-256を生成物へ結び付けなければならない。
 - FR-7: アプリはskillを既存packへ追加するか、新しいpackを作成する選択を提供しなければならない。
-- FR-8: アプリはINDEXの`depends-on`、`composes-with`、`contrasts-with`を編集・検証し、未知skill、dependency cycle、同時選択されるcontrastを拒否しなければならない。
+- FR-8: アプリはINDEXの`depends-on`、`composes-with`、`contrasts-with`を取込み・検証し、未知skill、自己参照、dependency cycleを拒否しなければならない。`contrasts-with`のskillは同じpackへ共存できるが、実依頼への適用時に同時採用してはならない。
 
 ### Publish Transaction
 
@@ -142,11 +142,11 @@ Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデ�
 
 基本flowはタブのない1画面とする。作業用repository、catalog、INDEX、validation、preview、activationのためだけの独立画面は設けず、自動処理または同じ画面へ統合する。
 
-1. 右クリック対象が標準構成（同一folderの`SKILL.md`と`acceptance.json`）なら自動importし、登録欄を隠す。作成済みskillを手動で登録する場合だけ同じ画面の上部へfolder指定欄を表示する。画面内でskillを新規作成してはならない。pack情報からcatalogとINDEXを自動生成する。
+1. 右クリック対象が単一skill、1 pack、または複数pack collectionの標準構成なら、全候補を自動importして登録欄を隠す。作成済みskill／packを手動登録する場合だけ同じ画面の上部へfolder指定欄を表示する。画面内でskillを新規作成してはならない。pack情報からcatalogと統合INDEXを自動生成する。
 2. 同じ画面でGitHub URLを入力し、validationと全差分を確認してからPRを明示公開し、merge後のremoteを照合する。OSを自動判定してactivationを明示確認し、active version、menu、testsをreceiptで確認する。
 
 OSは利用者へ選択させず実行環境から自動判定する。URL未入力、標準構成不備、validation失敗、未mergeなどはその操作時のエラーとして表示し、外部書込みまたはactivationを行わない。
-手動登録画面で利用者が指定するのは作成済みskill folderだけとする。Skill IDは`SKILL.md`の`name`から自動取得し、`name`がない場合だけfolder名を使う。表示名と目的も`SKILL.md`から取得し、packはアプリ管理の`Custom skills`を使う。`SKILL.md`または`acceptance.json`がなければ登録前にエラー停止する。
+手動登録画面で利用者が指定するのはfolderだけとする。単一skillでは`Custom skills`へ登録し、pack folderではfolder名をPack IDにして直下の全skillを登録し、collection folderでは直下の全packを一括登録する。`SKILL.md`が一件もない、INDEX参照先がない、IDが衝突するなど完全性を証明できない場合は、全体をrollbackしてエラー停止する。
 現在の有効設定にGitHub repository URLが一意に存在する場合はPublish画面へ自動表示する。候補が複数あり一意に決められない場合だけ空欄とし、誤ったrepositoryを自動選択しない。
 
 画面ではrepository、pack、skillを別の概念として表示する。repository名をskill名として表示したり、pack名をrepository名として補完したりしない。

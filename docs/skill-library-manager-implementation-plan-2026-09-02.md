@@ -8,6 +8,15 @@ status: completed
 
 # Skill Library Manager 実装計画
 
+## 追補: pack collectionの一括登録
+
+- 登録元はfolder 1つだけとし、そのfolderを単一skill、1 pack、複数pack collectionの順に自動判定する。
+- collection直下のpackと、各pack直下の`SKILL.md`を持つ全folderを候補母集合にする。`INDEX.md`は順序と関係の入力に使うが、INDEXに未記載の実在skillを黙って捨てない。
+- pack直下の`SKILL.md`はpack全体を案内するentry skillとして登録し、子skillへの相対linkを公開repository構成に合わせて機械変換する。
+- source側の`acceptance.json`は任意とする。不在時はLibrary Managerがrepository契約用の内部互換metadataを生成し、`test-prompts.json`があればそのSHA-256を記録する。
+- INDEX参照先欠落、skill／pack ID重複、壊れた関係、必須`SKILL.md`欠落は書込み前に拒否する。copy中の失敗もcatalog、INDEX、追加directoryを一括rollbackし、部分登録を残さない。
+- 実データ`C:\Projects\cangjie-skill-clean\books`をsmoke対象とし、3 pack・33 skillの検出数、登録数、catalog数が一致することを合格条件にする。
+
 ## 追補: 右クリック製品入口
 
 - FR-22をP4の製品入口へ追加する。

@@ -56,13 +56,17 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 
 Skill Library Managerは、スキルを追加してGitHubへ公開し、Skill Magnetで使える状態にするための案内画面です。作業途中のファイルはアプリ専用領域へ自動保存されます。利用者が作業用フォルダーやrepository名を決める必要はありません。
 
-通常は、`SKILL.md`と`acceptance.json`が入った作成済みスキルのフォルダーを右クリックします。Windows Explorerでは`Skill Magnet` → `Library Manager`、macOS Finderではクイックアクション`Skill Magnet`を開いて`Library Manager`を選びます。標準構成ならアプリが自動で取り込み、登録欄を隠します。手動登録する場合だけ、同じ画面の上部にフォルダー選択欄を表示します。
+Windows Explorerでは登録元フォルダーを右クリックして`Skill Magnet` → `Library Manager`、macOS Finderではクイックアクション`Skill Magnet`を開いて`Library Manager`を選びます。単一スキル、1パック、複数パックを含む親フォルダーのどれでも指定できます。標準構成を検出できればアプリが全件を自動で取り込み、登録欄を隠します。手動登録する場合だけ、同じ画面の上部にフォルダー選択欄を表示します。
 
 ### 操作ガイド（1画面）
 
 #### 1. 必要な場合だけ、作成済みスキルを登録する
 
-この画面は、すでに作ったスキルを手動で登録する時だけ使います。利用者が指定するのは作成済みスキルのフォルダーだけです。Skill ID、表示名、目的は`SKILL.md`から自動取得し、パックはアプリ管理の`Custom skills`へ登録します。`SKILL.md`と`acceptance.json`が同じフォルダーに必要で、フォルダー未選択やファイル不足は登録前のエラーで停止します。登録時にパック一覧とINDEXは自動生成されます。
+この画面は、すでに作ったスキルまたはパックを登録する時だけ使います。指定するのはフォルダー1つだけです。スキルフォルダーなら1スキル、直下に複数のスキルフォルダーがあれば1パック、直下に複数のパックフォルダーがあれば全パックを検出します。Skill ID、Pack ID、表示名、目的はフォルダー名、`SKILL.md`、`INDEX.md`から自動取得します。元の`INDEX.md`はパック別の説明と関係を保って統合し、ルート`SKILL.md`があるパックでは入口スキルとして含めます。
+
+登録元で必須なのは各スキルの`SKILL.md`です。`acceptance.json`がない場合は、Library Managerが公開用の内部互換メタデータを生成します。同じフォルダーに`test-prompts.json`があれば、そのSHA-256も記録します。空フォルダー、INDEXが参照するスキルの欠落、重複ID、壊れた関係は登録前にエラーで停止し、一部だけを登録しません。
+
+例: `C:\Projects\cangjie-skill-clean\books`を指定すると、直下の`codex-cli`、`conflict-clarity`、`harness-bootstrap-prompt-v2-1`を3パックとして一括登録します。確認済みの構成では合計33スキルです。
 
 #### 2. 同じ画面でGitHubへ送る
 
