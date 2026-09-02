@@ -65,8 +65,8 @@ from skill_magnet.ui import (
     launch_context_leaf,
     deliver_codex_desktop_prompt,
     deliver_prepared_codex_handoff,
-    deliver_web_claude_prompt,
-    web_claude_prefill_url,
+    claude_desktop_deep_link,
+    deliver_claude_desktop_prompt,
 )
 from tests.e2e_guard import E2ECycleTeardown, assert_e2e_clean
 
@@ -509,7 +509,7 @@ class ActivationEndToEndTest(unittest.TestCase):
         engine = ActivationEngine(self.config, self.state)
         contract = engine.confirm(self._plan(engine), confirmed=True)
         prepared = engine.prepare_codex_desktop_handoff(contract.contract_id)
-        result = engine.record_codex_desktop_handoff(prepared)
+        result = engine.record_desktop_handoff(prepared)
 
         prompt = prepared["prompt"]
         self.assertIn("最低1つのスキルを必ず", prompt)
@@ -573,7 +573,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                 prepared = (
                     engine.prepare_codex_desktop_handoff(contract.contract_id)
                     if runtime == "codex"
-                    else engine.prepare_web_handoff(contract.contract_id)
+                    else engine.prepare_claude_desktop_handoff(contract.contract_id)
                 )
                 prompt = prepared["prompt"]
                 self.assertNotIn("INDEX.md", prompt)
@@ -702,13 +702,13 @@ class ActivationEndToEndTest(unittest.TestCase):
                     purpose=purpose,
                 )
                 contract = engine.confirm(plan, confirmed=True)
-                handoff = engine.prepare_web_handoff(contract.contract_id)
-                self.assertEqual(handoff["status"], "web_prompt_ready")
-                self.assertEqual(handoff["destination"], "https://claude.ai/new")
+                handoff = engine.prepare_claude_desktop_handoff(contract.contract_id)
+                self.assertEqual(handoff["status"], "desktop_handoff_prepared")
+                self.assertEqual(handoff["destination"], "claude://code/new")
                 self.assertEqual(handoff["skill_ids"], list(pack.skills))
                 self.assertIn("composes-with", handoff["prompt"])
 
-    def test_web_claude_leaf_unit_contract_hands_one_prompt_to_delivery_adapter(self) -> None:
+    def test_claude_desktop_leaf_hands_one_prompt_to_delivery_adapter(self) -> None:
         engine = ActivationEngine(self.config, self.state)
         leaf = next(
             item
@@ -716,7 +716,7 @@ class ActivationEndToEndTest(unittest.TestCase):
             if item.pack_id == "bounded-pack"
             and item.skill_id == "bounded-answer"
         )
-        delivered: list[tuple[str, str]] = []
+        delivered: list[tuple[str, str, str]] = []
         pack = self.config.packs[leaf.pack_id]
         with mock.patch.object(
             engine, "execute", side_effect=AssertionError("CLI execution is forbidden")
@@ -732,14 +732,17 @@ class ActivationEndToEndTest(unittest.TestCase):
                 menu_skill_digest=leaf.skill_ids_digest,
                 menu_instruction_digest=leaf.instruction_digest,
                 menu_acceptance_digest=leaf.acceptance_digest,
-                destination="web",
-                web_delivery=lambda prompt, url: delivered.append((prompt, url)),
+                destination="desktop",
+                claude_desktop_delivery=lambda prompt, project, url: delivered.append(
+                    (prompt, project, url)
+                ),
             )
-        self.assertEqual(result["status"], "web_prompt_ready")
+        self.assertEqual(result["status"], "desktop_handoff_ready")
         self.assertEqual(result["runtime"], "claude")
         self.assertEqual(len(delivered), 1)
-        prompt, url = delivered[0]
-        self.assertEqual(url, "https://claude.ai/new")
+        prompt, project, url = delivered[0]
+        self.assertEqual(project, str(self.project.resolve()))
+        self.assertEqual(url, "claude://code/new")
         self.assertIn(self.project.resolve().as_posix(), prompt)
         self.assertIn("bounded-answer", prompt)
         self.assertIn("読む、要約する、適用候補を挙げるだけでは実行と認めません", prompt)
@@ -749,41 +752,44 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertNotIn("UNUSED_SENTINEL", prompt)
         self.assertNotIn("prompt", result)
         with self.assertRaisesRegex(SafetyError, "already used"):
-            engine.prepare_web_handoff(str(result["contract_id"]))
+            engine.prepare_claude_desktop_handoff(str(result["contract_id"]))
 
-    def test_web_claude_prefill_uses_new_conversation_query_without_clipboard(self) -> None:
+    def test_claude_desktop_deep_link_prefills_code_session_and_folder(self) -> None:
         prompt = "selected-skill\nTARGET_PROJECT=C:\\safe project"
-        url = web_claude_prefill_url(prompt, "https://claude.ai/new")
+        project = "C:\\safe project"
+        url = claude_desktop_deep_link(prompt, project, "claude://code/new")
         self.assertEqual(
             url,
-            "https://claude.ai/new?q=selected-skill%0ATARGET_PROJECT%3DC%3A%5Csafe+project",
+            "claude://code/new?q=selected-skill%0ATARGET_PROJECT%3DC%3A%5Csafe%20project&folder=C%3A%5Csafe%20project",
         )
         with (
             mock.patch("skill_magnet.ui.os.name", "nt"),
-            mock.patch("skill_magnet.ui.webbrowser.open", return_value=True) as opened,
+            mock.patch("skill_magnet.ui.os.startfile", create=True) as opened,
         ):
-            deliver_web_claude_prompt(prompt, "https://claude.ai/new")
-        opened.assert_called_once_with(url, new=2)
+            deliver_claude_desktop_prompt(prompt, project, "claude://code/new")
+        opened.assert_called_once_with(url)
 
-    def test_web_claude_prefill_fails_closed_on_limits_destination_and_open(self) -> None:
-        with self.assertRaisesRegex(SkillMagnetError, "Unexpected Web Claude destination"):
-            web_claude_prefill_url("prompt", "https://example.invalid")
-        with self.assertRaisesRegex(SkillMagnetError, "safe prefill limit"):
-            web_claude_prefill_url("x" * 8_001, "https://claude.ai/new")
+    def test_claude_desktop_deep_link_fails_closed_on_invalid_input(self) -> None:
+        with self.assertRaisesRegex(SkillMagnetError, "Unexpected Claude Desktop destination"):
+            claude_desktop_deep_link("prompt", "C:\\repo", "https://example.invalid")
+        with self.assertRaisesRegex(SkillMagnetError, "safe handoff limit"):
+            claude_desktop_deep_link("x" * 12_001, "C:\\repo", "claude://code/new")
         with self.assertRaisesRegex(SkillMagnetError, "safe URL limit"):
-            web_claude_prefill_url("\U0001f680" * 2_000, "https://claude.ai/new")
+            claude_desktop_deep_link(
+                "\U0001f680" * 8_000, "C:\\repo", "claude://code/new"
+            )
         with (
             mock.patch("skill_magnet.ui.os.name", "nt"),
-            mock.patch("skill_magnet.ui.webbrowser.open", return_value=False),
+            mock.patch(
+                "skill_magnet.ui.os.startfile",
+                create=True,
+                side_effect=OSError("no handler"),
+            ),
             self.assertRaisesRegex(SkillMagnetError, "could not be opened"),
         ):
-            deliver_web_claude_prompt("prompt", "https://claude.ai/new")
-        with (
-            mock.patch("skill_magnet.ui.os.name", "nt"),
-            mock.patch("skill_magnet.ui.webbrowser.open", side_effect=OSError("no handler")),
-            self.assertRaisesRegex(SkillMagnetError, "could not be opened"),
-        ):
-            deliver_web_claude_prompt("prompt", "https://claude.ai/new")
+            deliver_claude_desktop_prompt(
+                "prompt", "C:\\repo", "claude://code/new"
+            )
 
     def test_codex_leaf_hands_one_human_prompt_to_desktop_and_never_runs_cli(self) -> None:
         engine = ActivationEngine(self.config, self.state)
@@ -3882,9 +3888,9 @@ class ActivationEndToEndTest(unittest.TestCase):
         )
         claude_record = json.loads(claude_probe.read_text(encoding="utf-8"))
         self.assertEqual(claude_record["runtime"], "claude")
-        self.assertEqual(claude_record["status"], "web_prompt_ready")
+        self.assertEqual(claude_record["status"], "desktop_handoff_prepared")
         self.assertEqual(
-            claude_record["delivery"]["destination"], "https://claude.ai/new"
+            claude_record["delivery"]["destination"], "claude://code/new"
         )
         self.assertTrue(claude_record["delivery"]["prompt_present"])
         removed = uninstall_context_menu("macos", services_dir=services)

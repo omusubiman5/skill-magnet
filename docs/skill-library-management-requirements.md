@@ -19,6 +19,8 @@ Skill Magnetは本体repositoryとskill repositoryを分離し、固定commitか
 
 Skill Magnetへ「Skill Library Manager」を追加する。利用者はアプリ内で汎用skill repositoryを接続または作成し、新規skillの追加、packへの所属、INDEX関係編集、検証、Git commit／push、固定commit確定、本体lock更新、必要時のメニュー再登録までを一つの案内付きtransactionとして完了できる。
 
+Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデスクトップアプリである。Skill Library Managerが有効化したpackは、この二つのデスクトップアプリへhandoffできる状態にする。
+
 推奨repository名は`skill-magnet-skills`とする。名称は利用者が変更できるが、最初のskill ID、pack ID、特定AI名から自動生成しない。既存の`codex-pmo-skills`は接続可能な既存repositoryとして扱い、自動renameしない。
 
 ### Target Users
@@ -308,3 +310,4 @@ Skill Magnetへ「Skill Library Manager」を追加する。利用者はアプ�
 |---|---|---|---|
 | 1.0 | 2026-09-02 | Codex | 初版。汎用repository命名とアプリ内skill追加transactionを定義 |
 | 1.1 | 2026-09-02 | Codex | FR-1〜FR-21の実装・検証完了に伴いstatusをimplementedへ更新 |
+| 1.2 | 2026-09-02 | Codex | 実行ターゲットをCodex Desktopアプリ／Claude Codeデスクトップアプリとして明記 |

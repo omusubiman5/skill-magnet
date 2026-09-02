@@ -46,7 +46,7 @@ assert record["selection_kind"] == "pack"
 assert len(record["skill_ids"]) == 9
 assert record["runtime"] == runtime
 assert record["status"] == (
-    "desktop_handoff_ready" if runtime == "codex" else "web_prompt_ready"
+    "desktop_handoff_ready" if runtime == "codex" else "desktop_handoff_prepared"
 )
 assert record["result_verification"] == "not_claimed_by_design"
 assert record["handoff_completed"] is True
@@ -56,7 +56,7 @@ assert "verified_completed" not in record
 assert record["delivery"] == {
     "project": expected_path,
     "destination": (
-        "codex://threads/new" if runtime == "codex" else "https://claude.ai/new"
+        "codex://threads/new" if runtime == "codex" else "claude://code/new"
     ),
     "prompt_present": True,
 }
