@@ -11,7 +11,7 @@ status: implemented
 
 ## 結論
 
-`skill-library-management-requirements.md`のFR-1〜FR-22を、共通domain層、通常1画面・最大2画面のGUI、右クリック入口、CLI、Git transaction、atomic activation、status/receipt、回帰試験として実装した。skill repositoryは特定skill名に結び付けず、既定名を`skill-magnet-skills`とした。
+`skill-library-management-requirements.md`のFR-1〜FR-22を、共通domain層、タブのない1画面GUI、右クリック入口、CLI、Git transaction、atomic activation、status/receipt、回帰試験として実装した。skill repositoryは特定skill名に結び付けず、既定名を`skill-magnet-skills`とした。
 
 公開処理は、draft検証 → isolated clone → staged blob preview → 明示確認 → non-force push/PR → remote Git blob再取得とSHA-256照合 → 明示確認 → config/menu有効化、という二段階transactionになった。remote検証前は現在のconfigを変更せず、menu更新失敗時はconfigをbyte単位で直前版へ戻す。同じtransaction IDの再実行は既存commit、push、activation receiptを再利用し、重複操作を行わない。
 
@@ -23,11 +23,10 @@ status: implemented
 - macOS Finderではクイックアクション`Skill Magnet`の共通画面内にある`Skill Library Manager`から開く。
 - GUIの作業用repositoryは製品state内で自動作成・再利用し、保存先、repository名、`Draft directory`を入力させない。右クリックしたfolderに`SKILL.md`がある場合だけskill import候補へ事前入力する。画面を開くだけではpublishもactivateも実行しない。
 - `python -m skill_magnet library ui`でコンパクトなSkill Library Managerを開く。
-- 標準構成の作成済みスキルfolderを右クリックした通常flowでは自動import後にPublishだけを表示する。作成済みskillを手動登録する時だけSkill、Publishの2画面とする。repository、catalog/INDEX、validation、preview、activationの独立画面は設けず、起動・登録・Publish画面内で処理する。
+- 登録とGitHub公開をタブのない1画面へ統合した。標準構成の作成済みスキルfolderを右クリックした場合は自動importして登録欄を隠し、手動登録時だけ同じ画面上部へfolder欄を表示する。repository、catalog/INDEX、validation、preview、activationの独立画面は設けない。
 - OSは実行環境から自動判定し、利用者へ選択させない。構成不備、URL不備、validation失敗は操作時のエラーダイアログで停止する。
 - 現在の設定にrepository URLが一意に存在する既存ユーザーには、そのURLをPublish画面へ自動表示する。複数候補は誤選択防止のため自動補完しない。
-- Skill ID入力欄を廃止し、`SKILL.md`の`name`またはfolder名から内部キーを自動決定する。表示名と目的も選択した`SKILL.md`から自動入力する。
-- Pack ID入力欄も廃止し、利用者が指定するpack表示名から既存IDの再利用または内部IDの自動生成を行う。
+- 手動登録画面の入力を作成済みskill folderだけにした。Skill ID、表示名、目的は`SKILL.md`から自動取得し、packはアプリ管理の`Custom skills`を使う。`SKILL.md`または`acceptance.json`がなければ登録処理前に停止する。
 - headless/運用用途として`init`、`add`、`validate`、`prepare`、`publish`、`verify-merged`、`activate`、`status`も提供する。
 - publishとactivateは独立した明示確認が必要で、未確認ならfail-closedで停止する。
 
@@ -66,7 +65,7 @@ status: implemented
 | FR-2 | catalogの複数pack/skill model | add/publish E2E |
 | FR-3 | machine-readable catalog schema v1 | catalog validation/manifest test |
 | FR-4 | 既存directory接続、既存名維持、remote default branch読取 | GUI connect、prepare E2E |
-| FR-5 | GUI/CLI create・import | CLI flow test |
+| FR-5 | GUIは作成済みskill folderだけを受け取り、metadataを自動取得。CLIは運用向けimportを提供 | folder-only UI、必須file不足test、CLI flow test |
 | FR-6 | path/symlink/secret/frontmatter/trigger/boundary/acceptance検証 | negative tests |
 | FR-7 | pack ID指定で既存追加／新規作成 | add round-trip test |
 | FR-8 | 3 relation、unknown/cycle/contrast検証 | relation negative tests |
@@ -94,7 +93,7 @@ status: implemented
 | File | 内容 |
 |---|---|
 | `src/skill_magnet/library_manager.py` | catalog、validation、publish transaction、activation、status、receipt |
-| `src/skill_magnet/library_ui.py` | 通常1画面・最大2画面GUI、OS自動判定 |
+| `src/skill_magnet/library_ui.py` | タブのない1画面GUI、OS自動判定 |
 | `src/skill_magnet/cli.py` | `library` command群とGUI入口 |
 | `src/skill_magnet/platforms.py` | Explorer/Finder右クリックmanager actionと状態契約 |
 | `src/skill_magnet/ui.py` | Finder共通画面からmanager GUIへの遷移 |
@@ -115,7 +114,7 @@ status: implemented
 | `python -m unittest discover -s tests` | 152 PASS、1 environment-dependent skip |
 | `python -m pip wheel . --no-deps` | PASS、`library_manager.py`と`library_ui.py`のwheel収録を確認 |
 | `git diff --check` | PASS |
-| 実GUIスモーク | PASS、標準folder選択時にPublishだけ、作成済みskillの手動登録時にSkillとPublishを表示 |
+| 実GUIスモーク | PASS、登録と公開を同じ画面に表示し、標準folder選択時は登録欄を非表示 |
 
 自動試験ではローカルbare Git remoteを用い、isolated clone、commit、direct push、別cloneからのremote blob検証、config activation、retry、menu failure rollbackまで実行した。GitHub PR経路は`gh pr create`／`gh pr view`へ接続済みであり、実repositoryでは既存GitHub credentialとbranch protectionが最終権限境界になる。
 

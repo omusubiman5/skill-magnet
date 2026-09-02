@@ -56,21 +56,19 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 
 Skill Library Managerは、スキルを追加してGitHubへ公開し、Skill Magnetで使える状態にするための案内画面です。作業途中のファイルはアプリ専用領域へ自動保存されます。利用者が作業用フォルダーやrepository名を決める必要はありません。
 
-通常は、`SKILL.md`と`acceptance.json`が入った作成済みスキルのフォルダーを右クリックします。Windows Explorerでは`Skill Magnet` → `Skill Library Manager`、macOS Finderではクイックアクション`Skill Magnet` → `Skill Library Manager`を選びます。標準構成ならアプリが自動で取り込み、`Publish`画面だけを表示します。入力用の`Skill`画面は、作ったスキルを手動で登録する場合だけ表示します。
+通常は、`SKILL.md`と`acceptance.json`が入った作成済みスキルのフォルダーを右クリックします。Windows Explorerでは`Skill Magnet` → `Skill Library Manager`、macOS Finderではクイックアクション`Skill Magnet` → `Skill Library Manager`を選びます。標準構成ならアプリが自動で取り込み、登録欄を隠します。手動登録する場合だけ、同じ画面の上部にフォルダー選択欄を表示します。
 
-### 操作ガイド（通常1画面、最大2画面）
+### 操作ガイド（1画面）
 
-#### 1. Skill — 追加するスキルを登録する
+#### 1. 必要な場合だけ、作成済みスキルを登録する
 
-この画面は、すでに作ったスキルを手動で登録する時だけ使います。「スキル」はAIへ渡す作業手順です。作成済みスキルのフォルダーを選ぶと、内部のSkill IDは`SKILL.md`の`name`（なければフォルダー名）から、表示名と目的も`SKILL.md`から自動取得されます。利用者が入力するのは入れるパックの名前だけで、Skill IDやPack IDを知る必要はありません。`SKILL.md`と`acceptance.json`が同じフォルダーに必要です。フォルダー未選択やファイル不足はエラーで止まり、登録時にパック一覧とINDEXは自動生成されます。
+この画面は、すでに作ったスキルを手動で登録する時だけ使います。利用者が指定するのは作成済みスキルのフォルダーだけです。Skill ID、表示名、目的は`SKILL.md`から自動取得し、パックはアプリ管理の`Custom skills`へ登録します。`SKILL.md`と`acceptance.json`が同じフォルダーに必要で、フォルダー未選択やファイル不足は登録前のエラーで停止します。登録時にパック一覧とINDEXは自動生成されます。
 
-![Skill画面の入力項目](docs/images/skill-library-manager-step-1-skill.png)
-
-#### 2. Publish — GitHubへ送る内容を確認して公開する
+#### 2. 同じ画面でGitHubへ送る
 
 現在使っているスキル保管庫が1つなら、そのGitHub URLを既存設定から自動表示します。初回または別の保管庫へ変える時だけURLを入力します。`送信内容を確認する`を押すと、アプリがファイル構成、パック、INDEX、秘密情報、スキル同士の矛盾を自動検査し、送信予定の差分を表示します。不足や不正があればエラーダイアログで止まり、GitHubへは送りません。内容が正しい場合だけ確認欄へチェックして`Publish PR`を押します。PRをGitHubでマージした後に`Verify merged remote`、最後に`Skill Magnetへ反映`を押します。OSはアプリが自動判定します。反映前には確認ダイアログが出て、失敗時は直前の正常な状態へ戻ります。
 
-![Publish前の確認画面](docs/images/skill-library-manager-step-2-publish.png)
+![フォルダー登録とGitHub公開を一つにまとめた画面](docs/images/skill-library-manager-step-1-skill.png)
 
 CLIから直接開く次のcommandも、障害調査やheadless運用の入口として残しています。
 

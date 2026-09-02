@@ -22,7 +22,6 @@ from skill_magnet.library_ui import (
     import_selected_skill,
     library_wizard_steps,
     managed_repository_path,
-    pack_id_for_display,
     require_registration_source,
     skill_registration_metadata,
 )
@@ -60,14 +59,24 @@ class LibraryManagerTests(unittest.TestCase):
             skill_registration_metadata(source),
             ("sample-skill", "Sample skill", "Sample purpose"),
         )
-        self.assertEqual(pack_id_for_display(repository, "My Skills"), "my-skills")
-        self.assertTrue(pack_id_for_display(repository, "日本語").startswith("pack-"))
+        missing_skill = self.root / "missing-skill"
+        missing_skill.mkdir()
+        (missing_skill / "acceptance.json").write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(SkillMagnetError, "SKILL.md"):
+            require_registration_source(str(missing_skill))
+        missing_acceptance = self.root / "missing-acceptance"
+        missing_acceptance.mkdir()
+        (missing_acceptance / "SKILL.md").write_text(
+            "---\nname: missing-acceptance\ndescription: Missing acceptance\n---\n\n# Missing acceptance\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(SkillMagnetError, "acceptance.json"):
+            require_registration_source(str(missing_acceptance))
 
         self.assertTrue(import_selected_skill(repository, source))
         catalog = json.loads((repository / CATALOG_FILENAME).read_text(encoding="utf-8"))
         self.assertEqual(catalog["packs"][0]["id"], "custom-skills")
         self.assertEqual(catalog["packs"][0]["skills"], ["sample-skill"])
-        self.assertEqual(pack_id_for_display(repository, "Custom skills"), "custom-skills")
         self.assertTrue((repository / "sample-skill" / "SKILL.md").is_file())
 
     def test_existing_repository_url_is_prefilled_when_unambiguous(self) -> None:
@@ -358,9 +367,7 @@ class LibraryManagerTests(unittest.TestCase):
         self.assertEqual(transaction.status(config)["status"], "published_but_inactive")
 
     def test_cli_exposes_guided_library_flow(self) -> None:
-        self.assertEqual(len(library_wizard_steps()), 2)
-        self.assertEqual(library_wizard_steps()[0], "1. Skill")
-        self.assertEqual(library_wizard_steps()[1], "2. Publish")
+        self.assertEqual(library_wizard_steps(), ("Skill Library Manager",))
         library = self.root / "cli-library"
         self.assertEqual(
             cli_main(["library", "init", "--repository", str(library)]), 0

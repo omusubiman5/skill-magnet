@@ -9,7 +9,7 @@ result: PASS
 
 ## 結論
 
-Skill Library ManagerのCLI基本経路、実Windows GUIの通常1画面・最大2画面表示、Explorer右クリックからの起動をスモークし、すべてPASSした。外部repositoryへのpush、PR作成、本体config更新は不可逆または外部書込みを伴うため、本スモークでは確認画面までとした。これらのtransaction本体は自動E2EとWindows/macOS CIで検証済みである。
+Skill Library ManagerのCLI基本経路、実Windows GUIのタブのない1画面表示、Explorer右クリックからの起動をスモークし、すべてPASSした。外部repositoryへのpush、PR作成、本体config更新は不可逆または外部書込みを伴うため、本スモークでは確認画面までとした。これらのtransaction本体は自動E2EとWindows/macOS CIで検証済みである。
 
 ## 実行環境
 
@@ -47,8 +47,8 @@ Skill Library ManagerのCLI基本経路、実Windows GUIの通常1画面・最�
 
 | Step | Screen | Result |
 |---:|---|---|
-| 1 | 標準folderを選択した通常flowはPublishだけ | PASS |
-| 2 | 作成済みskillの手動登録flowはSkillとPublish | PASS |
+| 1 | 標準folderを選択した通常flowは登録欄を隠し、GitHub公開欄だけを表示 | PASS |
+| 2 | 手動登録flowはfolder登録とGitHub公開を同じ画面に表示 | PASS |
 
 確認した安全境界:
 
@@ -65,7 +65,7 @@ Skill Library ManagerのCLI基本経路、実Windows GUIの通常1画面・最�
 |---|---|
 | 通常右クリックに`Skill Magnet`が1入口だけ表示 | PASS |
 | サブメニューに`Skill Library Manager`と`Delivery Assurance`の2 action | PASS |
-| 標準folderからの`Skill Library Manager`選択でPublishだけが起動 | PASS |
+| 標準folderからの`Skill Library Manager`選択で登録欄が隠れ、GitHub公開欄が起動 | PASS |
 | `Draft directory`、repository名、保存先の入力欄が表示されない | PASS |
 | 作業用repositoryがアプリ専用state内に自動決定される | PASS |
 | 右クリック対象は`SKILL.md`がある場合だけimport候補になる | PASS |
