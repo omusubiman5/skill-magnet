@@ -17,8 +17,8 @@
   "library_manager_entry_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
-  "release_code_sha": "5154ff577b6aa3e5ec97cefc400f665f99be6b7e",
-  "wheel_payload_sha256": "50a8e34971809707268945270ef249da893e4d7a8e5153f872c85067237b3f71",
+  "release_code_sha": "dad49a227f57abe3d2246196db293b27d31e62a9",
+  "wheel_payload_sha256": "b74fb3843339667f1afe917082d4cda021e73c82d84451f341a032d41d7a351a",
   "automated_status": "LOCAL_RELEASE_GATE_PASS_163",
   "windows_explorer_field_status": "PASS_REAL_RIGHT_CLICK_MENU_AND_CONFIRMATION_UI_0_5_1",
   "macos_finder_field_status": "CI_SEMANTIC_ONLY_REAL_UI_NOT_CLAIMED_FOR_0_5_2",
@@ -51,6 +51,7 @@ explorer-results-ledger:end -->
 - Library Managerの後続3ボタンと確認checkboxを廃止し、現在可能な操作だけへ切り替わる1ボタンに統合した候補wheelは、独立した2 buildで共通の論理payload SHA-256 `21a4d5d3473ef62215519f80e151ed897d09b7ce29255dc282d66329c88be5e0`を確認した。release codeは`f9d64fe22ffeba7a99abbb27e74dd5c826315a34`である。
 - 登録済みpackの手動再選択を冪等なno-opにした候補wheelは、独立した2 buildで共通の論理payload SHA-256 `d6103119acede635c07fa938e9c0dbf5fc8bf504d8391681d7a21dfffe799dc6`を確認した。release codeは`857bf42910bbf0bd357d2737b1b6835aeda4ca2f`である。実ユーザーstateの`codex-cli` 9 skillを再選択し、`already_registered=true`とcatalog SHA-256不変を確認した。
 - Library ManagerのWindowsアクセス拒否、中断復旧、remote既存ファイル保護を修正した。remote verifierは毎回固有directoryを使い、cleanup失敗を完了結果と分離する。GUI／CLIから同一transactionの再開またはローカル破棄を選べ、管理対象外ファイルを保持し、削除差分を送信前に拒否する。危険な削除を含んでいた既存PR #1はCLOSED、transaction `0d954338e09c4a97ad19639e69d5298a`は`abandoned`へ移行し、remote branchは証拠と利用者管理のため保持した。独立した2 buildの論理payload SHA-256はともに`50a8e34971809707268945270ef249da893e4d7a8e5153f872c85067237b3f71`で一致した。
+- 0.5.3ではPR OPENを正常な`waiting_for_merge`として扱い、remote副作用後のlocal-only破棄、同一library／remoteの重複transaction、差分0件のPR作成、操作ボタンの二重実行を禁止した。重複PR #2はCLOSED、継続対象PR #3はOPENのまま保持した。独立した2 buildの論理payload SHA-256はともに`b74fb3843339667f1afe917082d4cda021e73c82d84451f341a032d41d7a351a`で一致した。release codeは`dad49a227f57abe3d2246196db293b27d31e62a9`である。
 - 実機証拠: 0.5.1 wheelをWindowsへinstallし、modern context menuのstatusが`usable_installed_state: true`、`menu_contract_matches_config: true`、`menu_leaf_count: 1`を返した。File Explorerの`C:\Projects\skill-magnet`背景を実際に右クリックし、`Skill Magnet`→`Delivery Assurance`から`Skill Magnet — 実行確認`画面が起動すること、画面上のproject、pack、用途、実行AI、依頼内容、実行/取消UIを確認した。外部AIへのテスト依頼送信はフィールドUI受入の対象外とし、確認画面を取消で閉じた。実際のTSVはpack ID `codex-delivery-assurance`、表示名`Delivery Assurance`、固定commit `8f12af5ddfdd3b985f26d33dad09d6061d675342`を記録した。
 - Skill Library Manager右クリック実機証拠: 現行sourceからWindows 11 modern拡張をbuild・再登録し、`C:\Projects\skill-magnet` folderを実際に右クリックした。`Skill Magnet`配下に`Skill Library Manager`と`Delivery Assurance`が表示され、manager選択でGUIが起動した。標準構成のskill folderでは自動import後にPublishだけを表示し、作成済みskillの手動登録時だけSkillとPublishを表示する。作業用repository、catalog、INDEX、validation、OS判定は自動管理する。statusは`menu_contract_matches_config: true`、package leaf 1件、manager action 1件、合計2 action、`usable_installed_state: true`を返した。
 - 0.4.0実install: package `SkillMagnet.ContextMenu_0.4.0.0_x64__byy1sc3mfzfz4`を登録し、1 package leaf、Directory/Background、署名済みcommand target、`usable_installed_state: true`を確認した。
