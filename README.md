@@ -58,6 +58,50 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 
 通常は対象folderを右クリックし、Windows Explorerでは`Skill Magnet` → `Skill Library Manager`を選びます。macOS Finderではクイックアクション`Skill Magnet`を開き、画面内の`Skill Library Manager`を選びます。選択したfolderがrepository候補として入力された7画面GUIが開きます。Repository → Skill → Pack & INDEX → Validation → Preview → Publish → Activate & Receiptの順に進み、publishとactivateは別々に明示確認します。
 
+### 7画面の操作ガイド
+
+#### 1. Repository — skill保管庫を作る／接続する
+
+新規作成では保存先と汎用repository名を指定します。既存repositoryを使う場合はGit remoteを入力します。この段階ではGitHubへのpushやSkill Magnet本体の変更はありません。
+
+![Repository画面の入力項目と安全境界](docs/images/skill-library-manager-step-1-repository.png)
+
+#### 2. Skill — skillを作る／取り込む
+
+skillの識別子、表示名、目的、所属packを入力します。Skill IDには英小文字・数字・ハイフンを使用します。既存の`SKILL.md`と`acceptance.json`がある場合だけImport directoryを指定します。
+
+![Skill画面の入力項目](docs/images/skill-library-manager-step-2-skill.png)
+
+#### 3. Pack & INDEX — pack構成とskill関係を確認する
+
+pack内の順序と、`depends-on`、`composes-with`、`contrasts-with`を設定します。`INDEX.md`はここで保存したcatalogから自動生成されます。
+
+![PackとINDEX関係の設定画面](docs/images/skill-library-manager-step-3-pack-index.png)
+
+#### 4. Validation — 公開前の問題を検査する
+
+重複ID、危険なpath、secret候補、必須file、trigger／boundary、依存関係を検査します。エラーが一つでもあれば次へ進みません。PASSしても、この時点ではまだpushも有効化も行いません。
+
+![Fail-closed validation画面](docs/images/skill-library-manager-step-4-validation.png)
+
+#### 5. Preview — 公開予定の差分を作る
+
+製品専用の一時workspaceで、変更file、branch、pack、digest、menu変更の有無を準備・表示します。ここではcommit、push、PR作成、本体有効化を行いません。
+
+![隔離workspaceでのPreview画面](docs/images/skill-library-manager-step-5-preview.png)
+
+#### 6. Publish — PRを公開し、merge後のremoteを検証する
+
+表示された差分が正しい場合だけ確認欄にチェックしてPRを公開します。GitHub上でPRをmergeした後、remoteの実データとSHA-256を再検証します。remote検証だけではSkill Magnet本体へまだ有効化されません。
+
+![Publishとremote検証画面](docs/images/skill-library-manager-step-6-publish.png)
+
+#### 7. Activate & Receipt — 検証済み版をSkill Magnetへ反映する
+
+対象OSと検証済みcommitを確認し、最後の確認欄にチェックして有効化します。本体configを更新し、menu構成が変わる場合だけ右クリックmenuを再登録します。完了結果はreceiptで確認できます。
+
+![有効化とReceipt画面](docs/images/skill-library-manager-step-7-activate-receipt.png)
+
 CLIから直接開く次のcommandも、障害調査やheadless運用の入口として残しています。
 
 ```powershell
