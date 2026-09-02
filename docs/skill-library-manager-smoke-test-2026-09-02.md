@@ -48,7 +48,7 @@ Skill Library ManagerのCLI基本経路、実Windows GUIの通常1画面・最�
 | Step | Screen | Result |
 |---:|---|---|
 | 1 | 標準folderを選択した通常flowはPublishだけ | PASS |
-| 2 | 新規作成flowはSkillとPublish | PASS |
+| 2 | 作成済みskillの手動登録flowはSkillとPublish | PASS |
 
 確認した安全境界:
 

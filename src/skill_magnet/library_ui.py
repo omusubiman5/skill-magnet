@@ -154,7 +154,7 @@ def show_library_manager(
         show_error(exc)
 
     page = pages[0]
-    ttk.Label(page, text="新規skillを作成するか、SKILL.mdとacceptance.jsonをimportします。").grid(
+    ttk.Label(page, text="作成済みskillのSKILL.mdとacceptance.jsonを登録します。").grid(
         row=0, column=0, columnspan=3, sticky="w", pady=(0, 12)
     )
     row(page, 1, "Skill ID", skill_id)

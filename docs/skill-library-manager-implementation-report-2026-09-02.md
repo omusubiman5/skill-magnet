@@ -23,7 +23,7 @@ status: implemented
 - macOS Finderではクイックアクション`Skill Magnet`の共通画面内にある`Skill Library Manager`から開く。
 - GUIの作業用repositoryは製品state内で自動作成・再利用し、保存先、repository名、`Draft directory`を入力させない。右クリックしたfolderに`SKILL.md`がある場合だけskill import候補へ事前入力する。画面を開くだけではpublishもactivateも実行しない。
 - `python -m skill_magnet library ui`でコンパクトなSkill Library Managerを開く。
-- 標準構成のスキルfolderを右クリックした通常flowでは自動import後にPublishだけを表示する。新規作成時だけSkill、Publishの2画面とする。repository、catalog/INDEX、validation、preview、activationの独立画面は設けず、起動・登録・Publish画面内で処理する。
+- 標準構成の作成済みスキルfolderを右クリックした通常flowでは自動import後にPublishだけを表示する。作成済みskillを手動登録する時だけSkill、Publishの2画面とする。repository、catalog/INDEX、validation、preview、activationの独立画面は設けず、起動・登録・Publish画面内で処理する。
 - OSは実行環境から自動判定し、利用者へ選択させない。構成不備、URL不備、validation失敗は操作時のエラーダイアログで停止する。
 - 現在の設定にrepository URLが一意に存在する既存ユーザーには、そのURLをPublish画面へ自動表示する。複数候補は誤選択防止のため自動補完しない。
 - headless/運用用途として`init`、`add`、`validate`、`prepare`、`publish`、`verify-merged`、`activate`、`status`も提供する。
@@ -113,7 +113,7 @@ status: implemented
 | `python -m unittest discover -s tests` | 152 PASS、1 environment-dependent skip |
 | `python -m pip wheel . --no-deps` | PASS、`library_manager.py`と`library_ui.py`のwheel収録を確認 |
 | `git diff --check` | PASS |
-| 実GUIスモーク | PASS、標準folder選択時にPublishだけ、新規作成時にSkillとPublishを表示 |
+| 実GUIスモーク | PASS、標準folder選択時にPublishだけ、作成済みskillの手動登録時にSkillとPublishを表示 |
 
 自動試験ではローカルbare Git remoteを用い、isolated clone、commit、direct push、別cloneからのremote blob検証、config activation、retry、menu failure rollbackまで実行した。GitHub PR経路は`gh pr create`／`gh pr view`へ接続済みであり、実repositoryでは既存GitHub credentialとbranch protectionが最終権限境界になる。
 
