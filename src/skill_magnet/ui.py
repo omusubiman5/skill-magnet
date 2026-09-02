@@ -866,7 +866,7 @@ def show_context_selection(
 
     confirm_button = ttk.Button(root)
     cancel_button = ttk.Button(root, command=root.destroy)
-    manager_button = ttk.Button(root, text="Skill Library Manager")
+    manager_button = ttk.Button(root, text="Library Manager")
 
     def refresh_selection() -> None:
         if not selected_pack.get():

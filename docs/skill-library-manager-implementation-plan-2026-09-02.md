@@ -12,7 +12,7 @@ status: completed
 
 - FR-22をP4の製品入口へ追加する。
 - Windows Explorerのmodern/classic `Skill Magnet`配下へ固定のmanager actionを追加し、選択folderを`library ui --repository`へ一つのargvとして渡す。
-- Finderは既存Quick Actionを維持し、共通選択画面内の`Skill Library Manager`ボタンから同じGUIへ遷移する。
+- Finderは既存Quick Actionを維持し、共通選択画面内の`Library Manager`ボタンから同じGUIへ遷移する。
 - manager actionはpack/skill leaf countへ混入させず、publish/activateの既存明示確認gateを維持する。
 - manifest parser、registry、特殊文字path、CLI prefill、Windows/macOS共通callbackを回帰試験する。
 
