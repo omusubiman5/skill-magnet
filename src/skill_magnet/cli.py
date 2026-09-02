@@ -155,7 +155,7 @@ def _parser() -> argparse.ArgumentParser:
     library_ui.add_argument(
         "--repository",
         type=Path,
-        help="Preselect a skill-library draft directory.",
+        help="Offer a selected SKILL.md folder as the import source.",
     )
     library_init = library_commands.add_parser("init")
     library_init.add_argument("--repository", required=True, type=Path)
@@ -171,7 +171,7 @@ def _parser() -> argparse.ArgumentParser:
     library_validate = library_commands.add_parser("validate")
     library_validate.add_argument("--repository", required=True, type=Path)
     library_prepare = library_commands.add_parser("prepare")
-    library_prepare.add_argument("--draft", required=True, type=Path)
+    library_prepare.add_argument("--library", "--draft", dest="draft", required=True, type=Path)
     library_prepare.add_argument("--remote", required=True)
     library_prepare.add_argument("--transaction-id")
     library_prepare.add_argument("--branch")

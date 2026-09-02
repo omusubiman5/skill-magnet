@@ -17,10 +17,16 @@ from skill_magnet.library_manager import (
     initialize_library,
     validate_library,
 )
-from skill_magnet.library_ui import library_wizard_steps
+from skill_magnet.library_ui import library_wizard_steps, managed_repository_path
 
 
 class LibraryManagerTests(unittest.TestCase):
+    def test_managed_repository_path_is_inside_app_state(self) -> None:
+        self.assertEqual(
+            managed_repository_path(self.root),
+            (self.root / "library" / "skill-magnet-skills").resolve(),
+        )
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)

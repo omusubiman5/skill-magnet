@@ -31,6 +31,11 @@ def library_wizard_steps() -> tuple[str, ...]:
     return LIBRARY_WIZARD_STEPS
 
 
+def managed_repository_path(state_dir: Path) -> Path:
+    """Return the app-owned library workspace; users do not manage this path."""
+    return (state_dir.resolve() / "library" / DEFAULT_REPOSITORY_NAME).resolve()
+
+
 def show_library_manager(
     *,
     config_path: Path,
@@ -55,17 +60,21 @@ def show_library_manager(
     for title, page in zip(LIBRARY_WIZARD_STEPS, pages, strict=True):
         notebook.add(page, text=title)
 
-    repository = tk.StringVar(
-        value=str(initial_repository.resolve()) if initial_repository is not None else ""
-    )
-    repository_name = tk.StringVar(value=DEFAULT_REPOSITORY_NAME)
+    repository = tk.StringVar(value=str(managed_repository_path(state_dir)))
     remote = tk.StringVar()
     skill_id = tk.StringVar()
     display_name = tk.StringVar()
     purpose = tk.StringVar()
     pack_id = tk.StringVar()
     pack_display_name = tk.StringVar()
-    import_source = tk.StringVar()
+    import_source = tk.StringVar(
+        value=(
+            str(initial_repository.resolve())
+            if initial_repository is not None
+            and (initial_repository / "SKILL.md").is_file()
+            else ""
+        )
+    )
     transaction_id = tk.StringVar()
     platform = tk.StringVar(value="windows" if os.name == "nt" else "macos")
     publish_confirmed = tk.BooleanVar(value=False)
@@ -81,11 +90,6 @@ def show_library_manager(
             ttk.Button(page, text="Browse", command=browse).grid(row=number, column=2, padx=4)
         page.columnconfigure(1, weight=1)
 
-    def select_repository() -> None:
-        value = filedialog.askdirectory(title="Select skill library draft")
-        if value:
-            repository.set(value)
-
     def select_import() -> None:
         value = filedialog.askdirectory(title="Select skill directory")
         if value:
@@ -96,39 +100,46 @@ def show_library_manager(
 
     def require_repository() -> Path:
         if not repository.get().strip():
-            raise SkillMagnetError("Repository draft directory is required")
+            raise SkillMagnetError("スキルを保存するフォルダーを指定してください")
         return Path(repository.get()).resolve()
 
     page = pages[0]
     ttk.Label(
         page,
-        text="汎用skill repositoryを新規作成するか、既存draftを接続します。既存名は変更しません。",
+        text=(
+            "Skill Magnetがスキル保管庫をアプリ専用領域に自動で用意します。"
+            "保存場所やrepository名を入力する必要はありません。"
+            "前回の作業があれば、その続きから開きます。ここではGitHubへの送信は行いません。"
+        ),
         wraplength=820,
     ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 12))
-    row(page, 1, "Draft directory", repository, select_repository)
-    row(page, 2, "Repository name", repository_name)
-    row(page, 3, "Git remote", remote)
+    ttk.Label(
+        page,
+        text=(
+            "右クリックしたフォルダーに SKILL.md がある場合は、次の画面の"
+            "「既存スキルを取り込む」候補として自動入力します。"
+        ),
+        wraplength=820,
+    ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 8))
 
-    def initialize() -> None:
+    def initialize_or_open() -> None:
         try:
-            initialized = initialize_library(require_repository(), repository_name.get())
-            messagebox.showinfo("Repository", json.dumps(initialized, ensure_ascii=False, indent=2), parent=root)
-        except Exception as exc:
-            show_error(exc)
-
-    def connect() -> None:
-        try:
-            catalog = json.loads(
-                (require_repository() / CATALOG_FILENAME).read_text(encoding="utf-8")
-            )
-            repository_name.set(str(catalog["repository"]["name"]))
-            messagebox.showinfo("Repository", "Repositoryを接続しました。", parent=root)
+            path = require_repository()
+            catalog_path = path / CATALOG_FILENAME
+            if catalog_path.is_file():
+                json.loads(catalog_path.read_text(encoding="utf-8"))
+                message = "前回のスキル保管庫を開きました。"
+            else:
+                initialize_library(path, DEFAULT_REPOSITORY_NAME)
+                message = "新しいスキル保管庫を用意しました。"
+            messagebox.showinfo("スキル保管庫", message, parent=root)
             notebook.select(1)
         except Exception as exc:
             show_error(exc)
 
-    ttk.Button(page, text="Create", command=initialize).grid(row=4, column=1, sticky="w", pady=12)
-    ttk.Button(page, text="Connect / Next", command=connect).grid(row=4, column=1, sticky="e", pady=12)
+    ttk.Button(page, text="スキル管理を始める", command=initialize_or_open).grid(
+        row=2, column=2, sticky="e", pady=12
+    )
 
     page = pages[1]
     ttk.Label(page, text="新規skillを作成するか、SKILL.mdとacceptance.jsonをimportします。").grid(
@@ -224,13 +235,29 @@ def show_library_manager(
     ttk.Button(page, text="Run fail-closed validation", command=validate).pack(anchor="e", pady=8)
 
     page = pages[4]
+    ttk.Label(
+        page,
+        text=(
+            "公開先のGitHub repositoryを読み取り、送信される変更内容を確認用に作ります。"
+            "この画面ではまだGitHubへファイルを送信しません。"
+        ),
+        wraplength=820,
+    ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+    row(page, 1, "公開先のGitHub URL", remote)
+    ttk.Label(
+        page,
+        text="例: https://github.com/OWNER/skill-magnet-skills.git（実際に送信するのは次の6画面目です）",
+        wraplength=720,
+    ).grid(row=2, column=1, columnspan=2, sticky="w", padx=4, pady=(0, 8))
     preview_output = tk.Text(page, wrap="word", state="disabled")
-    preview_output.pack(fill="both", expand=True)
+    preview_output.grid(row=3, column=0, columnspan=3, sticky="nsew")
+    page.rowconfigure(3, weight=1)
+    page.columnconfigure(1, weight=1)
 
     def prepare() -> None:
         try:
             if not remote.get().strip():
-                raise SkillMagnetError("Git remote is required")
+                raise SkillMagnetError("公開先のGitHub URLを入力してください")
             transaction = LibraryTransaction(state_dir)
             preview = transaction.prepare(
                 draft=require_repository(), remote=remote.get().strip()
@@ -241,7 +268,9 @@ def show_library_manager(
         except Exception as exc:
             show_error(exc)
 
-    ttk.Button(page, text="Prepare isolated preview", command=prepare).pack(anchor="e", pady=8)
+    ttk.Button(page, text="送信前の変更内容を作る", command=prepare).grid(
+        row=4, column=2, sticky="e", pady=8
+    )
 
     page = pages[5]
     row(page, 0, "Transaction ID", transaction_id)

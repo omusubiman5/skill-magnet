@@ -21,7 +21,7 @@ status: implemented
 
 - Windows Explorerでは右クリック`Skill Magnet` → `Skill Library Manager`から直接開く。
 - macOS Finderではクイックアクション`Skill Magnet`の共通画面内にある`Skill Library Manager`から開く。
-- 右クリックしたfolderをrepository候補へ事前入力する。画面を開くだけではpublishもactivateも実行しない。
+- GUIの作業用repositoryは製品state内で自動作成・再利用し、保存先、repository名、`Draft directory`を入力させない。右クリックしたfolderに`SKILL.md`がある場合だけskill import候補へ事前入力する。画面を開くだけではpublishもactivateも実行しない。
 - `python -m skill_magnet library ui`で7画面のSkill Library Managerを開く。
 - 画面順はRepository、Skill、Pack & INDEX、Validation、Preview、Publish、Activate & Receipt。
 - headless/運用用途として`init`、`add`、`validate`、`prepare`、`publish`、`verify-merged`、`activate`、`status`も提供する。
@@ -37,7 +37,7 @@ status: implemented
 
 ### Publish transaction
 
-- 利用者のdraft checkoutは読取り入力に限定し、処理前後のtree digestが一致しなければ停止する。
+- アプリ管理下の未公開libraryは公開処理の読取り入力に限定し、処理前後のtree digestが一致しなければ停止する。
 - 製品state配下のtransaction固有workspaceへcloneし、そこだけを編集・commitする。
 - Windowsの改行変換差を吸収するため、preview digestはworking treeではなくGit index blobから計算する。
 - push後は別のremote-verifier cloneを作り、commitの全対象Git blobを再取得してpreview manifestと比較する。
@@ -100,7 +100,7 @@ status: implemented
 | `tests/test_product_policy.py` | policy境界検証 |
 | `README.md` | GUI/CLI利用手順と安全境界 |
 | `docs/mvp-redesign.md` | canonical policy mirror |
-| `docs/windows-explorer-leaf-launch-results.md` | 現行test count 149とmanager actionへ同期 |
+| `docs/windows-explorer-leaf-launch-results.md` | 現行test count 150とmanager actionへ同期 |
 
 ## 検証結果
 
@@ -108,7 +108,7 @@ status: implemented
 |---|---|
 | `python -m compileall -q src tests` | PASS |
 | `python -m unittest tests.test_library_manager tests.test_product_policy tests.test_results_gate -q` | 18 PASS |
-| `python -m unittest discover -s tests` | 149 PASS、1 environment-dependent skip |
+| `python -m unittest discover -s tests` | 150 PASS、1 environment-dependent skip |
 | `python -m pip wheel . --no-deps` | PASS、`library_manager.py`と`library_ui.py`のwheel収録を確認 |
 | `git diff --check` | PASS |
 | 実GUIスモーク | PASS、7画面すべてを実Windows UIで表示・遷移 |

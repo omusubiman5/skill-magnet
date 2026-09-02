@@ -70,7 +70,9 @@ Skill Library ManagerのCLI基本経路、実Windows GUIの7画面表示、Explo
 | 通常右クリックに`Skill Magnet`が1入口だけ表示 | PASS |
 | サブメニューに`Skill Library Manager`と`Delivery Assurance`の2 action | PASS |
 | `Skill Library Manager`選択で7画面GUIが起動 | PASS |
-| Draft directoryが`C:\Projects\skill-magnet`へ事前入力 | PASS |
+| `Draft directory`、repository名、保存先の入力欄が表示されない | PASS |
+| 作業用repositoryがアプリ専用state内に自動決定される | PASS |
+| 右クリック対象は`SKILL.md`がある場合だけimport候補になる | PASS |
 | 起動だけでrepository作成、publish、activateが行われない | PASS |
 
 インストールstatusは`menu_contract_valid: true`、`menu_contract_matches_config: true`、`menu_leaf_count: 1`、`menu_action_count: 2`、`library_manager_entry_count: 1`、`usable_installed_state: true`だった。

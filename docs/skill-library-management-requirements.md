@@ -138,7 +138,7 @@ Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデ�
 
 ### User Experience
 
-- FR-22: Skill Library ManagerはOSの右クリック`Skill Magnet`入口から開けなければならない。Windows Explorerでは`Skill Magnet`配下の固定actionとして直接選択でき、macOS Finderでは`Skill Magnet`クイックアクションが開く共通画面内から選択できる。いずれも右クリック対象folderをrepository候補へ事前入力するが、publishまたはactivateを自動実行してはならない。
+- FR-22: Skill Library ManagerはOSの右クリック`Skill Magnet`入口から開けなければならない。Windows Explorerでは`Skill Magnet`配下の固定actionとして直接選択でき、macOS Finderでは`Skill Magnet`クイックアクションが開く共通画面内から選択できる。作業用repositoryはアプリ専用state内で自動管理し、利用者へ保存先やrepository名を入力させない。右クリック対象に`SKILL.md`がある場合だけskill import候補へ事前入力し、publishまたはactivateを自動実行してはならない。
 
 基本flowは次の7画面以内とする。
 
@@ -261,7 +261,7 @@ Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデ�
 
 | Dependency | Owner | Status | Impact if Delayed |
 |---|---|---|---|
-| GitHub認証とrepository write権限 | User / GitHub | Required | publish不可、local draftのみ |
+| GitHub認証とrepository write権限 | User / GitHub | Required | publish不可、アプリ内の未公開データのみ |
 | machine-readable pack catalog format | Engineering | 未実装 | 自動config生成不可 |
 | isolated Git transaction engine | Engineering | 一部既存 | 安全なpublish不可 |
 | Explorer/Finder transactional reinstall | Engineering | 既存 | menu反映の自動化不可 |

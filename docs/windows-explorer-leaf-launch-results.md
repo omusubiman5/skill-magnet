@@ -11,7 +11,7 @@
   "release_scope": "one-package-leaf",
   "release_version": "0.5.2",
   "distribution_scope": "local-self-signed",
-  "full_test_count": 149,
+  "full_test_count": 150,
   "menu_leaf_count": 1,
   "menu_action_count": 2,
   "library_manager_entry_count": 1,
@@ -19,7 +19,7 @@
   "pack_skill_count": 9,
   "release_code_sha": "e85975e998555eae84073288db4f4baac81b571e",
   "wheel_payload_sha256": "fbfcdc930714dd9bee82fc8eea06f47bae0eca0ff88fb9cc560db1bedc63510e",
-  "automated_status": "LOCAL_RELEASE_GATE_PASS_149",
+  "automated_status": "LOCAL_RELEASE_GATE_PASS_150",
   "windows_explorer_field_status": "PASS_REAL_RIGHT_CLICK_MENU_AND_CONFIRMATION_UI_0_5_1",
   "macos_finder_field_status": "CI_SEMANTIC_ONLY_REAL_UI_NOT_CLAIMED_FOR_0_5_2",
   "public_distribution_status": "NOT_CLAIMED_REQUIRES_EXTERNAL_PUBLISHER",
@@ -27,7 +27,7 @@
 }
 explorer-results-ledger:end -->
 
-- 統合テスト: `python -m unittest discover -s tests -v` — 149 tests PASS、環境依存1件skip
+- 統合テスト: `python -m unittest discover -s tests -v` — 150 tests PASS、環境依存1件skip
 - menu contract: 1 package leaf / 1 fixed Skill Library Manager action / selection kind `package` / pack内9 skills
 - 自動証拠: contract固定、GitHub固定commitのINDEX/全SKILL参照、archiveのメモリ内検証、deep-link binding、ローカルskill残留ゼロ
 - wheel再現性: 独立した2 directoryで0.4.0 wheelをbuildし、論理payload SHA-256が両方`c9a0ffe8f542fd475144ac8fecd284175a46863d69d1d44ec5be78ed901ba38f`で一致した。
@@ -41,7 +41,7 @@ explorer-results-ledger:end -->
 - Skill Library Manager右クリック入口を追加した0.5.2候補wheelは、独立した2 buildで共通の論理payload SHA-256 `ac29c9cfeef64f3dfda63c46d32641b222b0d1f90d000d83c831888e8b1e684b`を確認した。release codeは`202f16e649cc0ef3146ee554cdc136226eb668f0`である。
 - Skill Library Managerの7画面説明画像とREADME操作ガイドを追加した0.5.2候補wheelは、独立した2 buildで共通の論理payload SHA-256 `fbfcdc930714dd9bee82fc8eea06f47bae0eca0ff88fb9cc560db1bedc63510e`を確認した。release codeは`e85975e998555eae84073288db4f4baac81b571e`である。
 - 実機証拠: 0.5.1 wheelをWindowsへinstallし、modern context menuのstatusが`usable_installed_state: true`、`menu_contract_matches_config: true`、`menu_leaf_count: 1`を返した。File Explorerの`C:\Projects\skill-magnet`背景を実際に右クリックし、`Skill Magnet`→`Delivery Assurance`から`Skill Magnet — 実行確認`画面が起動すること、画面上のproject、pack、用途、実行AI、依頼内容、実行/取消UIを確認した。外部AIへのテスト依頼送信はフィールドUI受入の対象外とし、確認画面を取消で閉じた。実際のTSVはpack ID `codex-delivery-assurance`、表示名`Delivery Assurance`、固定commit `8f12af5ddfdd3b985f26d33dad09d6061d675342`を記録した。
-- Skill Library Manager右クリック実機証拠: 現行sourceからWindows 11 modern拡張をbuild・再登録し、`C:\Projects\skill-magnet` folderを実際に右クリックした。`Skill Magnet`配下に`Skill Library Manager`と`Delivery Assurance`が表示され、manager選択で7画面GUIが起動し、Draft directoryへ選択folderが事前入力された。statusは`menu_contract_matches_config: true`、package leaf 1件、manager action 1件、合計2 action、`usable_installed_state: true`を返した。GUIは書込み操作を行わず閉じた。
+- Skill Library Manager右クリック実機証拠: 現行sourceからWindows 11 modern拡張をbuild・再登録し、`C:\Projects\skill-magnet` folderを実際に右クリックした。`Skill Magnet`配下に`Skill Library Manager`と`Delivery Assurance`が表示され、manager選択で7画面GUIが起動した。現行GUIでは作業用repositoryをアプリ専用state内で自動管理し、保存先入力欄を表示しない。statusは`menu_contract_matches_config: true`、package leaf 1件、manager action 1件、合計2 action、`usable_installed_state: true`を返した。
 - 0.4.0実install: package `SkillMagnet.ContextMenu_0.4.0.0_x64__byy1sc3mfzfz4`を登録し、1 package leaf、Directory/Background、署名済みcommand target、`usable_installed_state: true`を確認した。
 - 0.4.1実installのローカルskill path方式は廃止対象の過去実績であり、現行合格証拠には使用しない。現行版はGitHub固定commit URLとSHA-256だけをpromptへ出力する。
 - Desktop handoff契約: promptは全SKILL.mdと存在する場合だけINDEXの全文読了、最低1つのskill規則の実作業への適用、実依頼の完了を必須化し、読了・説明・一覧・準備確認だけでの終了を禁止する。
