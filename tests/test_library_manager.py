@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from skill_magnet import library_manager as manager_module
 from skill_magnet.cli import main as cli_main
 from skill_magnet.core import SkillMagnetError
 from skill_magnet.library_manager import (
@@ -423,6 +424,127 @@ class LibraryManagerTests(unittest.TestCase):
             active_status["platforms"]["macos"],
         )
         self.assertEqual(transaction.activate(config_path=config_path, confirmed=True), receipt)
+
+    def test_publish_overlays_library_and_preserves_existing_repository_files(self) -> None:
+        seed, remote = self.make_remote()
+        (seed / "README.md").write_text("keep this documentation\n", encoding="utf-8")
+        (seed / "audit").mkdir()
+        (seed / "audit" / "release.json").write_text('{"keep": true}\n', encoding="utf-8")
+        (seed / "legacy-skill").mkdir()
+        (seed / "legacy-skill" / "SKILL.md").write_text(
+            "---\nname: legacy-skill\ndescription: Existing remote skill\n---\n\n"
+            "# Legacy\n\n## Trigger\n\nExisting use.\n\n## Boundary\n\nDo not modify.\n",
+            encoding="utf-8",
+        )
+        (seed / "legacy-skill" / "acceptance.json").write_text(
+            '{"version": 1, "assertions": [{"path": "result.applied", "equals": true}]}\n',
+            encoding="utf-8",
+        )
+        self.git(seed, "add", "--all")
+        self.git(
+            seed,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "add unmanaged files",
+        )
+        self.git(seed, "push", str(remote), "main")
+        draft = self.make_library("overlay-draft")
+        add_skill(
+            draft,
+            skill_id="second-skill",
+            display_name="Second skill",
+            purpose="Apply a second bounded operation",
+            pack_id="starter-pack",
+        )
+        transaction = LibraryTransaction(self.root / "state", "transaction-overlay")
+        preview = transaction.prepare(draft=draft, remote=str(remote), branch="main")
+        self.assertFalse(any(line[:2].find("D") >= 0 for line in preview["changed_files"]))
+        self.assertEqual((transaction.workspace / "README.md").read_text(), "keep this documentation\n")
+        transaction.publish(confirmed=True, direct=True, create_pr=False)
+        checkout = self.root / "published-checkout"
+        subprocess.run(["git", "clone", str(remote), str(checkout)], check=True, capture_output=True)
+        self.assertEqual((checkout / "README.md").read_text(), "keep this documentation\n")
+        self.assertTrue((checkout / "audit" / "release.json").is_file())
+        self.assertTrue((checkout / "legacy-skill" / "SKILL.md").is_file())
+
+    def test_prepare_fails_closed_if_a_future_change_deletes_remote_files(self) -> None:
+        seed, remote = self.make_remote()
+        (seed / "README.md").write_text("must survive\n", encoding="utf-8")
+        self.git(seed, "add", "README.md")
+        self.git(
+            seed,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "protected file",
+        )
+        self.git(seed, "push", str(remote), "main")
+        draft = self.root / "delete-draft"
+        subprocess.run(["git", "clone", str(remote), str(draft)], check=True, capture_output=True)
+        original_copy = manager_module._copy_library
+
+        def unsafe_copy(source: Path, destination: Path, managed_paths: object) -> None:
+            original_copy(source, destination, managed_paths)
+            (destination / "README.md").unlink()
+
+        transaction = LibraryTransaction(self.root / "state", "transaction-delete")
+        with mock.patch.object(manager_module, "_copy_library", side_effect=unsafe_copy):
+            with self.assertRaisesRegex(SkillMagnetError, "既存GitHubファイルを削除"):
+                transaction.prepare(draft=draft, remote=str(remote), branch="main")
+
+    def test_recover_and_abandon_keep_user_control_after_interruption(self) -> None:
+        _, remote = self.make_remote()
+        draft = self.root / "recover-draft"
+        subprocess.run(["git", "clone", str(remote), str(draft)], check=True, capture_output=True)
+        add_skill(
+            draft,
+            skill_id="recovered-skill",
+            display_name="Recovered",
+            purpose="Recover an interrupted operation",
+            pack_id="starter-pack",
+        )
+        transaction = LibraryTransaction(self.root / "state", "transaction-recover")
+        transaction.prepare(draft=draft, remote=str(remote), branch="main")
+        self.assertEqual(transaction.cleanup(), [])
+        recovered = transaction.recover()
+        self.assertEqual(recovered["status"], "prepared")
+        self.assertTrue(recovered["workspace_rebuilt"])
+        self.assertTrue(transaction.workspace.is_dir())
+        with self.assertRaisesRegex(SkillMagnetError, "確認"):
+            transaction.abandon(confirmed=False)
+        abandoned = transaction.abandon(confirmed=True)
+        self.assertEqual(abandoned["status"], "abandoned")
+        self.assertTrue(transaction.journal_path.is_file())
+        self.assertFalse(transaction.workspace.exists())
+
+    def test_cleanup_retries_windows_access_denied_without_losing_journal(self) -> None:
+        transaction = LibraryTransaction(self.root / "state", "transaction-cleanup")
+        transaction.root.mkdir(parents=True)
+        transaction.verifier.mkdir()
+        (transaction.verifier / "locked.idx").write_text("temporary", encoding="utf-8")
+        transaction._write_journal(transaction._journal())
+        original_rmtree = shutil.rmtree
+        calls = 0
+
+        def fail_once(path: Path, *args: object, **kwargs: object) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise PermissionError(5, "access denied", str(path))
+            original_rmtree(path, *args, **kwargs)
+
+        with mock.patch.object(manager_module.shutil, "rmtree", side_effect=fail_once):
+            self.assertEqual(transaction.cleanup(), [])
+        self.assertGreaterEqual(calls, 2)
+        self.assertTrue(transaction.journal_path.is_file())
+        self.assertFalse(transaction.verifier.exists())
 
     def test_activation_failure_restores_previous_config(self) -> None:
         seed, remote = self.make_remote()

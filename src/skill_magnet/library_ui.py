@@ -14,6 +14,7 @@ from .library_manager import (
     discover_skill_sources,
     import_skill_source,
     initialize_library,
+    list_transactions,
     validate_library,
 )
 
@@ -161,7 +162,7 @@ def show_library_manager(
         raise SkillMagnetError("Tk is required for the Skill Library Manager UI") from exc
 
     root = tk.Tk()
-    root.title("Skill Magnet — Skill Library Manager")
+    root.title("Library Manager")
     root.geometry("920x680")
     root.minsize(760, 560)
     page = ttk.Frame(root, padding=12)
@@ -210,6 +211,52 @@ def show_library_manager(
 
     def show_error(exc: Exception) -> None:
         messagebox.showerror("Skill Library Manager", str(exc), parent=root)
+
+    def abandon_current() -> None:
+        if not transaction_id.get().strip():
+            return
+        abandoned = transaction().abandon(confirmed=True)
+        set_text(preview_output, abandoned)
+        transaction_id.set("")
+        set_stage("prepare")
+
+    def handle_transaction_error(exc: Exception, failed_stage: str) -> None:
+        """Give every interrupted transaction a user-controlled exit path."""
+        if not transaction_id.get().strip():
+            show_error(exc)
+            return
+        choice = messagebox.askyesnocancel(
+            "途中で処理が止まりました",
+            f"{exc}\n\n"
+            "「はい」: 保存済みの状態から復旧して、同じ処理を再試行\n"
+            "「いいえ」: このローカル作業を破棄して最初からやり直す\n"
+            "「キャンセル」: 状態を保存したまま画面へ戻る\n\n"
+            "公開済みのGitHub branchやPRは自動削除しません。",
+            parent=root,
+        )
+        if choice is True:
+            try:
+                recovered = transaction().recover()
+                set_text(preview_output, recovered)
+                recovered_stage = {
+                    "prepared": "publish",
+                    "published_pending": "verify",
+                    "verified": "activate",
+                }.get(str(recovered.get("status")), failed_stage)
+                set_stage(recovered_stage)
+                root.after(0, run_current_action)
+            except Exception as recovery_error:
+                show_error(recovery_error)
+        elif choice is False and messagebox.askyesno(
+            "この作業を破棄",
+            "ローカルの一時作業を破棄して最初からやり直しますか？\n"
+            "GitHubへ送信済みの内容は残ります。",
+            parent=root,
+        ):
+            try:
+                abandon_current()
+            except Exception as abandon_error:
+                show_error(abandon_error)
 
     def require_repository() -> Path:
         if not repository.get().strip():
@@ -287,19 +334,24 @@ def show_library_manager(
     publish_frame.columnconfigure(1, weight=1)
 
     def prepare() -> None:
+        current: LibraryTransaction | None = None
         try:
             if not remote.get().strip():
                 raise SkillMagnetError("公開先のGitHub URLを入力してください")
-            transaction = LibraryTransaction(state_dir)
+            current = LibraryTransaction(state_dir)
+            transaction_id.set(current.transaction_id)
             validate_library(require_repository())
-            preview = transaction.prepare(
+            preview = current.prepare(
                 draft=require_repository(), remote=remote.get().strip()
             )
-            transaction_id.set(transaction.transaction_id)
             set_text(preview_output, preview)
             set_stage("publish")
         except Exception as exc:
-            show_error(exc)
+            if current is not None and current.journal_path.is_file():
+                handle_transaction_error(exc, "prepare")
+            else:
+                transaction_id.set("")
+                show_error(exc)
 
     def transaction() -> LibraryTransaction:
         if not transaction_id.get().strip():
@@ -319,7 +371,7 @@ def show_library_manager(
             set_text(preview_output, published)
             set_stage("verify")
         except Exception as exc:
-            show_error(exc)
+            handle_transaction_error(exc, "publish")
 
     def verify_merged() -> None:
         try:
@@ -327,7 +379,7 @@ def show_library_manager(
             set_text(preview_output, verified)
             set_stage("activate")
         except Exception as exc:
-            show_error(exc)
+            handle_transaction_error(exc, "verify")
 
     def activate() -> None:
         nonlocal result
@@ -351,7 +403,7 @@ def show_library_manager(
             set_stage("complete")
             messagebox.showinfo("Skill Library Manager", "有効化が完了しました。", parent=root)
         except Exception as exc:
-            show_error(exc)
+            handle_transaction_error(exc, "activate")
 
     def set_stage(value: str) -> None:
         action_stage.set(value)
@@ -377,6 +429,44 @@ def show_library_manager(
         command=run_current_action,
     )
     action_button.grid(row=4, column=0, columnspan=3, sticky="e", pady=(8, 0))
+
+    def offer_interrupted_transaction() -> None:
+        try:
+            candidates = [
+                item
+                for item in list_transactions(state_dir, config_path)["transactions"]
+                if item["status"]
+                in {"unpublished_edit", "published_pending", "published_but_inactive", "interrupted"}
+            ]
+            if not candidates:
+                return
+            latest = max(candidates, key=lambda item: str(item.get("updated_at", "")))
+            transaction_id.set(str(latest["transaction_id"]))
+            choice = messagebox.askyesnocancel(
+                "途中の作業があります",
+                f"前回の作業（{latest['transaction_id']}）を再開できます。\n\n"
+                "「はい」: 復旧して再開\n"
+                "「いいえ」: ローカル作業を破棄して最初から\n"
+                "「キャンセル」: 状態を残したまま閉じる",
+                parent=root,
+            )
+            if choice is True:
+                recovered = transaction().recover()
+                set_text(preview_output, recovered)
+                stage = {
+                    "prepared": "publish",
+                    "published_pending": "verify",
+                    "verified": "activate",
+                }.get(str(recovered.get("status")), str(latest.get("resume_stage", "prepare")))
+                set_stage(stage)
+            elif choice is False:
+                abandon_current()
+            else:
+                root.destroy()
+        except Exception as exc:
+            show_error(exc)
+
+    root.after(0, offer_interrupted_transaction)
 
     root.mainloop()
     return result

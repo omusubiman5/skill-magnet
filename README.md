@@ -72,6 +72,8 @@ Windows Explorerでは登録元フォルダーを右クリックして`Skill Mag
 
 現在使っているスキル保管庫が1つなら、そのGitHub URLを既存設定から自動表示します。初回または別の保管庫へ変える時だけURLを入力します。操作ボタンは常に1個だけです。最初は`送信内容を確認する`と表示され、検査が終わると同じ場所のボタンが`GitHubへ送る`、`GitHubのマージを確認する`、`Skill Magnetへ反映`の順に切り替わります。今の段階で押せない操作は表示されません。不足や不正があればエラーダイアログで止まり、GitHubへは送りません。OSはアプリが自動判定し、反映失敗時は直前の正常な状態へ戻します。
 
+途中でGit、Windows、通信などのエラーが起きた場合は、同じ画面で「復旧して再試行」「ローカル作業を破棄して最初から」「状態を保存して後で再開」を選べます。アプリを閉じても、次回起動時に未完了作業を検出して同じ選択肢を表示します。ローカル作業を破棄しても、すでにGitHubへ送ったbranchやPRは勝手に削除しません。公開処理は管理対象ファイルだけを上書きし、GitHubに元からあるREADME、監査資料、テスト資料などを削除しません。削除差分が1件でも検出された場合は送信前に停止します。
+
 ![フォルダー登録とGitHub公開を一つにまとめた画面](docs/images/skill-library-manager-step-1-skill.png)
 
 CLIから直接開く次のcommandも、障害調査やheadless運用の入口として残しています。
@@ -104,6 +106,12 @@ python -m skill_magnet library activate --transaction-id TRANSACTION_ID --confir
 
 # 状態一覧
 python -m skill_magnet library status
+
+# GUIを開けない場合も、同じtransactionを復旧できる
+python -m skill_magnet library recover --transaction-id TRANSACTION_ID
+
+# ローカルの一時作業だけを破棄する（GitHub上のbranch／PRは保持）
+python -m skill_magnet library abandon --transaction-id TRANSACTION_ID --confirm
 ```
 
 `publish`と`activate`はそれぞれ確認なしでは動きません。default branchへの直接pushは、`prepare --branch <default-branch>`と`publish --direct --no-pr --confirm`を両方明示し、repository policyがpushを許可した場合だけ成立します。PR未merge、remote digest不一致、secret候補、symlink、path traversal、dependency cycle、同一pack内のcontrastは有効化されません。GitHub tokenを引数、config、journal、receiptへ保存しません。
@@ -114,6 +122,8 @@ python -m skill_magnet library status
 - [実装計画](docs/skill-library-manager-implementation-plan-2026-09-02.md)
 - [実装報告](docs/skill-library-manager-implementation-report-2026-09-02.md)
 - [スモークテスト結果](docs/skill-library-manager-smoke-test-2026-09-02.md)
+- [Windowsアクセス拒否の原因調査](docs/root-cause-library-manager-winerror5-2026-09-03.md)
+- [中断復旧の実装・対応報告](docs/library-manager-recovery-implementation-report-2026-09-03.md)
 - [Claude Codeデスクトップアプリ handoff対応報告](docs/claude-code-desktop-handoff-report-2026-09-02.md)
 - [skill repository契約](docs/skill-repository-contract.md)
 

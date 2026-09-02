@@ -135,6 +135,7 @@ Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデ�
 - FR-19: 本体lock更新またはメニュー再登録が途中失敗した場合、直前のlockとmenuを復元し、部分成功を完了表示してはならない。
 - FR-20: アプリはremote HEAD、検証済みcommit、現在有効なcommit、未公開編集、published-but-inactive更新を区別して表示しなければならない。
 - FR-21: retryは同じtransaction IDを使用し、同じcommitを重複作成・重複push・重複登録してはならない。
+- FR-23: どの処理段階で中断してもjournalから再開でき、GUIとCLIの両方で「同じ処理を再試行」「ローカル作業を破棄」「状態を保持して後で再開」を利用者自身が選べなければならない。破棄はremote branch／PRを暗黙に削除してはならない。公開は管理対象ファイルのoverlayに限定し、既存remoteファイルの削除差分をfail-closedで拒否しなければならない。
 
 ### User Experience
 
