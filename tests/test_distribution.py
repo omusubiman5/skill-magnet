@@ -110,7 +110,7 @@ print(json.dumps({
             self.assertTrue(result["config"])
             self.assertTrue(result["native"])
             self.assertTrue(result["package_script"])
-            self.assertEqual(result["leaves"], 1)
+            self.assertEqual(result["leaves"], 3)
             self.assertTrue(result["command_uses_installed_package"], result)
 
     def test_python_and_msix_versions_are_synchronized(self) -> None:

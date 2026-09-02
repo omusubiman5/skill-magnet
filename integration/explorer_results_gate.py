@@ -24,22 +24,22 @@ def parse_ledger(text: str) -> dict[str, object]:
 def validate_consistency(text: str, *, observed_test_count: int,
                          observed_leaf_count: int,
                          observed_selection_kinds: list[str],
-                         observed_pack_skill_count: int,
+                         observed_pack_skill_counts: list[int],
                          observed_version: str | None = None) -> list[str]:
     ledger = parse_ledger(text)
     errors: list[str] = []
     expected = {"full_test_count": observed_test_count,
                 "menu_leaf_count": observed_leaf_count,
                 "selection_kinds": observed_selection_kinds,
-                "pack_skill_count": observed_pack_skill_count}
+                "pack_skill_counts": observed_pack_skill_counts}
     for key, actual in expected.items():
         if ledger.get(key) != actual:
             errors.append(f"{key} mismatch: ledger={ledger.get(key)!r}, observed={actual!r}")
     summary = re.search(r"統合テスト: .*?— (\d+) tests PASS", text)
     if summary is None or int(summary.group(1)) != observed_test_count:
         errors.append("human-readable test count mismatch")
-    if ledger.get("release_scope") != "one-package-leaf":
-        errors.append("release_scope must be one-package-leaf")
+    if ledger.get("release_scope") != "package-leaves":
+        errors.append("release_scope must be package-leaves")
     if observed_version is not None:
         required_release_state = {
             "release_version": observed_version,
@@ -173,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
         observed_selection_kinds=sorted(
             {config.packs[leaf.pack_id].selection_kind for leaf in leaves}
         ),
-        observed_pack_skill_count=len(leaves[0].skill_ids) if leaves else 0,
+        observed_pack_skill_counts=sorted(len(leaf.skill_ids) for leaf in leaves),
         observed_version=project_version)
     errors.extend(
         validate_release_provenance(repository, parse_ledger(results_text), args.wheel)

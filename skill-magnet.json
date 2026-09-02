@@ -63,6 +63,139 @@
         "codex-mcp-control-plane",
         "codex-sandbox-approval-boundary"
       ]
+    },
+    {
+      "id": "codex-cli",
+      "menu_label": "Codex CLI Official Documentation",
+      "selection_kind": "package",
+      "repo_url": "https://github.com/omusubiman5/codex-pmo-skills.git",
+      "expected_commit": "66de8f309ca27825435b2d72b45432edc79c4a7b",
+      "purpose": "Imported skill pack: Codex CLI Official Documentation",
+      "approved_by": "Skill Library Manager",
+      "approved_at": "2026-09-02T23:28:47.315981+00:00",
+      "skill_metadata": {
+        "codex-execution-mode-routing": {
+          "display_name": "対話・自動化・cloudの実行形態選択",
+          "purpose": "Codex作業を対話型CLI、codex exec、Codex cloudのどこで実行するか決めるときに使う。「CIで回したい」「バックグラウンドへ委譲」「terminalで反復」「interactive / non-interactive / cloud」が信号。出力形式の設計だけ、subagentへの分解だけ、既に実行面が確定した作業には使わない。"
+        },
+        "codex-exec-io-contract": {
+          "display_name": "非対話実行の入出力契約化",
+          "purpose": "codex execをCI・script・他processへ接続し、stdout、stderr、JSONL、output schema、file artifactの契約を決めるときに使う。「JSONで受けたい」「進捗と最終値を分ける」「stdinを渡す」「downstreamでparse」が信号。実行面の選択、権限設計、自由な対話だけには使わない。"
+        },
+        "codex-ci-patch-handoff": {
+          "display_name": "CI修正の権限分離とpatch受け渡し",
+          "purpose": "CIでCodexに修正を生成させる一方、API key、repository write、署名・PR作成を同じjobへ置きたくないときに使う。「read-only job」「patch artifact」「別jobでpush」「secretをtestから隔離」が信号。通常のlocal修正、構造化JSON出力だけ、CI以外の一般論には使わない。"
+        },
+        "codex-sandbox-approval-boundary": {
+          "display_name": "sandboxとapprovalの二層境界設計",
+          "purpose": "Codex runのfilesystem・command・network能力と、人の承認が必要な昇格を設計するときに使う。「read-only / workspace-write」「approval policy」「sandboxを緩めたい」「danger-full-access」が信号。外向き通信先の個別統制、CI job間のsecret分離、認証方式だけには使わない。"
+        },
+        "codex-egress-surface-governance": {
+          "display_name": "複数通信経路を個別統制する脅威モデル",
+          "purpose": "Codexのweb search、sandboxed command network、MCP、direct HTTPを区別して外向き通信を監査・制限するときに使う。「domain allowlist」「cached vs live search」「proxy policy」「MCPも外へ出る？」が信号。filesystem権限だけ、認証方式だけ、単なるWeb検索依頼には使わない。"
+        },
+        "codex-auth-boundary-selection": {
+          "display_name": "認証方式を利用面と統制境界へ対応させる",
+          "purpose": "CodexのChatGPT sign-in、API key、device code、localhost callback、auth.json移送を、interactive端末・headless host・CIへ割り当てるときに使う。「headless login」「CODEX_API_KEY」「auth.jsonをコピー」「CI credential」が信号。repository権限分離全体、MCP OAuth、通常のaccount問い合わせだけには使わない。"
+        },
+        "codex-mcp-control-plane": {
+          "display_name": "MCP接続の必須性・tool範囲・承認の三段階制御",
+          "purpose": "CodexへMCP serverを接続し、必須性、enabled/disabled tools、tool approvalを別々に設定するときに使う。「MCPが落ちたら失敗させる」「read toolだけ見せる」「toolごとに承認」「required server」が信号。接続先を選ぶだけ、一般network allowlist、MCPを使わないlocal作業には使わない。"
+        },
+        "codex-context-entry-routing": {
+          "display_name": "外部文脈の入口選択",
+          "purpose": "Codexへ必要文脈を渡す入口を、画像、cached/live web search、MCP、既存conversationから選ぶときに使う。目的が曖昧な画像依頼では入口を認識した上でtask contractを補う。「screenshotを見せる」「最新情報が必要」「社内資料をMCPで読む」「前taskをresume」が信号。取得経路のsecurity policyだけ、subagent分解だけ、既に十分なlocal contextがある作業には使わない。"
+        },
+        "codex-bounded-subagents": {
+          "display_name": "bounded subagentへの分解と要約再統合",
+          "purpose": "大きなCodex作業を、競合しにくいread-heavyな役割へ分け、各subagentのinstructions・model・sandbox・toolsを限定して親へ要約統合するときに使う。「subagentで並列調査」「役割を分ける」「同じfileを触らせたくない」が信号。cloudへの非同期委譲、単一agentで十分な小作業、write-heavyな同時編集には使わない。"
+        }
+      },
+      "skills": [
+        "codex-execution-mode-routing",
+        "codex-exec-io-contract",
+        "codex-ci-patch-handoff",
+        "codex-sandbox-approval-boundary",
+        "codex-egress-surface-governance",
+        "codex-auth-boundary-selection",
+        "codex-mcp-control-plane",
+        "codex-context-entry-routing",
+        "codex-bounded-subagents"
+      ]
+    },
+    {
+      "id": "conflict-clarity",
+      "menu_label": "conflict-clarity",
+      "selection_kind": "package",
+      "repo_url": "https://github.com/omusubiman5/codex-pmo-skills.git",
+      "expected_commit": "66de8f309ca27825435b2d72b45432edc79c4a7b",
+      "purpose": "悩み、葛藤、自己矛盾、価値判断、継続、対話、境界線を扱う11個の実行skillを、相互リンクを保った一つのライブラリとして使う。ユーザーが$conflict-clarity、このライブラリ、またはリンク済みskillの使用を明示したときに使用する。危機時は通常実行を停止し、該当skillがなければ無理に適用しない。子skill名の羅列で終えず、確認できる情報の範囲で実行手順を具体化する。",
+      "approved_by": "Skill Library Manager",
+      "approved_at": "2026-09-02T23:28:47.315981+00:00",
+      "skill_metadata": {
+        "conflict-clarity": {
+          "display_name": "conflict-clarity",
+          "purpose": "悩み、葛藤、自己矛盾、価値判断、継続、対話、境界線を扱う11個の実行skillを、相互リンクを保った一つのライブラリとして使う。ユーザーが$conflict-clarity、このライブラリ、またはリンク済みskillの使用を明示したときに使用する。危機時は通常実行を停止し、該当skillがなければ無理に適用しない。子skill名の羅列で終えず、確認できる情報の範囲で実行手順を具体化する。"
+        },
+        "emotion-to-protected-value": {
+          "display_name": "矛盾感情から守りたい価値を逆算する",
+          "purpose": "相反する感情、涙、迷いが同時にあり、賛成／反対を決め切れないときに使う。『どちらも本音』『気持ちが矛盾する / conflicted』が信号。感情を消すのでなく、双方が守る価値を特定する。単純な情報不足や緊急安全判断には使わない。"
+        },
+        "imperfect-understanding-dialogue": {
+          "display_name": "完全理解を待たずに関係を作る",
+          "purpose": "相手を完全には理解できないが、関係を切らず対話を始めたいときに使う。『分からないから何も言えない』『誤解が怖い / I may misunderstand』が信号。推測を明示し、小さな確認と応答を反復する。危険な相手との接触再開には使わない。"
+        },
+        "protected-object-boundary-test": {
+          "display_name": "自己犠牲か回避かを保護対象で判定する",
+          "purpose": "我慢や沈黙を『相手のため』と説明しているが、自己消去や拒絶回避かもしれないときに使う。『私が我慢すれば』『I don’t want to burden them』が信号。実際の保護対象と回避対象を分ける。虐待状況では対話より安全確保を優先する。"
+        },
+        "gradient-beyond-binary": {
+          "display_name": "二択を連続量へ戻すグラデーション思考",
+          "purpose": "善悪、賛否、続ける／辞めるなどの二択が現実を潰しているときに使う。『どちらとも言えない』『all-or-nothing』が信号。両極間の程度・条件・時間変化を可視化する。法的・安全上明確な禁止線を曖昧にする用途には使わない。"
+        },
+        "purpose-impact-justice-audit": {
+          "display_name": "正しさを目的と影響で監査する",
+          "purpose": "正義・信念・規則に基づく行為が、守るはずの相手を傷つけていないか疑うときに使う。『正しいはずなのに被害が出る』『ends vs means』が信号。目的、実影響、代替手段を監査する。違法行為の隠蔽や責任回避には使わない。"
+        },
+        "non-ranking-multiple-values": {
+          "display_name": "複数の大切を安易に順位付けしない",
+          "purpose": "複数の大切な人・役割・願いを一位だけに絞るよう迫られたときに使う。『どちらが大切』『choose one』が信号。本当に排他的な制約かを調べ、複数価値を守る手段を先に探索する。緊急時の明確な優先順位まで拒む用途には使わない。"
+        },
+        "adaptive-continuity": {
+          "display_name": "変えない価値のために手段を更新する",
+          "purpose": "守りたい理念・関係・願いは変えたくない一方、今の方法が機能しないときに使う。『初心を失いたくない』『変わると裏切りになる / adapt without losing values』が信号。核と手段を分離して更新する。価値自体が有害な場合には使わない。"
+        },
+        "regret-to-present-commitment": {
+          "display_name": "過去の反実仮想を現在の約束へ変える",
+          "purpose": "『あの時こうしていれば』という反実仮想を繰り返し、現在の行動が止まっているときに使う。『もし戻れたら / if only』が信号。後悔が示す価値を、今の約束と再発防止へ翻訳する。喪失直後に意味や行動を強制しない。"
+        },
+        "future-authored-meaning": {
+          "display_name": "痛みへ後から意味を付与する",
+          "purpose": "痛みや失敗に今すぐ意味を見いだせず、無意味だったと断定しそうなときに使う。『何の意味があった』『wasted pain』が信号。痛みを美化せず、後の選択が過去の働きを変える余地を保つ。悲嘆中の人へ成長物語を強制しない。"
+        },
+        "restart-as-continuation": {
+          "display_name": "再始動をゼロではなく経験の続きと捉える",
+          "purpose": "失敗・中断後の再挑戦を『またゼロから』と感じて始められないときに使う。『全部やり直し』『back to square one』が信号。前回の学習・関係・制約を持ち越し、再開を継続の一周として設計する。撤退が最善な案件には使わない。"
+        },
+        "possibility-under-uncertainty": {
+          "display_name": "確信ではなく可能性を行動根拠にする",
+          "purpose": "確信や成功保証がないことを理由に、試行もせず断念しそうなときに使う。『保証がない』『what if it fails』が信号。良い結果だけでなく悪い状態の永続も未確定だと対称に見て、損失限定の試行を作る。重大リスクを楽観視する用途には使わない。"
+        }
+      },
+      "skills": [
+        "conflict-clarity",
+        "emotion-to-protected-value",
+        "imperfect-understanding-dialogue",
+        "protected-object-boundary-test",
+        "gradient-beyond-binary",
+        "purpose-impact-justice-audit",
+        "non-ranking-multiple-values",
+        "adaptive-continuity",
+        "regret-to-present-commitment",
+        "future-authored-meaning",
+        "restart-as-continuation",
+        "possibility-under-uncertainty"
+      ]
     }
   ]
 }

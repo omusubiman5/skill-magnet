@@ -1763,20 +1763,22 @@ class ActivationEndToEndTest(unittest.TestCase):
             self.assertEqual(leaf.pack_label, f"Pack: {leaf.pack_id}")
             self.assertEqual(leaf.skill_label, f"Skill: {leaf.skill_id}")
 
-    def test_product_menu_has_one_pack_leaf_bound_to_all_nine_skills(self) -> None:
+    def test_product_menu_has_one_leaf_per_active_pack(self) -> None:
         product_config = Path(__file__).resolve().parents[1] / "skill-magnet.json"
         leaves = windows_menu_leaves(product_config, "%1")
-        self.assertEqual(len(leaves), 1)
-        leaf = leaves[0]
-        self.assertEqual(leaf.pack_id, "codex-delivery-assurance")
-        self.assertIsNone(leaf.skill_id)
-        self.assertEqual(len(leaf.skill_ids), 9)
-        self.assertEqual(leaf.display_name, "Delivery Assurance")
-        self.assertEqual(leaf.skill_label, "Skill Pack: Delivery Assurance")
-        self.assertNotIn("--skill", leaf.command)
-        self.assertNotIn("--runtime", leaf.command)
-        self.assertIn("--menu-instruction-digest", leaf.command)
-        self.assertIn("--menu-acceptance-digest", leaf.command)
+        self.assertEqual(len(leaves), 3)
+        self.assertEqual(
+            {leaf.pack_id for leaf in leaves},
+            {"codex-delivery-assurance", "codex-cli", "conflict-clarity"},
+        )
+        self.assertEqual(sorted(len(leaf.skill_ids) for leaf in leaves), [9, 9, 12])
+        for leaf in leaves:
+            self.assertIsNone(leaf.skill_id)
+            self.assertTrue(leaf.skill_label.startswith("Skill Pack: "))
+            self.assertNotIn("--skill", leaf.command)
+            self.assertNotIn("--runtime", leaf.command)
+            self.assertIn("--menu-instruction-digest", leaf.command)
+            self.assertIn("--menu-acceptance-digest", leaf.command)
         for root_name, entry_builder in (
             ("Directory", windows_directory_registry_entries),
             ("Background", windows_background_registry_entries),
@@ -1786,14 +1788,14 @@ class ActivationEndToEndTest(unittest.TestCase):
                 command_keys = [
                     key for key, _, _ in entries if key.endswith(r"\command")
                 ]
-                self.assertEqual(len(command_keys), 2)
+                self.assertEqual(len(command_keys), 4)
                 leaf_command_keys = [
                     key for key in command_keys if r"\shell\leaf-" in key
                 ]
                 manager_command_keys = [
                     key for key in command_keys if r"\shell\library-manager" in key
                 ]
-                self.assertEqual(len(leaf_command_keys), 1)
+                self.assertEqual(len(leaf_command_keys), 3)
                 self.assertEqual(len(manager_command_keys), 1)
                 self.assertTrue(
                     all(

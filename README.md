@@ -194,8 +194,8 @@ python -m skill_magnet context-menu-status --platform windows
   "command_target_signature_valid": true,
   "self_signed_launcher_referenced": false,
   "deprecated_launcher_exists": false,
-  "menu_leaf_count": 1,
-  "menu_action_count": 2,
+  "menu_leaf_count": 3,
+  "menu_action_count": 4,
   "library_manager_entry_count": 1,
   "usable_installed_state": true
 }
