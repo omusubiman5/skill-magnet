@@ -17,8 +17,8 @@
   "library_manager_entry_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
-  "release_code_sha": "e85975e998555eae84073288db4f4baac81b571e",
-  "wheel_payload_sha256": "fbfcdc930714dd9bee82fc8eea06f47bae0eca0ff88fb9cc560db1bedc63510e",
+  "release_code_sha": "8232fdedb892d15a89f2181ecff4f8f66b15e877",
+  "wheel_payload_sha256": "337c81ac557ceb0109993a09416c08f5bec44f4b9757e5a06110568826184dcb",
   "automated_status": "LOCAL_RELEASE_GATE_PASS_150",
   "windows_explorer_field_status": "PASS_REAL_RIGHT_CLICK_MENU_AND_CONFIRMATION_UI_0_5_1",
   "macos_finder_field_status": "CI_SEMANTIC_ONLY_REAL_UI_NOT_CLAIMED_FOR_0_5_2",
@@ -40,6 +40,7 @@ explorer-results-ledger:end -->
 - Claude実行先を公式`claude://code/new`経路へ変更し、Codex Desktopアプリ／Claude Codeデスクトップアプリの二ターゲットを明記した0.5.2候補wheelは、独立した2 buildで共通の論理payload SHA-256 `c79ffa8f81b9f086dc7bdaace4a357b7b8108dc1bfad88ff030b6555fb7b3a3f`を確認した。release codeは`6f5f1b7d39a653ef229b05ca45e8463d6bb0e16b`である。
 - Skill Library Manager右クリック入口を追加した0.5.2候補wheelは、独立した2 buildで共通の論理payload SHA-256 `ac29c9cfeef64f3dfda63c46d32641b222b0d1f90d000d83c831888e8b1e684b`を確認した。release codeは`202f16e649cc0ef3146ee554cdc136226eb668f0`である。
 - Skill Library Managerの7画面説明画像とREADME操作ガイドを追加した0.5.2候補wheelは、独立した2 buildで共通の論理payload SHA-256 `fbfcdc930714dd9bee82fc8eea06f47bae0eca0ff88fb9cc560db1bedc63510e`を確認した。release codeは`e85975e998555eae84073288db4f4baac81b571e`である。
+- 作業用repositoryをアプリ専用stateへ移し、`Draft directory`入力を廃止して初心者向け7画面ガイドを更新した0.5.2候補wheelは、独立した2 buildで共通の論理payload SHA-256 `337c81ac557ceb0109993a09416c08f5bec44f4b9757e5a06110568826184dcb`を確認した。release codeは`8232fdedb892d15a89f2181ecff4f8f66b15e877`である。
 - 実機証拠: 0.5.1 wheelをWindowsへinstallし、modern context menuのstatusが`usable_installed_state: true`、`menu_contract_matches_config: true`、`menu_leaf_count: 1`を返した。File Explorerの`C:\Projects\skill-magnet`背景を実際に右クリックし、`Skill Magnet`→`Delivery Assurance`から`Skill Magnet — 実行確認`画面が起動すること、画面上のproject、pack、用途、実行AI、依頼内容、実行/取消UIを確認した。外部AIへのテスト依頼送信はフィールドUI受入の対象外とし、確認画面を取消で閉じた。実際のTSVはpack ID `codex-delivery-assurance`、表示名`Delivery Assurance`、固定commit `8f12af5ddfdd3b985f26d33dad09d6061d675342`を記録した。
 - Skill Library Manager右クリック実機証拠: 現行sourceからWindows 11 modern拡張をbuild・再登録し、`C:\Projects\skill-magnet` folderを実際に右クリックした。`Skill Magnet`配下に`Skill Library Manager`と`Delivery Assurance`が表示され、manager選択で7画面GUIが起動した。現行GUIでは作業用repositoryをアプリ専用state内で自動管理し、保存先入力欄を表示しない。statusは`menu_contract_matches_config: true`、package leaf 1件、manager action 1件、合計2 action、`usable_installed_state: true`を返した。
 - 0.4.0実install: package `SkillMagnet.ContextMenu_0.4.0.0_x64__byy1sc3mfzfz4`を登録し、1 package leaf、Directory/Background、署名済みcommand target、`usable_installed_state: true`を確認した。
