@@ -11,15 +11,15 @@
   "release_scope": "one-package-leaf",
   "release_version": "0.5.2",
   "distribution_scope": "local-self-signed",
-  "full_test_count": 152,
+  "full_test_count": 153,
   "menu_leaf_count": 1,
   "menu_action_count": 2,
   "library_manager_entry_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_count": 9,
-  "release_code_sha": "d92e0797a99988a21541edc4f89a82ee0c7a5b4a",
-  "wheel_payload_sha256": "1a34219857a02b20ce3a3623c26e3891aa745ccd1dae99470dc6a27639f589cb",
-  "automated_status": "LOCAL_RELEASE_GATE_PASS_152",
+  "release_code_sha": "cb79ca9a7907909cb5e5562fd803ef6dc761ec46",
+  "wheel_payload_sha256": "fe05738adb37df56619c1d56decea7b79d131209cfee93bf072b1b41ad4b3ac9",
+  "automated_status": "LOCAL_RELEASE_GATE_PASS_153",
   "windows_explorer_field_status": "PASS_REAL_RIGHT_CLICK_MENU_AND_CONFIRMATION_UI_0_5_1",
   "macos_finder_field_status": "CI_SEMANTIC_ONLY_REAL_UI_NOT_CLAIMED_FOR_0_5_2",
   "public_distribution_status": "NOT_CLAIMED_REQUIRES_EXTERNAL_PUBLISHER",
@@ -27,7 +27,7 @@
 }
 explorer-results-ledger:end -->
 
-- 統合テスト: `python -m unittest discover -s tests -v` — 152 tests PASS、環境依存1件skip
+- 統合テスト: `python -m unittest discover -s tests -v` — 153 tests PASS、環境依存1件skip
 - menu contract: `Skill Pack: Delivery Assurance` 1 package leaf / `Library Manager` 1 fixed action / selection kind `package` / pack内9 skills
 - 自動証拠: contract固定、GitHub固定commitのINDEX/全SKILL参照、archiveのメモリ内検証、deep-link binding、ローカルskill残留ゼロ
 - wheel再現性: 独立した2 directoryで0.4.0 wheelをbuildし、論理payload SHA-256が両方`c9a0ffe8f542fd475144ac8fecd284175a46863d69d1d44ec5be78ed901ba38f`で一致した。
@@ -47,6 +47,7 @@ explorer-results-ledger:end -->
 - Skill IDとPack IDの入力欄を廃止し、SKILL.mdとpack表示名から内部キーを自動決定する0.5.2候補wheelは、独立した2 buildで共通の論理payload SHA-256 `109e0915d14b82c736031fbf97f09023b36ace554eceb9e7d93ece69832a1fbd`を確認した。release codeは`061c85d9a8a4ab27d91cb9fe6d0cf38eafc447c8`である。
 - Skill Library Managerをタブのない1画面へ統合し、手動登録をfolder指定だけに限定して`SKILL.md`／`acceptance.json`不足を登録前に拒否する0.5.2候補wheelは、独立した2 buildで共通の論理payload SHA-256 `0bc22e25db24ebd02ebb3a0502edc39a4d123e5a98e76b8dcd09ab1304722df3`を確認した。release codeは`c8067f801f433e4913a29db525ef162548eca170`である。
 - 右クリック項目を`Library Manager`、`Skill Pack: <表示名>`、`Skill: <表示名>`へ分類した0.5.2候補wheelは、独立した2 buildで共通の論理payload SHA-256 `1a34219857a02b20ce3a3623c26e3891aa745ccd1dae99470dc6a27639f589cb`を確認した。release codeは`d92e0797a99988a21541edc4f89a82ee0c7a5b4a`である。
+- 単一skill、1 pack、複数pack collectionをfolder 1つから自動判定する候補wheelは、独立した2 buildで共通の論理payload SHA-256 `fe05738adb37df56619c1d56decea7b79d131209cfee93bf072b1b41ad4b3ac9`を確認した。release codeは`cb79ca9a7907909cb5e5562fd803ef6dc761ec46`である。実`C:\Projects\cangjie-skill-clean\books`の母集合3 pack・33 skillに対し、検出・登録・catalog収録はいずれも33件、欠落0件だった。
 - 実機証拠: 0.5.1 wheelをWindowsへinstallし、modern context menuのstatusが`usable_installed_state: true`、`menu_contract_matches_config: true`、`menu_leaf_count: 1`を返した。File Explorerの`C:\Projects\skill-magnet`背景を実際に右クリックし、`Skill Magnet`→`Delivery Assurance`から`Skill Magnet — 実行確認`画面が起動すること、画面上のproject、pack、用途、実行AI、依頼内容、実行/取消UIを確認した。外部AIへのテスト依頼送信はフィールドUI受入の対象外とし、確認画面を取消で閉じた。実際のTSVはpack ID `codex-delivery-assurance`、表示名`Delivery Assurance`、固定commit `8f12af5ddfdd3b985f26d33dad09d6061d675342`を記録した。
 - Skill Library Manager右クリック実機証拠: 現行sourceからWindows 11 modern拡張をbuild・再登録し、`C:\Projects\skill-magnet` folderを実際に右クリックした。`Skill Magnet`配下に`Skill Library Manager`と`Delivery Assurance`が表示され、manager選択でGUIが起動した。標準構成のskill folderでは自動import後にPublishだけを表示し、作成済みskillの手動登録時だけSkillとPublishを表示する。作業用repository、catalog、INDEX、validation、OS判定は自動管理する。statusは`menu_contract_matches_config: true`、package leaf 1件、manager action 1件、合計2 action、`usable_installed_state: true`を返した。
 - 0.4.0実install: package `SkillMagnet.ContextMenu_0.4.0.0_x64__byy1sc3mfzfz4`を登録し、1 package leaf、Directory/Background、署名済みcommand target、`usable_installed_state: true`を確認した。
