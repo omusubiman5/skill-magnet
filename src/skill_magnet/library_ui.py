@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -55,12 +56,9 @@ def require_registration_source(value: str) -> Path:
     return source
 
 
-def import_selected_skill(repository: Path, source: Path | None) -> bool:
-    """Import a standard skill folder and use the generic custom-skills pack."""
-    if source is None or not (source / "SKILL.md").is_file():
-        return False
-    if not (source / "acceptance.json").is_file():
-        raise SkillMagnetError("SKILL.mdと同じフォルダーにacceptance.jsonが必要です")
+def skill_registration_metadata(source: Path) -> tuple[str, str, str]:
+    """Derive internal ID and user-facing metadata from an existing skill."""
+    source = require_registration_source(str(source))
     text = (source / "SKILL.md").read_text(encoding="utf-8")
 
     def metadata(key: str) -> str:
@@ -71,6 +69,29 @@ def import_selected_skill(repository: Path, source: Path | None) -> bool:
     display_match = re.search(r"(?m)^#\s+(.+?)\s*$", text)
     display_name = display_match.group(1).strip() if display_match else skill_id
     purpose = metadata("description") or f"Imported skill: {display_name}"
+    return skill_id, display_name, purpose
+
+
+def pack_id_for_display(repository: Path, display_name: str) -> str:
+    """Resolve or derive an internal pack ID without exposing it in the UI."""
+    name = display_name.strip()
+    if not name:
+        raise SkillMagnetError("入れるパック名を入力してください")
+    catalog = json.loads((repository / CATALOG_FILENAME).read_text(encoding="utf-8"))
+    for pack in catalog.get("packs", []):
+        if str(pack.get("display_name", "")).strip() == name:
+            return str(pack["id"])
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return slug or f"pack-{hashlib.sha256(name.encode('utf-8')).hexdigest()[:12]}"
+
+
+def import_selected_skill(repository: Path, source: Path | None) -> bool:
+    """Import a standard skill folder and use the generic custom-skills pack."""
+    if source is None or not (source / "SKILL.md").is_file():
+        return False
+    if not (source / "acceptance.json").is_file():
+        raise SkillMagnetError("SKILL.mdと同じフォルダーにacceptance.jsonが必要です")
+    skill_id, display_name, purpose = skill_registration_metadata(source)
     if (repository / skill_id).is_dir():
         return True
     add_skill(
@@ -120,7 +141,6 @@ def show_library_manager(
     skill_id = tk.StringVar()
     display_name = tk.StringVar()
     purpose = tk.StringVar()
-    pack_id = tk.StringVar()
     pack_display_name = tk.StringVar()
     import_source = tk.StringVar(
         value=(
@@ -147,7 +167,15 @@ def show_library_manager(
     def select_import() -> None:
         value = filedialog.askdirectory(title="Select skill directory")
         if value:
-            import_source.set(value)
+            try:
+                source = require_registration_source(value)
+                derived_id, derived_name, derived_purpose = skill_registration_metadata(source)
+                import_source.set(str(source))
+                skill_id.set(derived_id)
+                display_name.set(derived_name)
+                purpose.set(derived_purpose)
+            except Exception as exc:
+                show_error(exc)
 
     def show_error(exc: Exception) -> None:
         messagebox.showerror("Skill Library Manager", str(exc), parent=root)
@@ -167,23 +195,22 @@ def show_library_manager(
     ttk.Label(page, text="作成済みskillのSKILL.mdとacceptance.jsonを登録します。").grid(
         row=0, column=0, columnspan=3, sticky="w", pady=(0, 12)
     )
-    row(page, 1, "Skill ID", skill_id)
-    row(page, 2, "Display name", display_name)
-    row(page, 3, "Purpose", purpose)
-    row(page, 4, "Pack ID", pack_id)
-    row(page, 5, "Pack display name", pack_display_name)
-    row(page, 6, "作成済みスキルのフォルダー", import_source, select_import)
+    row(page, 1, "作成済みスキルのフォルダー", import_source, select_import)
+    row(page, 2, "表示名（SKILL.mdから自動取得）", display_name)
+    row(page, 3, "目的（SKILL.mdから自動取得）", purpose)
+    row(page, 4, "入れるパック名", pack_display_name)
 
     def add() -> None:
         try:
             source = require_registration_source(import_source.get())
+            repository_path = require_repository()
             add_skill(
-                require_repository(),
+                repository_path,
                 skill_id=skill_id.get().strip(),
                 display_name=display_name.get().strip(),
                 purpose=purpose.get().strip(),
-                pack_id=pack_id.get().strip(),
-                pack_display_name=pack_display_name.get().strip() or None,
+                pack_id=pack_id_for_display(repository_path, pack_display_name.get()),
+                pack_display_name=pack_display_name.get().strip(),
                 skill_source=source,
             )
             messagebox.showinfo(
@@ -196,7 +223,7 @@ def show_library_manager(
         except Exception as exc:
             show_error(exc)
 
-    ttk.Button(page, text="Add / Import", command=add).grid(row=7, column=1, sticky="e", pady=12)
+    ttk.Button(page, text="登録", command=add).grid(row=5, column=1, sticky="e", pady=12)
 
     if selected_skill_imported:
         notebook.hide(0)

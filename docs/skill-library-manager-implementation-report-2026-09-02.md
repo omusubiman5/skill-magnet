@@ -26,6 +26,8 @@ status: implemented
 - 標準構成の作成済みスキルfolderを右クリックした通常flowでは自動import後にPublishだけを表示する。作成済みskillを手動登録する時だけSkill、Publishの2画面とする。repository、catalog/INDEX、validation、preview、activationの独立画面は設けず、起動・登録・Publish画面内で処理する。
 - OSは実行環境から自動判定し、利用者へ選択させない。構成不備、URL不備、validation失敗は操作時のエラーダイアログで停止する。
 - 現在の設定にrepository URLが一意に存在する既存ユーザーには、そのURLをPublish画面へ自動表示する。複数候補は誤選択防止のため自動補完しない。
+- Skill ID入力欄を廃止し、`SKILL.md`の`name`またはfolder名から内部キーを自動決定する。表示名と目的も選択した`SKILL.md`から自動入力する。
+- Pack ID入力欄も廃止し、利用者が指定するpack表示名から既存IDの再利用または内部IDの自動生成を行う。
 - headless/運用用途として`init`、`add`、`validate`、`prepare`、`publish`、`verify-merged`、`activate`、`status`も提供する。
 - publishとactivateは独立した明示確認が必要で、未確認ならfail-closedで停止する。
 
