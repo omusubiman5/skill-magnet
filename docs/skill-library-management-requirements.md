@@ -295,6 +295,9 @@ Skill Magnetへ「Skill Library Manager」を追加する。利用者はアプ�
 ### Related Documents
 
 - [スキル保管庫契約](skill-repository-contract.md)
+- [実装計画](skill-library-manager-implementation-plan-2026-09-02.md)
+- [実装報告](skill-library-manager-implementation-report-2026-09-02.md)
+- [スモークテスト結果](skill-library-manager-smoke-test-2026-09-02.md)
 - [MVP再設計](mvp-redesign.md)
 - [製品ポリシー](../policy/product-policy.json)
 - [0.5.2リリース候補報告](release-0.5.2.md)
