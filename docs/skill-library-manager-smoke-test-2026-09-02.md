@@ -49,12 +49,14 @@ Skill Library ManagerのCLI基本経路、実Windows GUIのタブのない1画�
 |---:|---|---|
 | 1 | 標準folderを選択した通常flowは登録欄を隠し、GitHub公開欄だけを表示 | PASS |
 | 2 | 手動登録flowはfolder登録とGitHub公開を同じ画面に表示 | PASS |
+| 3 | `C:\Projects\cangjie-skill-clean\books`から3 pack・33 skillを一括検出・登録 | PASS |
 
 確認した安全境界:
 
 - Publish画面に差分確認checkbox、`Publish PR`、`Verify merged remote`、`Skill Magnetへ反映`が表示される。
 - platform選択を表示せず、Windows/macOSを実行環境から自動判定する。
-- URL未入力、構成不備、validation失敗はエラーダイアログで停止する。
+- URL未入力、SKILL.md不在、INDEX参照先欠落、重複、validation失敗はエラーダイアログで停止する。
+- 登録元に`acceptance.json`がない33 skillは内部互換メタデータを自動生成した。`test-prompts.json`が存在する32 skillは、そのSHA-256へ結び付けた。残るpack入口skillは元ファイルが存在しないためdigestを捏造しない。
 - smoke中にpublish、activate、menu更新は実行されていない。
 
 ## Explorer右クリック起動スモーク
@@ -68,7 +70,7 @@ Skill Library ManagerのCLI基本経路、実Windows GUIのタブのない1画�
 | 標準folderからの`Library Manager`選択で登録欄が隠れ、GitHub公開欄が起動 | PASS |
 | `Draft directory`、repository名、保存先の入力欄が表示されない | PASS |
 | 作業用repositoryがアプリ専用state内に自動決定される | PASS |
-| 右クリック対象は`SKILL.md`がある場合だけimport候補になる | PASS |
+| 右クリック対象から単一skill、1 pack、複数pack collectionを自動判定 | PASS |
 | 起動だけでrepository作成、publish、activateが行われない | PASS |
 
 インストールstatusは`menu_contract_valid: true`、`menu_contract_matches_config: true`、`menu_leaf_count: 1`、`menu_action_count: 2`、`library_manager_entry_count: 1`、`usable_installed_state: true`だった。
@@ -78,7 +80,7 @@ Skill Library ManagerのCLI基本経路、実Windows GUIのタブのない1画�
 - GUI windowを正常終了した。
 - `pythonw.exe`の対象processが終了したことを確認した。
 - 製品所有の一時smoke directoryを削除した。
-- `tests.test_library_manager` 10件を再実行し、全件PASSした。
+- `tests.test_library_manager` 11件を再実行し、全件PASSした。
 - repositoryは`main...origin/main`、未コミット変更なしの状態から文書更新を開始した。
 
 ## 判定

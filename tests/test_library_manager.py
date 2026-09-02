@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -14,7 +15,10 @@ from skill_magnet.library_manager import (
     DEFAULT_REPOSITORY_NAME,
     LibraryTransaction,
     add_skill,
+    discover_skill_sources,
+    import_skill_source,
     initialize_library,
+    render_index,
     validate_library,
 )
 from skill_magnet.library_ui import (
@@ -52,7 +56,7 @@ class LibraryManagerTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        with self.assertRaisesRegex(SkillMagnetError, "作成済みスキル"):
+        with self.assertRaisesRegex(SkillMagnetError, "スキル"):
             require_registration_source("")
         self.assertEqual(require_registration_source(str(source)), source.resolve())
         self.assertEqual(
@@ -70,14 +74,105 @@ class LibraryManagerTests(unittest.TestCase):
             "---\nname: missing-acceptance\ndescription: Missing acceptance\n---\n\n# Missing acceptance\n",
             encoding="utf-8",
         )
-        with self.assertRaisesRegex(SkillMagnetError, "acceptance.json"):
-            require_registration_source(str(missing_acceptance))
+        self.assertEqual(
+            require_registration_source(str(missing_acceptance)),
+            missing_acceptance.resolve(),
+        )
 
         self.assertTrue(import_selected_skill(repository, source))
         catalog = json.loads((repository / CATALOG_FILENAME).read_text(encoding="utf-8"))
         self.assertEqual(catalog["packs"][0]["id"], "custom-skills")
         self.assertEqual(catalog["packs"][0]["skills"], ["sample-skill"])
         self.assertTrue((repository / "sample-skill" / "SKILL.md").is_file())
+
+    def test_books_folder_imports_every_pack_and_skill_without_candidate_omission(self) -> None:
+        repository = managed_repository_path(self.root)
+        initialize_library(repository, DEFAULT_REPOSITORY_NAME)
+        books = self.root / "books"
+
+        def skill(folder: Path, skill_id: str) -> None:
+            folder.mkdir(parents=True)
+            (folder / "SKILL.md").write_text(
+                "---\n"
+                f"name: {skill_id}\n"
+                f"description: |\n  Apply {skill_id} when requested.\n"
+                "---\n\n"
+                f"# {skill_id}\n\n## Trigger\n\nUse when requested.\n\n"
+                "## Boundary\n\nDo not use outside its scope.\n",
+                encoding="utf-8",
+            )
+            (folder / "test-prompts.json").write_text("{}", encoding="utf-8")
+
+        first = books / "first-pack"
+        skill(first, "first-pack")
+        skill(first / "first-a", "first-a")
+        skill(first / "first-b", "first-b")
+        root_skill = first / "SKILL.md"
+        root_skill.write_text(
+            root_skill.read_text(encoding="utf-8")
+            + "\n[first-a](first-a/SKILL.md)\n",
+            encoding="utf-8",
+        )
+        (first / "INDEX.md").write_text(
+            "# First Pack — Skill Index\n\n"
+            "- [first-a](./first-a/SKILL.md)\n"
+            "- [first-b](./first-b/SKILL.md)\n\n"
+            "```mermaid\nflowchart LR\n"
+            '  A["first-a"] -->|depends-on| B["first-b"]\n'
+            '  A -.->|contrasts-with| B\n```\n',
+            encoding="utf-8",
+        )
+        second = books / "second-pack"
+        skill(second / "second-a", "second-a")
+        (second / "INDEX.md").write_text(
+            "# Second Pack — Skill Index\n\n"
+            "- [second-a](./second-a/SKILL.md)\n",
+            encoding="utf-8",
+        )
+
+        discovered = discover_skill_sources(books)
+        self.assertEqual([pack["id"] for pack in discovered], ["first-pack", "second-pack"])
+        mother_set = {
+            "first-pack",
+            "first-a",
+            "first-b",
+            "second-a",
+        }
+        self.assertEqual(
+            {skill_id for pack in discovered for skill_id in pack["skills"]},
+            mother_set,
+        )
+        broken = books / "broken-pack"
+        skill(broken / "only-skill", "only-skill")
+        (broken / "INDEX.md").write_text(
+            "# Broken Pack — Skill Index\n\n"
+            "- [only-skill](./only-skill/SKILL.md)\n\n"
+            "```mermaid\nflowchart LR\n"
+            '  A["only-skill"] -->|depends-on| MISSING["missing-skill"]\n```\n',
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(SkillMagnetError, "cannot be resolved"):
+            discover_skill_sources(books)
+        shutil.rmtree(broken)
+
+        result = import_skill_source(repository, books)
+        self.assertEqual(result["source_kind"], "collection")
+        self.assertEqual(set(result["imported_skill_ids"]), mother_set)
+        self.assertEqual(result["generated_acceptance_count"], 4)
+        self.assertEqual(set(result["skill_ids"]), mother_set)
+        catalog = json.loads((repository / CATALOG_FILENAME).read_text(encoding="utf-8"))
+        self.assertEqual([pack["id"] for pack in catalog["packs"]], ["first-pack", "second-pack"])
+        self.assertEqual(
+            catalog["packs"][0]["relations"]["contrasts-with"],
+            [["first-a", "first-b"]],
+        )
+        self.assertIn("../first-a/SKILL.md", (repository / "first-pack" / "SKILL.md").read_text(encoding="utf-8"))
+        for skill_id in mother_set:
+            acceptance = json.loads(
+                (repository / skill_id / "acceptance.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(acceptance["generated_by"], "Skill Magnet Library Manager")
+            self.assertIn("source_test_prompts_sha256", acceptance)
 
     def test_existing_repository_url_is_prefilled_when_unambiguous(self) -> None:
         config = self.root / "config.json"
@@ -195,7 +290,7 @@ class LibraryManagerTests(unittest.TestCase):
         with self.assertRaisesRegex(SkillMagnetError, "trigger and boundary"):
             validate_library(library)
 
-    def test_validation_rejects_unknown_cycle_and_contrast(self) -> None:
+    def test_validation_rejects_unknown_and_cycle_but_allows_contrast_in_pack(self) -> None:
         library = self.make_library()
         add_skill(
             library,
@@ -221,8 +316,8 @@ class LibraryManagerTests(unittest.TestCase):
         relations["depends-on"] = []
         relations["contrasts-with"] = [["first-skill", "second-skill"]]
         catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
-        with self.assertRaisesRegex(SkillMagnetError, "contrasting skills"):
-            validate_library(library)
+        (library / "INDEX.md").write_text(render_index(catalog), encoding="utf-8")
+        self.assertTrue(validate_library(library).as_dict()["valid"])
 
     def test_isolated_publish_remote_verification_activation_and_retry(self) -> None:
         seed, remote = self.make_remote()

@@ -11,7 +11,8 @@ from .library_manager import (
     CATALOG_FILENAME,
     DEFAULT_REPOSITORY_NAME,
     LibraryTransaction,
-    add_skill,
+    discover_skill_sources,
+    import_skill_source,
     initialize_library,
     validate_library,
 )
@@ -45,14 +46,11 @@ def configured_repository_url(config_path: Path) -> str:
 
 
 def require_registration_source(value: str) -> Path:
-    """Require an already-created standard skill folder for manual registration."""
+    """Require a folder containing a skill, a pack, or multiple packs."""
     if not value.strip():
-        raise SkillMagnetError("登録する作成済みスキルのフォルダーを選択してください")
+        raise SkillMagnetError("登録するスキルまたはスキルパックのフォルダーを選択してください")
     source = Path(value).resolve()
-    if not (source / "SKILL.md").is_file():
-        raise SkillMagnetError("選択したフォルダーにSKILL.mdがありません")
-    if not (source / "acceptance.json").is_file():
-        raise SkillMagnetError("選択したフォルダーにacceptance.jsonがありません")
+    discover_skill_sources(source)
     return source
 
 
@@ -73,23 +71,17 @@ def skill_registration_metadata(source: Path) -> tuple[str, str, str]:
 
 
 def import_selected_skill(repository: Path, source: Path | None) -> bool:
-    """Import a standard skill folder and use the generic custom-skills pack."""
-    if source is None or not (source / "SKILL.md").is_file():
+    """Import a skill, a complete pack, or a directory containing packs."""
+    if source is None:
         return False
-    if not (source / "acceptance.json").is_file():
-        raise SkillMagnetError("SKILL.mdと同じフォルダーにacceptance.jsonが必要です")
-    skill_id, display_name, purpose = skill_registration_metadata(source)
-    if (repository / skill_id).is_dir():
+    try:
+        discovered = discover_skill_sources(source)
+    except SkillMagnetError:
+        return False
+    incoming = {skill for pack in discovered for skill in pack["skills"]}
+    if incoming and all((repository / skill).is_dir() for skill in incoming):
         return True
-    add_skill(
-        repository,
-        skill_id=skill_id,
-        display_name=display_name,
-        purpose=purpose,
-        pack_id="custom-skills",
-        pack_display_name="Custom skills",
-        skill_source=source,
-    )
+    import_skill_source(repository, source)
     return True
 
 
@@ -128,7 +120,7 @@ def show_library_manager(
         value=(
             str(initial_repository.resolve())
             if initial_repository is not None
-            and (initial_repository / "SKILL.md").is_file()
+            and initial_repository.is_dir()
             else ""
         )
     )
@@ -171,18 +163,19 @@ def show_library_manager(
 
     registration = ttk.LabelFrame(page, text="作成済みスキルを登録", padding=10)
     registration.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-    ttk.Label(registration, text="作成済みスキルのSKILL.mdとacceptance.jsonを登録します。").grid(
+    ttk.Label(registration, text="スキル、スキルパック、または複数パックを含むフォルダーを登録します。").grid(
         row=0, column=0, columnspan=3, sticky="w", pady=(0, 12)
     )
-    row(registration, 1, "作成済みスキルのフォルダー", import_source, select_import)
+    row(registration, 1, "スキル／スキルパックのフォルダー", import_source, select_import)
 
     def add() -> None:
         try:
             source = require_registration_source(import_source.get())
-            import_selected_skill(require_repository(), source)
+            imported = import_skill_source(require_repository(), source)
             messagebox.showinfo(
                 "Skill",
-                "スキルを登録し、パック一覧とINDEXを自動更新しました。",
+                f"{len(imported['imported_pack_ids'])}パック、"
+                f"{len(imported['imported_skill_ids'])}スキルを登録しました。",
                 parent=root,
             )
             registration.grid_remove()
