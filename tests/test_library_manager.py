@@ -24,6 +24,7 @@ from skill_magnet.library_manager import (
 from skill_magnet.library_ui import (
     configured_repository_url,
     import_selected_skill,
+    library_action_label,
     library_wizard_steps,
     managed_repository_path,
     require_registration_source,
@@ -463,6 +464,17 @@ class LibraryManagerTests(unittest.TestCase):
 
     def test_cli_exposes_guided_library_flow(self) -> None:
         self.assertEqual(library_wizard_steps(), ("Skill Library Manager",))
+        self.assertEqual(
+            [library_action_label(stage) for stage in ("prepare", "publish", "verify", "activate")],
+            [
+                "送信内容を確認する",
+                "GitHubへ送る",
+                "GitHubのマージを確認する",
+                "Skill Magnetへ反映",
+            ],
+        )
+        with self.assertRaisesRegex(SkillMagnetError, "Unknown library action stage"):
+            library_action_label("invalid")
         library = self.root / "cli-library"
         self.assertEqual(
             cli_main(["library", "init", "--repository", str(library)]), 0
