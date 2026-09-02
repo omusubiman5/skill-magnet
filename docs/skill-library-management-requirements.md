@@ -116,7 +116,7 @@ Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデ�
 
 ### Publish Transaction
 
-- FR-9: アプリは書込み前にrepository、branch、追加・変更file、pack差分、関係差分、予定される本体更新とメニュー更新を一画面でpreviewし、明示確認を要求しなければならない。
+- FR-9: アプリは書込み前にrepository、branch、追加・変更file、pack差分、関係差分、予定される本体更新とメニュー更新を一画面でpreviewし、明示確認を要求しなければならない。GUIの操作ボタンは現在実行可能な1個だけを表示し、preview前にpublish、remote検証、有効化を選択できてはならない。
 - FR-10: 編集作業は利用者の既存checkoutではなく、製品所有のisolated temporary workspaceで行い、未コミット作業を変更してはならない。
 - FR-11: defaultでは専用branchへcommit・pushしてPRを作成し、default branchへの直接pushは明示的に選択され、かつrepository policyが許可する場合だけ実行できなければならない。
 - FR-12: remote commit確定後、アプリは40文字commit SHA、INDEX、全対象SKILL.md、acceptance.json、catalogのSHA-256をremote contentから再取得して照合しなければならない。

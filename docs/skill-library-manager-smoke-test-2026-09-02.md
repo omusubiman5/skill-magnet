@@ -53,7 +53,7 @@ Skill Library ManagerのCLI基本経路、実Windows GUIのタブのない1画�
 
 確認した安全境界:
 
-- Publish画面に差分確認checkbox、`Publish PR`、`Verify merged remote`、`Skill Magnetへ反映`が表示される。
+- Publish画面の操作ボタンは1個だけで、初期状態では`送信内容を確認する`だけが表示される。成功した段階に応じて`GitHubへ送る`、`GitHubのマージを確認する`、`Skill Magnetへ反映`へ切り替わり、Transaction未作成時に後続操作を選べない。
 - platform選択を表示せず、Windows/macOSを実行環境から自動判定する。
 - URL未入力、SKILL.md不在、INDEX参照先欠落、重複、validation失敗はエラーダイアログで停止する。
 - 登録元に`acceptance.json`がない33 skillは内部互換メタデータを自動生成した。`test-prompts.json`が存在する32 skillは、そのSHA-256へ結び付けた。残るpack入口skillは元ファイルが存在しないためdigestを捏造しない。

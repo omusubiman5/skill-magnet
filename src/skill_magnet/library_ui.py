@@ -22,9 +22,25 @@ LIBRARY_WIZARD_STEPS = (
     "Skill Library Manager",
 )
 
+LIBRARY_ACTION_LABELS = {
+    "prepare": "送信内容を確認する",
+    "publish": "GitHubへ送る",
+    "verify": "GitHubのマージを確認する",
+    "activate": "Skill Magnetへ反映",
+    "complete": "完了",
+}
+
 
 def library_wizard_steps() -> tuple[str, ...]:
     return LIBRARY_WIZARD_STEPS
+
+
+def library_action_label(stage: str) -> str:
+    """Return the only action exposed for the current transaction stage."""
+    try:
+        return LIBRARY_ACTION_LABELS[stage]
+    except KeyError as exc:
+        raise SkillMagnetError(f"Unknown library action stage: {stage}") from exc
 
 
 def managed_repository_path(state_dir: Path) -> Path:
@@ -125,8 +141,8 @@ def show_library_manager(
         )
     )
     transaction_id = tk.StringVar()
+    action_stage = tk.StringVar(value="prepare")
     platform = "windows" if os.name == "nt" else "macos"
-    publish_confirmed = tk.BooleanVar(value=False)
     result: dict[str, Any] = {"status": "closed_without_activation"}
 
     def row(page: Any, number: int, label: str, variable: Any, browse: Callable[[], None] | None = None) -> None:
@@ -227,31 +243,27 @@ def show_library_manager(
             )
             transaction_id.set(transaction.transaction_id)
             set_text(preview_output, preview)
+            set_stage("publish")
         except Exception as exc:
             show_error(exc)
 
-    ttk.Button(publish_frame, text="送信内容を確認する", command=prepare).grid(
-        row=4, column=0, sticky="w", pady=(8, 4)
-    )
-    ttk.Checkbutton(
-        publish_frame,
-        text="表示された公開先とファイルを確認しました",
-        variable=publish_confirmed,
-    ).grid(row=5, column=0, columnspan=3, sticky="w", pady=4)
-
     def transaction() -> LibraryTransaction:
         if not transaction_id.get().strip():
-            raise SkillMagnetError("Transaction ID is required")
+            raise SkillMagnetError("先に送信内容を確認してください")
         return LibraryTransaction(state_dir, transaction_id.get().strip())
 
     def publish() -> None:
         try:
-            if not publish_confirmed.get() or not messagebox.askyesno(
-                "Publish", "専用branchへcommit・pushしてPRを作成しますか？", parent=root
+            if not messagebox.askyesno(
+                "GitHubへ送る",
+                "表示された公開先とファイルを確認しましたか？\n"
+                "専用branchへcommit・pushしてPRを作成します。",
+                parent=root,
             ):
-                raise SkillMagnetError("Publish was not explicitly confirmed")
+                return
             published = transaction().publish(confirmed=True)
             set_text(preview_output, published)
+            set_stage("verify")
         except Exception as exc:
             show_error(exc)
 
@@ -259,6 +271,7 @@ def show_library_manager(
         try:
             verified = transaction().mark_merged()
             set_text(preview_output, verified)
+            set_stage("activate")
         except Exception as exc:
             show_error(exc)
 
@@ -281,15 +294,35 @@ def show_library_manager(
                 menu_update=update if menu_update else None,
             )
             set_text(preview_output, result)
+            set_stage("complete")
             messagebox.showinfo("Skill Library Manager", "有効化が完了しました。", parent=root)
         except Exception as exc:
             show_error(exc)
 
-    buttons = ttk.Frame(publish_frame)
-    buttons.grid(row=6, column=0, columnspan=3, sticky="e", pady=(4, 0))
-    ttk.Button(buttons, text="Publish PR", command=publish).pack(side="left", padx=4)
-    ttk.Button(buttons, text="Verify merged remote", command=verify_merged).pack(side="left", padx=4)
-    ttk.Button(buttons, text="Skill Magnetへ反映", command=activate).pack(side="left", padx=4)
+    def set_stage(value: str) -> None:
+        action_stage.set(value)
+        action_button.configure(
+            text=library_action_label(value),
+            state="disabled" if value == "complete" else "normal",
+        )
+
+    def run_current_action() -> None:
+        actions = {
+            "prepare": prepare,
+            "publish": publish,
+            "verify": verify_merged,
+            "activate": activate,
+        }
+        action = actions.get(action_stage.get())
+        if action is not None:
+            action()
+
+    action_button = ttk.Button(
+        publish_frame,
+        text=library_action_label("prepare"),
+        command=run_current_action,
+    )
+    action_button.grid(row=4, column=0, columnspan=3, sticky="e", pady=(8, 0))
 
     root.mainloop()
     return result

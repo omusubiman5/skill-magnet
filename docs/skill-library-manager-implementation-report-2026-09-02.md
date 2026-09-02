@@ -24,6 +24,7 @@ status: implemented
 - GUIの作業用repositoryは製品state内で自動作成・再利用し、保存先、repository名、`Draft directory`を入力させない。右クリックしたfolderから単一skill、pack、pack collectionを自動判定する。画面を開くだけではpublishもactivateも実行しない。
 - `python -m skill_magnet library ui`でコンパクトなSkill Library Managerを開く。
 - 登録とGitHub公開をタブのない1画面へ統合した。標準構成の作成済みスキルfolderを右クリックした場合は自動importして登録欄を隠し、手動登録時だけ同じ画面上部へfolder欄を表示する。repository、catalog/INDEX、validation、preview、activationの独立画面は設けない。
+- 公開操作は状態連動の1ボタンへ統合した。初期状態は`送信内容を確認する`だけを表示し、成功後に同じボタンを`GitHubへ送る`、`GitHubのマージを確認する`、`Skill Magnetへ反映`へ切り替える。Transaction未作成時に後続操作を押せる経路をなくした。
 - OSは実行環境から自動判定し、利用者へ選択させない。構成不備、URL不備、validation失敗は操作時のエラーダイアログで停止する。
 - 現在の設定にrepository URLが一意に存在する既存ユーザーには、そのURLをPublish画面へ自動表示する。複数候補は誤選択防止のため自動補完しない。
 - 手動登録画面の入力はfolder 1つだけとし、単一skill、1 pack、複数pack collectionを判別する。pack／skill ID、表示名、目的、順序、関係はfolder、`SKILL.md`、`INDEX.md`から取得する。登録元に`acceptance.json`がなければ内部互換メタデータを生成し、`test-prompts.json`がある場合はそのSHA-256を記録する。
