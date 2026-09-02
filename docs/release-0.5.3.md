@@ -19,9 +19,10 @@
 ## 実データ復旧
 
 - 重複PR #2: CLOSED
-- 継続対象PR #3: OPEN、MERGEABLE
+- 継続対象PR #3: MERGED
 - 継続transaction: `8dc76704a259400e9b0a2259612155ce`
-- 実コード確認: `OPEN -> published_pending / waiting_for_merge`
+- 実コード確認: `OPEN -> waiting_for_merge -> MERGED -> verified -> active`
+- 有効化: `codex-cli`と`conflict-clarity`を追加し、Windows menuは3 package leaves＋Library Manager
 
 ## 検証と成果物
 

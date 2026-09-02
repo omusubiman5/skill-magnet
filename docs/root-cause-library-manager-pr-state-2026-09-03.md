@@ -36,9 +36,9 @@ PR確認で例外
 ## 実データの復旧
 
 - 重複PR #2: CLOSED
-- 継続対象PR #3: OPEN、MERGEABLE
-- transaction `8dc76704a259400e9b0a2259612155ce`: `published_pending / waiting_for_merge`
-- PR #3の確認を実コードで実行し、例外、local破棄、新transaction、新PRが発生しないことを確認した。
+- 継続対象PR #3: MERGED、merge commit `66de8f309ca27825435b2d72b45432edc79c4a7b`
+- transaction `8dc76704a259400e9b0a2259612155ce`: `active`
+- PR #3のOPEN確認、merge commit再検証、Skill Magnet config更新、Windows menu再登録まで同じtransactionで完走した。
 
 ## 検証
 
