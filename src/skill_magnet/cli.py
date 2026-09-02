@@ -192,6 +192,15 @@ def _parser() -> argparse.ArgumentParser:
     )
     library_status = library_commands.add_parser("status")
     library_status.add_argument("--transaction-id")
+    library_recover = library_commands.add_parser(
+        "recover", help="Recover an interrupted local transaction."
+    )
+    library_recover.add_argument("--transaction-id", required=True)
+    library_abandon = library_commands.add_parser(
+        "abandon", help="Abandon local work without deleting remote GitHub state."
+    )
+    library_abandon.add_argument("--transaction-id", required=True)
+    library_abandon.add_argument("--confirm", action="store_true")
     return parser
 
 
@@ -249,6 +258,10 @@ def _run_library_command(args: argparse.Namespace) -> dict[str, object]:
         )
     if command == "verify-merged":
         return transaction.mark_merged()
+    if command == "recover":
+        return transaction.recover()
+    if command == "abandon":
+        return transaction.abandon(confirmed=args.confirm)
     if command == "activate":
         def update_menu(config_path: Path) -> object:
             if args.platform == "windows":

@@ -114,7 +114,7 @@ status: implemented
 |---|---|
 | `python -m compileall -q src tests` | PASS |
 | `python -m unittest tests.test_library_manager tests.test_product_policy tests.test_results_gate -q` | PASS |
-| `python -m unittest discover -s tests` | 153 PASS、1 environment-dependent skip |
+| `python -m unittest discover -s tests` | 157 PASS、1 environment-dependent skip |
 | `python -m pip wheel . --no-deps` | PASS、`library_manager.py`と`library_ui.py`のwheel収録を確認 |
 | `git diff --check` | PASS |
 | 実GUIスモーク | PASS、登録と公開を同じ画面に表示し、標準folder選択時は登録欄を非表示 |

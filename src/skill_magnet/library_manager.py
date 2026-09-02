@@ -8,6 +8,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -22,7 +23,7 @@ CATALOG_VERSION = 1
 TRANSACTION_VERSION = 1
 DEFAULT_REPOSITORY_NAME = "skill-magnet-skills"
 RELATION_TYPES = ("depends-on", "composes-with", "contrasts-with")
-TERMINAL_STATES = {"active", "rolled_back"}
+TERMINAL_STATES = {"active", "rolled_back", "abandoned"}
 SECRET_RULES = (
     ("private-key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")),
     ("github-token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b")),
@@ -555,7 +556,9 @@ class ValidationResult:
         }
 
 
-def validate_library(root: Path) -> ValidationResult:
+def validate_library(
+    root: Path, *, allow_uncataloged_skills: bool = False
+) -> ValidationResult:
     root = root.resolve()
     files = _repository_files(root)
     if CATALOG_FILENAME not in files:
@@ -582,7 +585,7 @@ def validate_library(root: Path) -> ValidationResult:
         and path.parts[1] in {"SKILL.md", "acceptance.json"}
     }
     extras = seen_directories - all_skills
-    if extras:
+    if extras and not allow_uncataloged_skills:
         raise SkillMagnetError("Uncataloged skill directories: " + ", ".join(sorted(extras)))
     for skill in skills:
         skill_path = f"{skill}/SKILL.md"
@@ -765,19 +768,25 @@ def _tree_digest(root: Path) -> str:
     return value.hexdigest()
 
 
-def _copy_library(source: Path, destination: Path) -> None:
+def _copy_library(
+    source: Path, destination: Path, managed_paths: Iterable[str]
+) -> None:
+    """Overlay managed library files without deleting unrelated repository content."""
     source_files = _repository_files(source)
-    for current in sorted(destination.iterdir()):
-        if current.name == ".git":
-            continue
-        if current.is_dir():
-            shutil.rmtree(current)
-        else:
-            current.unlink()
-    for relative, data in source_files.items():
+    for relative in managed_paths:
+        data = source_files[relative]
         target = destination.joinpath(*PurePosixPath(relative).parts)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
+
+
+def _deleted_git_paths(changed: Iterable[str]) -> list[str]:
+    """Return deleted paths from Git porcelain output, including staged deletions."""
+    deleted: list[str] = []
+    for line in changed:
+        if len(line) >= 3 and "D" in line[:2]:
+            deleted.append(line[3:].strip())
+    return deleted
 
 
 class LibraryTransaction:
@@ -831,42 +840,70 @@ class LibraryTransaction:
         before = _tree_digest(draft)
         validation = validate_library(draft)
         self.root.mkdir(parents=True, exist_ok=True)
-        self.run(["git", "clone", "--no-hardlinks", remote, str(self.workspace)])
-        default_branch = self.run(
-            ["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-            cwd=self.workspace,
-            check=False,
-        ).stdout.strip()
-        default_branch = default_branch.removeprefix("origin/") or "main"
-        branch_name = branch or f"codex/skill-library-{self.transaction_id[:12]}"
-        if branch_name == default_branch:
-            self.run(["git", "switch", default_branch], cwd=self.workspace)
-        else:
-            self.run(["git", "switch", "-c", branch_name], cwd=self.workspace)
-        _copy_library(draft, self.workspace)
-        if _tree_digest(draft) != before:
-            raise SkillMagnetError("Draft checkout changed during isolated preparation")
-        # Preview the bytes Git will actually publish. On Windows, checkout
-        # line-ending conversion can make working-tree bytes differ from blob
-        # bytes, so approval and remote verification must share the Git index.
-        self.run(["git", "add", "--all"], cwd=self.workspace)
-        staged_manifest: dict[str, str] = {}
-        for relative in validation.manifest:
-            blob = subprocess.run(
-                ["git", "show", f":{relative}"],
+        pending = self.cleanup()
+        if pending:
+            raise SkillMagnetError("一時ファイルを整理できません: " + ", ".join(pending))
+        journal.update(
+            status="preparing",
+            draft=str(draft),
+            remote=remote,
+            requested_branch=branch,
+            draft_digest=before,
+        )
+        self._write_journal(journal)
+        try:
+            self.run(["git", "clone", "--no-hardlinks", remote, str(self.workspace)])
+            default_branch = self.run(
+                ["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
                 cwd=self.workspace,
-                capture_output=True,
+                check=False,
+            ).stdout.strip()
+            default_branch = default_branch.removeprefix("origin/") or "main"
+            branch_name = branch or f"codex/skill-library-{self.transaction_id[:12]}"
+            if branch_name == default_branch:
+                self.run(["git", "switch", default_branch], cwd=self.workspace)
+            else:
+                self.run(["git", "switch", "-c", branch_name], cwd=self.workspace)
+            _copy_library(draft, self.workspace, validation.manifest)
+            validate_library(self.workspace, allow_uncataloged_skills=True)
+            if _tree_digest(draft) != before:
+                raise SkillMagnetError("Draft checkout changed during isolated preparation")
+            # Preview the bytes Git will actually publish. On Windows, checkout
+            # line-ending conversion can make working-tree bytes differ from blob
+            # bytes, so approval and remote verification must share the Git index.
+            self.run(["git", "add", "--all"], cwd=self.workspace)
+            staged_manifest: dict[str, str] = {}
+            for relative in validation.manifest:
+                blob = subprocess.run(
+                    ["git", "show", f":{relative}"],
+                    cwd=self.workspace,
+                    capture_output=True,
+                )
+                if blob.returncode:
+                    raise SkillMagnetError(f"Cannot read staged Git blob: {relative}")
+                staged_manifest[relative] = _sha256(blob.stdout)
+            changed = [
+                line
+                for line in self.run(
+                    ["git", "status", "--short"], cwd=self.workspace
+                ).stdout.splitlines()
+                if line.strip()
+            ]
+            deleted = _deleted_git_paths(changed)
+            if deleted:
+                raise SkillMagnetError(
+                    "安全のため、既存GitHubファイルを削除する公開は拒否しました: "
+                    + ", ".join(deleted)
+                )
+        except Exception as exc:
+            journal.update(
+                status="interrupted",
+                resume_status="draft",
+                failed_stage="prepare",
+                last_error=str(exc),
             )
-            if blob.returncode:
-                raise SkillMagnetError(f"Cannot read staged Git blob: {relative}")
-            staged_manifest[relative] = _sha256(blob.stdout)
-        changed = [
-            line
-            for line in self.run(
-                ["git", "status", "--short"], cwd=self.workspace
-            ).stdout.splitlines()
-            if line.strip()
-        ]
+            self._write_journal(journal)
+            raise
         preview = {
             "transaction_id": self.transaction_id,
             "remote": remote,
@@ -892,11 +929,14 @@ class LibraryTransaction:
         return preview
 
     def _remote_manifest(self, remote: str, commit: str) -> ValidationResult:
-        if self.verifier.exists():
-            shutil.rmtree(self.verifier)
+        # A verifier may remain locked briefly by Git or antivirus on Windows.
+        # Never make progress depend on deleting that old checkout: every check
+        # gets a fresh, transaction-owned directory and cleanup is best effort.
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.verifier = self.root / f"remote-verifier-{uuid.uuid4().hex[:12]}"
         self.run(["git", "clone", "--no-checkout", "--no-hardlinks", remote, str(self.verifier)])
         self.run(["git", "checkout", "--detach", commit], cwd=self.verifier)
-        validation = validate_library(self.verifier)
+        validation = validate_library(self.verifier, allow_uncataloged_skills=True)
         remote_manifest: dict[str, str] = {}
         for relative in validation.manifest:
             blob = subprocess.run(
@@ -956,6 +996,8 @@ class LibraryTransaction:
         commit = self.run(["git", "rev-parse", "HEAD"], cwd=self.workspace).stdout.strip().lower()
         if not re.fullmatch(r"[0-9a-f]{40}", commit):
             raise SkillMagnetError("Git did not produce a full commit SHA")
+        journal.update(status="publishing", commit=commit, publish_started_at=_utc_now())
+        self._write_journal(journal)
         remote_ref = self.run(
             ["git", "ls-remote", "--heads", "origin", journal["branch"]],
             cwd=self.workspace,
@@ -974,25 +1016,39 @@ class LibraryTransaction:
             if not re.match(r"https://github\.com/[^/]+/[^/]+(?:\.git)?$", journal["remote"]):
                 status = "published_pending"
             else:
-                result = self.run(
+                repository = journal["remote"].removesuffix(".git")
+                existing = self.run(
                     [
-                        "gh",
-                        "pr",
-                        "create",
-                        "--repo",
-                        journal["remote"].removesuffix(".git"),
-                        "--head",
-                        journal["branch"],
-                        "--base",
-                        journal["default_branch"],
-                        "--title",
-                        "Update Skill Magnet library",
-                        "--body",
-                        f"Transaction `{self.transaction_id}`. Remote digest verification passed.",
+                        "gh", "pr", "list", "--repo", repository,
+                        "--head", journal["branch"], "--state", "all",
+                        "--limit", "1", "--json", "url",
                     ],
                     cwd=self.workspace,
+                    check=False,
                 )
-                pr_url = result.stdout.strip()
+                existing_prs = json.loads(existing.stdout) if existing.returncode == 0 else []
+                if existing_prs:
+                    pr_url = str(existing_prs[0]["url"])
+                else:
+                    result = self.run(
+                        [
+                            "gh",
+                            "pr",
+                            "create",
+                            "--repo",
+                            repository,
+                            "--head",
+                            journal["branch"],
+                            "--base",
+                            journal["default_branch"],
+                            "--title",
+                            "Update Skill Magnet library",
+                            "--body",
+                            f"Transaction `{self.transaction_id}`. Remote digest verification passed.",
+                        ],
+                        cwd=self.workspace,
+                    )
+                    pr_url = result.stdout.strip()
                 status = "published_pending"
         journal.update(
             status=status,
@@ -1016,9 +1072,10 @@ class LibraryTransaction:
         if remote_validation.manifest != journal["preview"]["manifest"]:
             raise SkillMagnetError("Merged remote bytes do not match the approved preview")
         if journal.get("pr_url"):
+            command_cwd = self.workspace if self.workspace.is_dir() else self.root
             result = self.run(
                 ["gh", "pr", "view", journal["pr_url"], "--json", "state,mergeCommit"],
-                cwd=self.workspace,
+                cwd=command_cwd,
             )
             pr = json.loads(result.stdout)
             if pr.get("state") != "MERGED":
@@ -1141,7 +1198,12 @@ class LibraryTransaction:
         _atomic_json(self.receipt_path, receipt)
         journal.update(status="active", activated_at=_utc_now(), receipt=str(self.receipt_path))
         self._write_journal(journal)
-        self.cleanup()
+        cleanup_pending = self.cleanup()
+        if cleanup_pending:
+            receipt["cleanup_pending"] = cleanup_pending
+            _atomic_json(self.receipt_path, receipt)
+            journal["cleanup_pending"] = cleanup_pending
+            self._write_journal(journal)
         return receipt
 
     def status(self, config_path: Path | None = None) -> dict[str, Any]:
@@ -1173,6 +1235,8 @@ class LibraryTransaction:
             display = "published_pending"
         elif status == "prepared":
             display = "unpublished_edit"
+        elif status in {"preparing", "interrupted", "publishing"}:
+            display = "interrupted"
         else:
             display = status
         pack_ids = list(journal.get("preview", {}).get("pack_ids", []))
@@ -1185,6 +1249,11 @@ class LibraryTransaction:
         return {
             "transaction_id": self.transaction_id,
             "status": display,
+            "resume_stage": (
+                "publish" if status == "publishing" else "prepare"
+                if status in {"preparing", "interrupted"} else ""
+            ),
+            "updated_at": str(journal.get("updated_at", journal.get("created_at", ""))),
             "remote_head": remote_head,
             "verified_commit": published_commit if status in {"verified", "active"} else "",
             "active_commit": active_commit,
@@ -1198,14 +1267,117 @@ class LibraryTransaction:
             "receipt": str(self.receipt_path) if self.receipt_path.exists() else "",
         }
 
-    def cleanup(self) -> None:
+    def cleanup(self, *, include_workspace: bool = True) -> list[str]:
+        """Remove disposable checkouts without turning completed work into failure."""
+        pending: list[str] = []
+        candidates = [*sorted(self.root.glob("remote-verifier*"))]
+        if include_workspace:
+            candidates.insert(0, self.workspace)
+        root = self.root.resolve()
+
         def make_writable(function: Any, path: str, _: BaseException) -> None:
             os.chmod(path, stat.S_IWRITE)
             function(path)
 
-        for path in (self.workspace, self.verifier):
-            if path.exists():
-                shutil.rmtree(path, onexc=make_writable)
+        for path in dict.fromkeys(candidates):
+            resolved = path.resolve()
+            if resolved.parent != root:
+                pending.append(str(path))
+                continue
+            for attempt in range(3):
+                if not path.exists():
+                    break
+                try:
+                    shutil.rmtree(path, onexc=make_writable)
+                except OSError:
+                    if attempt == 2:
+                        pending.append(str(path))
+                    else:
+                        time.sleep(0.1 * (attempt + 1))
+        return pending
+
+    def recover(self) -> dict[str, Any]:
+        """Recover an interrupted local transaction while preserving remote state."""
+        journal = self._journal()
+        status = str(journal.get("status", "draft"))
+        pending = self.cleanup(include_workspace=status != "publishing")
+        rebuilt = False
+        if status in {"preparing", "interrupted"}:
+            status = str(journal.get("resume_status", "draft"))
+            journal["status"] = status
+            self._write_journal(journal)
+        if status == "publishing":
+            if self.workspace.is_dir():
+                journal["status"] = "prepared"
+                self._write_journal(journal)
+            else:
+                remote_ref = self.run(
+                    ["git", "ls-remote", "--heads", str(journal["remote"]), str(journal["branch"])],
+                    check=False,
+                ).stdout.strip()
+                if remote_ref.startswith(str(journal.get("commit", ""))):
+                    self.run(["git", "clone", "--no-hardlinks", str(journal["remote"]), str(self.workspace)])
+                    self.run(
+                        ["git", "switch", "-C", str(journal["branch"]), str(journal["commit"])],
+                        cwd=self.workspace,
+                    )
+                    journal["status"] = "prepared"
+                    self._write_journal(journal)
+                else:
+                    journal["status"] = "draft"
+                    self._write_journal(journal)
+                    status = "draft"
+            journal = self._journal()
+            status = str(journal["status"])
+        if status in {"draft", "prepared"} and (
+            status == "draft" or not self.workspace.is_dir()
+        ):
+            draft = Path(str(journal.get("draft", "")))
+            if not draft.is_dir():
+                raise SkillMagnetError(
+                    "元のライブラリが見つからないため再開できません。"
+                    "この作業を破棄して、登録からやり直してください"
+                )
+            if status != "draft":
+                journal["status"] = "draft"
+                self._write_journal(journal)
+            self.prepare(
+                draft=draft,
+                remote=str(journal["remote"]),
+                branch=journal.get("branch") or journal.get("requested_branch"),
+            )
+            journal = self._journal()
+            rebuilt = True
+        journal["last_recovery_at"] = _utc_now()
+        journal["cleanup_pending"] = pending
+        self._write_journal(journal)
+        return {
+            "transaction_id": self.transaction_id,
+            "status": journal["status"],
+            "workspace_rebuilt": rebuilt,
+            "cleanup_pending": pending,
+        }
+
+    def abandon(self, *, confirmed: bool) -> dict[str, Any]:
+        """Abandon only local work; never remove a remote branch or pull request."""
+        if not confirmed:
+            raise SkillMagnetError("作業の破棄には確認が必要です")
+        journal = self._journal()
+        previous = str(journal.get("status", "draft"))
+        pending = self.cleanup()
+        journal.update(
+            status="abandoned",
+            abandoned_from=previous,
+            abandoned_at=_utc_now(),
+            cleanup_pending=pending,
+        )
+        self._write_journal(journal)
+        return {
+            "transaction_id": self.transaction_id,
+            "status": "abandoned",
+            "remote_changes_preserved": bool(journal.get("commit") or journal.get("pr_url")),
+            "cleanup_pending": pending,
+        }
 
 
 def list_transactions(state_dir: Path, config_path: Path | None = None) -> dict[str, Any]:
