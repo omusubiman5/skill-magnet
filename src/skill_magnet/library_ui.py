@@ -45,6 +45,16 @@ def configured_repository_url(config_path: Path) -> str:
     return next(iter(urls)) if len(urls) == 1 else ""
 
 
+def require_registration_source(value: str) -> Path:
+    """Require an already-created standard skill folder for manual registration."""
+    if not value.strip():
+        raise SkillMagnetError("登録する作成済みスキルのフォルダーを選択してください")
+    source = Path(value).resolve()
+    if not (source / "SKILL.md").is_file() or not (source / "acceptance.json").is_file():
+        raise SkillMagnetError("選択したフォルダーにはSKILL.mdとacceptance.jsonが必要です")
+    return source
+
+
 def import_selected_skill(repository: Path, source: Path | None) -> bool:
     """Import a standard skill folder and use the generic custom-skills pack."""
     if source is None or not (source / "SKILL.md").is_file():
@@ -162,10 +172,11 @@ def show_library_manager(
     row(page, 3, "Purpose", purpose)
     row(page, 4, "Pack ID", pack_id)
     row(page, 5, "Pack display name", pack_display_name)
-    row(page, 6, "Import directory (optional)", import_source, select_import)
+    row(page, 6, "作成済みスキルのフォルダー", import_source, select_import)
 
     def add() -> None:
         try:
+            source = require_registration_source(import_source.get())
             add_skill(
                 require_repository(),
                 skill_id=skill_id.get().strip(),
@@ -173,7 +184,7 @@ def show_library_manager(
                 purpose=purpose.get().strip(),
                 pack_id=pack_id.get().strip(),
                 pack_display_name=pack_display_name.get().strip() or None,
-                skill_source=Path(import_source.get()) if import_source.get().strip() else None,
+                skill_source=source,
             )
             messagebox.showinfo(
                 "Skill",
