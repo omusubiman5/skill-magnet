@@ -1739,7 +1739,7 @@ class ActivationEndToEndTest(unittest.TestCase):
         registration = render_registration("windows", self.config_path)
         self.assertIn("HKEY_CURRENT_USER", registration)
         self.assertIn("--pack bounded-pack", registration)
-        self.assertIn('"MUIVerb"="bounded-answer"', registration)
+        self.assertIn('"MUIVerb"="Skill: bounded-answer"', registration)
         self.assertIn("Finder Quick Action", render_registration("macos", self.config_path))
 
     def test_windows_individual_skill_leaves_fix_skill_runtime_and_digests(self) -> None:
@@ -1761,7 +1761,7 @@ class ActivationEndToEndTest(unittest.TestCase):
             self.assertIn("--menu-instruction-digest", leaf.command)
             self.assertIn("--menu-acceptance-digest", leaf.command)
             self.assertEqual(leaf.pack_label, f"Pack: {leaf.pack_id}")
-            self.assertEqual(leaf.skill_label, leaf.skill_id)
+            self.assertEqual(leaf.skill_label, f"Skill: {leaf.skill_id}")
 
     def test_product_menu_has_one_pack_leaf_bound_to_all_nine_skills(self) -> None:
         product_config = Path(__file__).resolve().parents[1] / "skill-magnet.json"
@@ -1772,6 +1772,7 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertIsNone(leaf.skill_id)
         self.assertEqual(len(leaf.skill_ids), 9)
         self.assertEqual(leaf.display_name, "Delivery Assurance")
+        self.assertEqual(leaf.skill_label, "Skill Pack: Delivery Assurance")
         self.assertNotIn("--skill", leaf.command)
         self.assertNotIn("--runtime", leaf.command)
         self.assertIn("--menu-instruction-digest", leaf.command)
@@ -1810,7 +1811,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                 }
                 self.assertEqual(
                     pack_labels,
-                    {leaf.display_name for leaf in leaves} | {"Skill Library Manager"},
+                    {leaf.skill_label for leaf in leaves} | {"Library Manager"},
                 )
 
     def test_both_roots_propagate_complete_pack_contract_and_reject_tampering(self) -> None:
@@ -2171,7 +2172,7 @@ class ActivationEndToEndTest(unittest.TestCase):
             if item.skill_id == "bounded-answer"
         )
 
-        self.assertEqual(leaf.skill_label, "境界 &lt;表示名&gt;")
+        self.assertEqual(leaf.skill_label, "Skill: 境界 &lt;表示名&gt;")
         self.assertEqual(leaf.purpose, "用途 &lt;保持&gt;")
         persisted = self.config_path.read_text(encoding="utf-8")
         self.assertIn("境界&#x20;&lt;表示名&gt;", persisted)
@@ -3217,7 +3218,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                 "Skill Magnet",
                 "manager",
                 "library-manager",
-                "Skill Library Manager",
+                "Library Manager",
             ],
         )
         self.assertEqual(manager[6].count("__SKILL_MAGNET_PROJECT__"), 1)
@@ -3227,8 +3228,8 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertCountEqual(
             [(record[0], record[3], record[4]) for record in skill_records],
             [
-                ("bounded-pack", "bounded-answer", "bounded-answer"),
-                ("unused-pack", "unused-skill", "unused-skill"),
+                ("bounded-pack", "bounded-answer", "Skill: bounded-answer"),
+                ("unused-pack", "unused-skill", "Skill: unused-skill"),
             ],
         )
         for _, menu_label, selection_kind, _, display_name, purpose, command in skill_records:

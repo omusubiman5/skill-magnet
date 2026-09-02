@@ -19,8 +19,8 @@ status: implemented
 
 ### 製品入口
 
-- Windows Explorerでは右クリック`Skill Magnet` → `Skill Library Manager`から直接開く。
-- macOS Finderではクイックアクション`Skill Magnet`の共通画面内にある`Skill Library Manager`から開く。
+- Windows Explorerでは右クリック`Skill Magnet` → `Library Manager`から直接開く。pack実行項目は`Skill Pack: <表示名>`、単体skill項目は`Skill: <表示名>`として種別を明示する。
+- macOS Finderではクイックアクション`Skill Magnet`の共通画面内にある`Library Manager`から開く。
 - GUIの作業用repositoryは製品state内で自動作成・再利用し、保存先、repository名、`Draft directory`を入力させない。右クリックしたfolderに`SKILL.md`がある場合だけskill import候補へ事前入力する。画面を開くだけではpublishもactivateも実行しない。
 - `python -m skill_magnet library ui`でコンパクトなSkill Library Managerを開く。
 - 登録とGitHub公開をタブのない1画面へ統合した。標準構成の作成済みスキルfolderを右クリックした場合は自動importして登録欄を隠し、手動登録時だけ同じ画面上部へfolder欄を表示する。repository、catalog/INDEX、validation、preview、activationの独立画面は設けない。

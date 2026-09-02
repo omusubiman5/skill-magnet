@@ -23,7 +23,9 @@ The modern entry uses Microsoft's supported desktop-app integration:
 3. `windows.fileExplorerContextMenus` binds the same command CLSID to both
    `Directory` and `Directory\Background`.
 4. Windows 11's compact surface renders one direct item for each configured
-   package. The current release has one item labeled `Delivery Assurance`.
+   package. Package entries use `Skill Pack: <display name>` and the manager
+   action uses `Library Manager`, so their roles are immediately distinguishable.
+   The current package entry is `Skill Pack: Delivery Assurance`.
    Package members and runtime choices are not emitted as Explorer leaves.
    Selecting the package opens the common confirmation UI, where the user
    chooses Codex or Claude and enters the actual request. The installer-generated

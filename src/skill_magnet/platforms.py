@@ -20,6 +20,7 @@ from .core import Config, Engine, Pack, SafetyError, SkillMagnetError, _is_link
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent
 _SOURCE_ROOT = _PACKAGE_ROOT.parent
+LIBRARY_MANAGER_MENU_LABEL = "Library Manager"
 
 
 def _absolute_path(path: Path) -> Path:
@@ -71,7 +72,8 @@ class WindowsMenuLeaf:
 
     @property
     def skill_label(self) -> str:
-        return self.display_name
+        kind = "Skill Pack" if self.skill_id is None else "Skill"
+        return f"{kind}: {self.display_name}"
 
     @property
     def skill_ids_digest(self) -> str:
@@ -305,7 +307,7 @@ def render_windows_modern_menu_manifest(config: Path) -> str:
                 "Skill Magnet",
                 "manager",
                 "library-manager",
-                "Skill Library Manager",
+                LIBRARY_MANAGER_MENU_LABEL,
                 "GitHub skill libraryを追加・検証・公開・有効化します。",
                 manager_command,
             )
@@ -318,7 +320,7 @@ def render_windows_modern_menu_manifest(config: Path) -> str:
             "Skill Magnet",
             pack.selection_kind,
             leaf.skill_id or leaf.pack_id,
-            leaf.display_name,
+            leaf.skill_label,
             leaf.purpose,
             windows_command(leaf.command),
         )
@@ -1052,7 +1054,7 @@ def _windows_registry_entries(config: Path, root: str, placeholder: str) -> list
     manager_root = root + r"\shell\library-manager"
     entries.extend(
         [
-            (manager_root, "MUIVerb", "Skill Library Manager"),
+            (manager_root, "MUIVerb", LIBRARY_MANAGER_MENU_LABEL),
             (
                 manager_root + r"\command",
                 "",

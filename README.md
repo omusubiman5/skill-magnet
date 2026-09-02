@@ -56,7 +56,7 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 
 Skill Library Managerは、スキルを追加してGitHubへ公開し、Skill Magnetで使える状態にするための案内画面です。作業途中のファイルはアプリ専用領域へ自動保存されます。利用者が作業用フォルダーやrepository名を決める必要はありません。
 
-通常は、`SKILL.md`と`acceptance.json`が入った作成済みスキルのフォルダーを右クリックします。Windows Explorerでは`Skill Magnet` → `Skill Library Manager`、macOS Finderではクイックアクション`Skill Magnet` → `Skill Library Manager`を選びます。標準構成ならアプリが自動で取り込み、登録欄を隠します。手動登録する場合だけ、同じ画面の上部にフォルダー選択欄を表示します。
+通常は、`SKILL.md`と`acceptance.json`が入った作成済みスキルのフォルダーを右クリックします。Windows Explorerでは`Skill Magnet` → `Library Manager`、macOS Finderではクイックアクション`Skill Magnet`を開いて`Library Manager`を選びます。標準構成ならアプリが自動で取り込み、登録欄を隠します。手動登録する場合だけ、同じ画面の上部にフォルダー選択欄を表示します。
 
 ### 操作ガイド（1画面）
 
@@ -139,7 +139,7 @@ python -m skill_magnet library status
 
 4. Windowsの確認画面が出た場合は、次節の表と一致するときだけ「はい」を選びます。commandが完了すると、登録結果がJSONで表示されます。
 
-5. Explorerで対象folderそのもの、またはfolder内の何もない場所を通常右クリックします。`その他のオプションを表示`へ進まず、最初のメニューにある`Skill Magnet`から、skillを使う場合は目的に合うpackを、skill repositoryを管理する場合は`Skill Library Manager`を選びます。
+5. Explorerで対象folderそのもの、またはfolder内の何もない場所を通常右クリックします。`その他のオプションを表示`へ進まず、最初のメニューにある`Skill Magnet`から、skill packを使う場合は`Skill Pack: <パック名>`、skill repositoryを管理する場合は`Library Manager`を選びます。接頭辞により、実行対象のパック名と管理機能を区別できます。
 
 6. Skill Magnet画面でCodexまたはClaude、依頼内容を入力し、対象pack、含まれる全skill、用途を確認して実行します。CodexならDesktop appの新規taskが開きます。技術情報は既定で閉じた「詳細」にあります。
 

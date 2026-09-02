@@ -64,8 +64,8 @@ Skill Library ManagerのCLI基本経路、実Windows GUIのタブのない1画�
 | Check | Result |
 |---|---|
 | 通常右クリックに`Skill Magnet`が1入口だけ表示 | PASS |
-| サブメニューに`Skill Library Manager`と`Delivery Assurance`の2 action | PASS |
-| 標準folderからの`Skill Library Manager`選択で登録欄が隠れ、GitHub公開欄が起動 | PASS |
+| サブメニューに`Library Manager`と`Skill Pack: Delivery Assurance`の2 action | PASS |
+| 標準folderからの`Library Manager`選択で登録欄が隠れ、GitHub公開欄が起動 | PASS |
 | `Draft directory`、repository名、保存先の入力欄が表示されない | PASS |
 | 作業用repositoryがアプリ専用state内に自動決定される | PASS |
 | 右クリック対象は`SKILL.md`がある場合だけimport候補になる | PASS |

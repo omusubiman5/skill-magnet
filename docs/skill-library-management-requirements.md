@@ -138,7 +138,7 @@ Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデ�
 
 ### User Experience
 
-- FR-22: Skill Library ManagerはOSの右クリック`Skill Magnet`入口から開けなければならない。Windows Explorerでは`Skill Magnet`配下の固定actionとして直接選択でき、macOS Finderでは`Skill Magnet`クイックアクションが開く共通画面内から選択できる。作業用repositoryはアプリ専用state内で自動管理し、利用者へ保存先やrepository名を入力させない。右クリック対象に`SKILL.md`がある場合だけskill import候補へ事前入力し、publishまたはactivateを自動実行してはならない。
+- FR-22: Library ManagerはOSの右クリック`Skill Magnet`入口から開けなければならない。Windows Explorerでは`Skill Magnet`配下の`Library Manager`として直接選択でき、macOS Finderでは`Skill Magnet`クイックアクションが開く共通画面内から選択できる。実行項目は`Skill Pack: <表示名>`（単体skill選択を構成する場合は`Skill: <表示名>`）とし、管理機能・pack・skillの種別を見ただけで区別できなければならない。作業用repositoryはアプリ専用state内で自動管理し、利用者へ保存先やrepository名を入力させない。右クリック対象に`SKILL.md`がある場合だけskill import候補へ事前入力し、publishまたはactivateを自動実行してはならない。
 
 基本flowはタブのない1画面とする。作業用repository、catalog、INDEX、validation、preview、activationのためだけの独立画面は設けず、自動処理または同じ画面へ統合する。
 
@@ -314,3 +314,4 @@ OSは利用者へ選択させず実行環境から自動判定する。URL未入
 | 1.1 | 2026-09-02 | Codex | FR-1〜FR-21の実装・検証完了に伴いstatusをimplementedへ更新 |
 | 1.2 | 2026-09-02 | Codex | 実行ターゲットをCodex Desktopアプリ／Claude Codeデスクトップアプリとして明記 |
 | 1.3 | 2026-09-02 | Codex | OS右クリックからSkill Library Managerを開くFR-22を追加し、Windows実機で検証 |
+| 1.4 | 2026-09-02 | Codex | 右クリック表示を`Library Manager`、`Skill Pack: <表示名>`、`Skill: <表示名>`に分類 |
