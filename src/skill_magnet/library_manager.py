@@ -468,7 +468,7 @@ def import_skill_source(root: Path, source: Path) -> dict[str, Any]:
                 + ", ".join(sorted(same_members))
             )
 
-    prepared: dict[str, tuple[bytes, dict[str, Any], bool]] = {}
+    prepared: dict[str, tuple[Path, tuple[str, ...], bool]] = {}
     metadata_by_skill: dict[str, tuple[str, str]] = {}
     for pack in discovered:
         for skill_id in pack["skills"]:
@@ -478,15 +478,9 @@ def import_skill_source(root: Path, source: Path) -> dict[str, Any]:
                 raise SkillMagnetError(
                     f"SKILL.md name must equal directory id: {skill_id}"
                 )
-            skill_bytes = (skill_source / "SKILL.md").read_bytes()
+            sibling_ids: tuple[str, ...] = ()
             if skill_source == source or skill_source.name == pack["id"]:
-                child_ids = set(pack["skills"]) - {skill_id}
-                text = skill_bytes.decode("utf-8-sig")
-                for child_id in child_ids:
-                    text = text.replace(
-                        f"]({child_id}/SKILL.md)", f"](../{child_id}/SKILL.md)"
-                    )
-                skill_bytes = text.encode("utf-8")
+                sibling_ids = tuple(set(pack["skills"]) - {skill_id})
             acceptance_path = skill_source / "acceptance.json"
             if acceptance_path.is_file() and not _is_link(acceptance_path):
                 acceptance = _read_json(acceptance_path)
@@ -494,7 +488,7 @@ def import_skill_source(root: Path, source: Path) -> dict[str, Any]:
             else:
                 acceptance = _generated_acceptance(skill_source)
                 generated = True
-            prepared[skill_id] = (skill_bytes, acceptance, generated)
+            prepared[skill_id] = (skill_source, sibling_ids, generated)
             metadata_by_skill[skill_id] = (display_name, purpose)
 
     def mutation(candidate: Path) -> None:
@@ -524,10 +518,10 @@ def import_skill_source(root: Path, source: Path) -> dict[str, Any]:
                 packs.append(target_pack)
             for skill_id in pack["skills"]:
                 target = candidate / skill_id
-                target.mkdir()
-                skill_bytes, acceptance, _ = prepared[skill_id]
-                (target / "SKILL.md").write_bytes(skill_bytes)
-                _atomic_json(target / "acceptance.json", acceptance)
+                skill_source, sibling_ids, _ = prepared[skill_id]
+                _write_source_skill(
+                    target, skill_source, sibling_skill_ids=sibling_ids
+                )
                 target_pack.setdefault("skills", []).append(skill_id)
                 display_name, purpose = metadata_by_skill[skill_id]
                 target_pack.setdefault("skill_metadata", {})[skill_id] = {
@@ -677,7 +671,21 @@ def _write_source_skill(
     if target.exists():
         shutil.rmtree(target)
     target.mkdir()
-    skill_bytes = (source / "SKILL.md").read_bytes()
+    for candidate in sorted(source.rglob("*")):
+        relative = candidate.relative_to(source)
+        if candidate.is_symlink():
+            raise SkillMagnetError(f"Symbolic links are not allowed: {candidate}")
+        if ".git" in relative.parts or "__pycache__" in relative.parts:
+            continue
+        if candidate.is_dir():
+            continue
+        if candidate.name == "acceptance.json" or candidate.suffix == ".pyc":
+            continue
+        destination = target / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(candidate, destination)
+
+    skill_bytes = (target / "SKILL.md").read_bytes()
     if sibling_skill_ids:
         text = skill_bytes.decode("utf-8-sig")
         for sibling in sibling_skill_ids:
@@ -719,6 +727,10 @@ def update_skill_source(root: Path, skill_id: str, source: Path) -> dict[str, An
                     "display_name": display_name,
                     "purpose": purpose,
                 }
+                if str(pack.get("id")) == "custom-skills" and list(
+                    map(str, pack["skills"])
+                ) == [skill_id]:
+                    pack["purpose"] = purpose
         _atomic_json(candidate / CATALOG_FILENAME, catalog)
 
     result = _mutate_library_candidate(root, mutation).as_dict()
@@ -980,8 +992,11 @@ def validate_library(
     manifest_paths = {CATALOG_FILENAME}
     if "INDEX.md" in files:
         manifest_paths.add("INDEX.md")
-    for skill in skills:
-        manifest_paths.update((f"{skill}/SKILL.md", f"{skill}/acceptance.json"))
+    manifest_paths.update(
+        relative
+        for relative in files
+        if PurePosixPath(relative).parts[0] in all_skills
+    )
     manifest = {path: _sha256(files[path]) for path in sorted(manifest_paths)}
     menu_value = [
         {
@@ -1690,12 +1705,31 @@ class LibraryTransaction:
 
         previous_shape = config_menu_shape(replaced_previous)
         generated_shape = config_menu_shape(generated)
+        def deployment_shape(packs: list[dict[str, Any]]) -> str:
+            return _sha256(
+                _canonical(
+                    [
+                        {
+                            "id": pack.get("id"),
+                            "repo_url": pack.get("repo_url"),
+                            "expected_commit": pack.get("expected_commit"),
+                        }
+                        for pack in packs
+                    ]
+                )
+            )
+
+        previous_deployment = deployment_shape(replaced_previous)
+        generated_deployment = deployment_shape(generated)
         temporary = config_path.with_name(f".{config_path.name}.{self.transaction_id}.candidate")
         _atomic_json(temporary, candidate)
         try:
             Config.load(temporary)
             os.replace(temporary, config_path)
-            menu_changed = previous_shape != generated_shape
+            menu_changed = (
+                previous_shape != generated_shape
+                or previous_deployment != generated_deployment
+            )
             menu_result: Any = {"updated": False, "reason": "menu_shape_unchanged"}
             if menu_changed and menu_update is not None:
                 menu_result = menu_update(config_path)

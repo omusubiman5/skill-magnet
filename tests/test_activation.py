@@ -1838,7 +1838,10 @@ class ActivationEndToEndTest(unittest.TestCase):
         for leaf in leaves:
             if leaf.pack_id == "custom-skills":
                 self.assertEqual(leaf.skill_id, "cma-004")
-                self.assertEqual(leaf.skill_label, "Skill: CMA004 — AI NEWS Podcast Audio")
+                self.assertEqual(
+                    leaf.skill_label,
+                    "Skill: CMA004 — CMA001を1ニュース1Markdownで出力する",
+                )
                 self.assertIn("--skill", leaf.command)
             else:
                 self.assertIsNone(leaf.skill_id)

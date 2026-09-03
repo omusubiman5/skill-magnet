@@ -11,16 +11,16 @@
   "release_scope": "configured-selection-leaves",
   "release_version": "0.5.8",
   "distribution_scope": "local-self-signed",
-  "full_test_count": 178,
+  "full_test_count": 179,
   "menu_leaf_count": 3,
   "menu_action_count": 5,
   "library_manager_entry_count": 1,
   "register_folder_entry_count": 1,
   "selection_kinds": ["package", "skill"],
   "pack_skill_counts": [1, 9, 12],
-  "release_code_sha": "4a750ab95040a3b4af6615692d7406e50d285aae",
-  "wheel_payload_sha256": "5b12f4ffc835586adaadb759d89be9d34b17065143f3909542fb05134e6c0452",
-  "automated_status": "LOCAL_RELEASE_GATE_PASS_178",
+  "release_code_sha": "6f8b740ab901099dc844a5e87c6a2d3b0ec0c911",
+  "wheel_payload_sha256": "1e816dfaca8311c35bc9ff5b6847867bf128a9c2e5634f161f0bf67f039f6ffd",
+  "automated_status": "LOCAL_RELEASE_GATE_PASS_179",
   "windows_explorer_field_status": "PASS_REAL_RIGHT_CLICK_MENU_AND_CONFIRMATION_UI_0_5_1",
   "macos_finder_field_status": "CI_SEMANTIC_ONLY_REAL_UI_NOT_CLAIMED_FOR_0_5_2",
   "public_distribution_status": "NOT_CLAIMED_REQUIRES_EXTERNAL_PUBLISHER",
@@ -28,7 +28,7 @@
 }
 explorer-results-ledger:end -->
 
-- 統合テスト: `python -m unittest discover -s tests -v` — 178 tests PASS、環境依存1件skip
+- 統合テスト: `python -m unittest discover -s tests -v` — 179 tests PASS、環境依存1件skip
 - menu contract: active 2 package leaves + `CMA004` skill leaf / 選択フォルダー登録1 action / `Library Manager` 1 action / selection kinds `[package, skill]` / 選択単位別skill数 `[1, 9, 12]`
 - 自動証拠: contract固定、GitHub固定commitのINDEX/全SKILL参照、archiveのメモリ内検証、deep-link binding、ローカルskill残留ゼロ
 - wheel再現性: 独立した2 directoryで0.4.0 wheelをbuildし、論理payload SHA-256が両方`c9a0ffe8f542fd475144ac8fecd284175a46863d69d1d44ec5be78ed901ba38f`で一致した。
