@@ -26,4 +26,7 @@
 - `python -m unittest tests.test_library_manager -v`: 35 PASS。
 - `python -m unittest discover -s tests -q`: 179 PASS、環境依存1件skip。
 
-リリース候補確定後にcommit、wheel digest、実機再導入結果を追記する。
+- release code: `3631483db0505293c34e7372f0dc76f14fb748fb`。
+- 独立2 buildのwheel論理payload SHA-256: 両方`a75bd3c26b7842c6a8aea47be80384399bc68bd4fc2b403356eb60b92809ec46`。
+
+実機再導入結果は導入後に追記する。

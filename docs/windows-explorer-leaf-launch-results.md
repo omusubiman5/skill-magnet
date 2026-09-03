@@ -18,8 +18,8 @@
   "register_folder_entry_count": 1,
   "selection_kinds": ["package", "skill"],
   "pack_skill_counts": [1, 9, 12],
-  "release_code_sha": "6f8b740ab901099dc844a5e87c6a2d3b0ec0c911",
-  "wheel_payload_sha256": "1e816dfaca8311c35bc9ff5b6847867bf128a9c2e5634f161f0bf67f039f6ffd",
+  "release_code_sha": "3631483db0505293c34e7372f0dc76f14fb748fb",
+  "wheel_payload_sha256": "a75bd3c26b7842c6a8aea47be80384399bc68bd4fc2b403356eb60b92809ec46",
   "automated_status": "LOCAL_RELEASE_GATE_PASS_179",
   "windows_explorer_field_status": "PASS_REAL_RIGHT_CLICK_MENU_AND_CONFIRMATION_UI_0_5_1",
   "macos_finder_field_status": "CI_SEMANTIC_ONLY_REAL_UI_NOT_CLAIMED_FOR_0_5_2",
@@ -29,6 +29,7 @@
 explorer-results-ledger:end -->
 
 - 統合テスト: `python -m unittest discover -s tests -v` — 179 tests PASS、環境依存1件skip
+- 標準Skill登録validationから`trigger`／`boundary`固定語検査を撤去し、必須frontmatter `name`／`description`の構造検査へ訂正した。実`android-cli`を既存libraryの隔離コピーへ登録・再登録し、ユーザーSkill直下132候補／内部155 skillの独立登録を全件PASSで確認した。0.5.8候補wheelの論理payload SHA-256は`a75bd3c26b7842c6a8aea47be80384399bc68bd4fc2b403356eb60b92809ec46`、release codeは`3631483db0505293c34e7372f0dc76f14fb748fb`である。
 - menu contract: active 2 package leaves + `CMA004` skill leaf / 選択フォルダー登録1 action / `Library Manager` 1 action / selection kinds `[package, skill]` / 選択単位別skill数 `[1, 9, 12]`
 - 自動証拠: contract固定、GitHub固定commitのINDEX/全SKILL参照、archiveのメモリ内検証、deep-link binding、ローカルskill残留ゼロ
 - wheel再現性: 独立した2 directoryで0.4.0 wheelをbuildし、論理payload SHA-256が両方`c9a0ffe8f542fd475144ac8fecd284175a46863d69d1d44ec5be78ed901ba38f`で一致した。
