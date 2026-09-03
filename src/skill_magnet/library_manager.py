@@ -452,6 +452,21 @@ def import_skill_source(root: Path, source: Path) -> dict[str, Any]:
     duplicate_skills = set(incoming_skills) & existing_skills
     if duplicate_skills:
         raise SkillMagnetError("Skill already exists: " + ", ".join(sorted(duplicate_skills)))
+    for incoming in discovered:
+        incoming_set = set(map(str, incoming["skills"]))
+        if incoming["id"] == "custom-skills":
+            continue
+        same_members = [
+            pack_id
+            for pack_id, pack in existing_packs.items()
+            if pack_id != incoming["id"]
+            and set(map(str, pack.get("skills", []))) == incoming_set
+        ]
+        if same_members:
+            raise SkillMagnetError(
+                "同じスキル構成のパックが登録済みです: "
+                + ", ".join(sorted(same_members))
+            )
 
     prepared: dict[str, tuple[bytes, dict[str, Any], bool]] = {}
     metadata_by_skill: dict[str, tuple[str, str]] = {}
@@ -534,6 +549,307 @@ def import_skill_source(root: Path, source: Path) -> dict[str, Any]:
         imported_skill_ids=incoming_skills,
         generated_acceptance_count=sum(1 for _, _, generated in prepared.values() if generated),
     )
+    return result
+
+
+def library_inventory(root: Path) -> dict[str, Any]:
+    """Return user-facing pack/skill hierarchy without exposing catalog editing."""
+    root = root.resolve()
+    catalog = _read_json(root / CATALOG_FILENAME)
+    if not catalog.get("packs"):
+        repository = catalog.get("repository", {})
+        return {
+            "repository": str(root),
+            "repository_name": str(repository.get("name", "")),
+            "pack_count": 0,
+            "skill_count": 0,
+            "packs": [],
+        }
+    validation = validate_library(root)
+    memberships: dict[str, list[str]] = {}
+    for pack in catalog["packs"]:
+        for skill_id in map(str, pack["skills"]):
+            memberships.setdefault(skill_id, []).append(str(pack["id"]))
+    packs: list[dict[str, Any]] = []
+    for pack in catalog["packs"]:
+        metadata = pack.get("skill_metadata", {})
+        packs.append(
+            {
+                "id": str(pack["id"]),
+                "display_name": str(pack.get("display_name", pack["id"])),
+                "purpose": str(pack.get("purpose", "")),
+                "skills": [
+                    {
+                        "id": skill_id,
+                        "display_name": str(
+                            metadata.get(skill_id, {}).get("display_name", skill_id)
+                        ),
+                        "purpose": str(metadata.get(skill_id, {}).get("purpose", "")),
+                        "pack_ids": memberships[skill_id],
+                    }
+                    for skill_id in map(str, pack["skills"])
+                ],
+            }
+        )
+    return {
+        "repository": str(root),
+        "repository_name": validation.repository_name,
+        "pack_count": len(packs),
+        "skill_count": len(validation.skill_ids),
+        "packs": packs,
+    }
+
+
+def _mutate_library_candidate(
+    root: Path, mutation: Callable[[Path], None]
+) -> ValidationResult:
+    """Validate a complete isolated candidate, then atomically replace the library."""
+    root = root.resolve()
+    if not root.is_dir():
+        raise SkillMagnetError(f"Library does not exist: {root}")
+    parent = root.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    staging_root = Path(tempfile.mkdtemp(prefix=f".{root.name}-crud-", dir=parent))
+    candidate = staging_root / root.name
+    backup = parent / f".{root.name}-backup-{uuid.uuid4().hex}"
+    replaced = False
+    try:
+        shutil.copytree(root, candidate, ignore=shutil.ignore_patterns(".git"))
+        mutation(candidate)
+        catalog = _read_json(candidate / CATALOG_FILENAME)
+        (candidate / "INDEX.md").write_text(
+            render_index(catalog), encoding="utf-8", newline="\n"
+        )
+        validation = validate_library(candidate)
+        os.replace(root, backup)
+        replaced = True
+        try:
+            os.replace(candidate, root)
+        except Exception:
+            os.replace(backup, root)
+            replaced = False
+            raise
+        shutil.rmtree(backup, ignore_errors=True)
+        replaced = False
+        return validation
+    finally:
+        if replaced and backup.exists() and not root.exists():
+            os.replace(backup, root)
+        shutil.rmtree(staging_root, ignore_errors=True)
+        if backup.exists() and root.exists():
+            shutil.rmtree(backup, ignore_errors=True)
+
+
+def _write_source_skill(
+    target: Path, source: Path, *, sibling_skill_ids: Iterable[str] = ()
+) -> tuple[str, str, str, bool]:
+    skill_id, display_name, purpose = _source_skill_metadata(source)
+    acceptance_path = source / "acceptance.json"
+    if acceptance_path.is_file() and not _is_link(acceptance_path):
+        acceptance = _read_json(acceptance_path)
+        generated = False
+    else:
+        acceptance = _generated_acceptance(source)
+        generated = True
+    if target.exists():
+        shutil.rmtree(target)
+    target.mkdir()
+    skill_bytes = (source / "SKILL.md").read_bytes()
+    if sibling_skill_ids:
+        text = skill_bytes.decode("utf-8-sig")
+        for sibling in sibling_skill_ids:
+            text = text.replace(
+                f"]({sibling}/SKILL.md)", f"](../{sibling}/SKILL.md)"
+            )
+        skill_bytes = text.encode("utf-8")
+    (target / "SKILL.md").write_bytes(skill_bytes)
+    _atomic_json(target / "acceptance.json", acceptance)
+    return skill_id, display_name, purpose, generated
+
+
+def update_skill_source(root: Path, skill_id: str, source: Path) -> dict[str, Any]:
+    """Replace one selected skill from a same-ID source folder."""
+    source = source.resolve()
+    discovered = discover_skill_sources(source)
+    incoming = [skill for pack in discovered for skill in pack["skills"]]
+    if len(discovered) != 1 or len(incoming) != 1 or not (source / "SKILL.md").is_file():
+        raise SkillMagnetError("スキルの更新にはSKILL.mdを含む1つのスキルフォルダーを選択してください")
+    actual_id, _, _ = _source_skill_metadata(source)
+    if actual_id != skill_id:
+        raise SkillMagnetError(
+            f"更新対象のスキルIDは{skill_id}ですが、選択フォルダーは{actual_id}です"
+        )
+
+    generated = False
+
+    def mutation(candidate: Path) -> None:
+        nonlocal generated
+        catalog = _read_json(candidate / CATALOG_FILENAME)
+        if skill_id not in set(_catalog_skills(catalog)):
+            raise SkillMagnetError(f"登録されていないスキルです: {skill_id}")
+        _, display_name, purpose, generated = _write_source_skill(
+            candidate / skill_id, source
+        )
+        for pack in catalog["packs"]:
+            if skill_id in map(str, pack["skills"]):
+                pack.setdefault("skill_metadata", {})[skill_id] = {
+                    "display_name": display_name,
+                    "purpose": purpose,
+                }
+        _atomic_json(candidate / CATALOG_FILENAME, catalog)
+
+    result = _mutate_library_candidate(root, mutation).as_dict()
+    result.update(operation="update_skill", skill_id=skill_id, generated_acceptance=generated)
+    return result
+
+
+def update_pack_source(root: Path, pack_id: str, source: Path) -> dict[str, Any]:
+    """Replace one selected pack while preserving skills shared by other packs."""
+    source = source.resolve()
+    discovered = discover_skill_sources(source)
+    if len(discovered) != 1:
+        raise SkillMagnetError("パックの更新には1つのスキルパックフォルダーを選択してください")
+    incoming = discovered[0]
+    if str(incoming["id"]) != pack_id:
+        raise SkillMagnetError(
+            f"更新対象のパックIDは{pack_id}ですが、選択フォルダーは{incoming['id']}です"
+        )
+    generated_count = 0
+
+    def mutation(candidate: Path) -> None:
+        nonlocal generated_count
+        catalog = _read_json(candidate / CATALOG_FILENAME)
+        packs = catalog["packs"]
+        index = next((i for i, pack in enumerate(packs) if str(pack.get("id")) == pack_id), None)
+        if index is None:
+            raise SkillMagnetError(f"登録されていないパックです: {pack_id}")
+        old_skills = set(map(str, packs[index]["skills"]))
+        other_skills = {
+            skill
+            for i, pack in enumerate(packs)
+            if i != index
+            for skill in map(str, pack["skills"])
+        }
+        metadata: dict[str, dict[str, str]] = {}
+        for incoming_skill in incoming["skills"]:
+            source_folder = incoming["skill_sources"][incoming_skill]
+            siblings = (
+                set(map(str, incoming["skills"])) - {str(incoming_skill)}
+                if source_folder == source
+                else ()
+            )
+            actual_id, display_name, purpose, generated = _write_source_skill(
+                candidate / incoming_skill,
+                source_folder,
+                sibling_skill_ids=siblings,
+            )
+            if actual_id != incoming_skill:
+                raise SkillMagnetError(
+                    f"SKILL.md name must equal directory id: {incoming_skill}"
+                )
+            generated_count += int(generated)
+            metadata[incoming_skill] = {
+                "display_name": display_name,
+                "purpose": purpose,
+            }
+        for obsolete in old_skills - set(map(str, incoming["skills"])) - other_skills:
+            shutil.rmtree(candidate / obsolete, ignore_errors=True)
+        packs[index] = {
+            "id": pack_id,
+            "display_name": incoming["display_name"],
+            "purpose": incoming["purpose"],
+            "skills": list(incoming["skills"]),
+            "skill_metadata": metadata,
+            "relations": incoming["relations"],
+            "source_index": incoming["source_index"],
+            "entry_skill": incoming["entry_skill"],
+        }
+        _atomic_json(candidate / CATALOG_FILENAME, catalog)
+
+    result = _mutate_library_candidate(root, mutation).as_dict()
+    result.update(operation="update_pack", pack_id=pack_id, generated_acceptance_count=generated_count)
+    return result
+
+
+def delete_skill(root: Path, skill_id: str, *, confirmed: bool) -> dict[str, Any]:
+    """Delete a global skill after dependency and non-empty-library checks."""
+    if not confirmed:
+        raise SkillMagnetError("スキル削除には確認が必要です")
+
+    def mutation(candidate: Path) -> None:
+        catalog = _read_json(candidate / CATALOG_FILENAME)
+        if skill_id not in set(_catalog_skills(catalog)):
+            raise SkillMagnetError(f"登録されていないスキルです: {skill_id}")
+        dependents = sorted(
+            {
+                str(left)
+                for pack in catalog["packs"]
+                for left, right in pack.get("relations", {}).get("depends-on", [])
+                if str(right) == skill_id and str(left) != skill_id
+            }
+        )
+        if dependents:
+            raise SkillMagnetError(
+                f"{skill_id}を必要とするスキルがあるため削除できません: "
+                + ", ".join(dependents)
+            )
+        next_packs = []
+        for pack in catalog["packs"]:
+            pack["skills"] = [value for value in pack["skills"] if str(value) != skill_id]
+            pack.get("skill_metadata", {}).pop(skill_id, None)
+            for kind in RELATION_TYPES:
+                pack.setdefault("relations", {}).setdefault(kind, [])
+                pack["relations"][kind] = [
+                    pair for pair in pack["relations"][kind] if skill_id not in map(str, pair)
+                ]
+            if pack["skills"]:
+                next_packs.append(pack)
+        if not next_packs:
+            raise SkillMagnetError("最後のスキルは削除できません。ライブラリには1つ以上必要です")
+        catalog["packs"] = next_packs
+        shutil.rmtree(candidate / skill_id)
+        _atomic_json(candidate / CATALOG_FILENAME, catalog)
+
+    result = _mutate_library_candidate(root, mutation).as_dict()
+    result.update(operation="delete_skill", skill_id=skill_id)
+    return result
+
+
+def delete_pack(root: Path, pack_id: str, *, confirmed: bool) -> dict[str, Any]:
+    """Delete one pack and only its now-orphaned skill directories."""
+    if not confirmed:
+        raise SkillMagnetError("パック削除には確認が必要です")
+
+    def mutation(candidate: Path) -> None:
+        catalog = _read_json(candidate / CATALOG_FILENAME)
+        target = next((pack for pack in catalog["packs"] if str(pack.get("id")) == pack_id), None)
+        if target is None:
+            raise SkillMagnetError(f"登録されていないパックです: {pack_id}")
+        remaining = [pack for pack in catalog["packs"] if str(pack.get("id")) != pack_id]
+        if not remaining:
+            raise SkillMagnetError("最後のパックは削除できません。ライブラリには1つ以上必要です")
+        remaining_skills = {skill for pack in remaining for skill in map(str, pack["skills"])}
+        removed = set(map(str, target["skills"])) - remaining_skills
+        blockers = sorted(
+            {
+                str(left)
+                for pack in remaining
+                for left, right in pack.get("relations", {}).get("depends-on", [])
+                if str(right) in removed
+            }
+        )
+        if blockers:
+            raise SkillMagnetError(
+                "削除するパックのスキルを必要とするスキルがあります: "
+                + ", ".join(blockers)
+            )
+        catalog["packs"] = remaining
+        for skill_id in removed:
+            shutil.rmtree(candidate / skill_id)
+        _atomic_json(candidate / CATALOG_FILENAME, catalog)
+
+    result = _mutate_library_candidate(root, mutation).as_dict()
+    result.update(operation="delete_pack", pack_id=pack_id)
     return result
 
 
@@ -864,6 +1180,18 @@ class LibraryTransaction:
                 self.run(["git", "switch", default_branch], cwd=self.workspace)
             else:
                 self.run(["git", "switch", "-c", branch_name], cwd=self.workspace)
+            previous_managed: set[str] = set()
+            if (self.workspace / CATALOG_FILENAME).is_file():
+                previous_managed = set(
+                    validate_library(
+                        self.workspace, allow_uncataloged_skills=True
+                    ).manifest
+                )
+            approved_deletions = previous_managed - set(validation.manifest)
+            for relative in approved_deletions:
+                target = self.workspace.joinpath(*PurePosixPath(relative).parts)
+                if target.is_file() and not _is_link(target):
+                    target.unlink()
             _copy_library(draft, self.workspace, validation.manifest)
             validate_library(self.workspace, allow_uncataloged_skills=True)
             if _tree_digest(draft) != before:
@@ -890,10 +1218,11 @@ class LibraryTransaction:
                 if line.strip()
             ]
             deleted = _deleted_git_paths(changed)
-            if deleted:
+            unexpected_deletions = sorted(set(deleted) - approved_deletions)
+            if unexpected_deletions:
                 raise SkillMagnetError(
                     "安全のため、既存GitHubファイルを削除する公開は拒否しました: "
-                    + ", ".join(deleted)
+                    + ", ".join(unexpected_deletions)
                 )
         except Exception as exc:
             journal.update(
@@ -910,6 +1239,7 @@ class LibraryTransaction:
             "branch": branch_name,
             "default_branch": default_branch,
             "changed_files": changed,
+            "deleted_managed_files": sorted(set(deleted) & approved_deletions),
             "pack_ids": list(validation.pack_ids),
             "skill_ids": list(validation.skill_ids),
             "manifest": staged_manifest,
@@ -1170,7 +1500,14 @@ class LibraryTransaction:
         config = _read_json(config_path)
         previous_packs = list(config.get("packs", []))
         managed_ids = set(_pack_map(catalog))
-        retained = [pack for pack in previous_packs if str(pack.get("id")) not in managed_ids]
+        managed_remote = str(journal["remote"])
+        replaced_previous = [
+            pack
+            for pack in previous_packs
+            if str(pack.get("id")) in managed_ids
+            or str(pack.get("repo_url", "")) == managed_remote
+        ]
+        retained = [pack for pack in previous_packs if pack not in replaced_previous]
         generated = [
             self._config_pack(pack, journal["remote"], journal["commit"])
             for pack in _pack_map(catalog).values()
@@ -1184,8 +1521,7 @@ class LibraryTransaction:
                         "label": pack.get("menu_label"),
                         "skills": pack.get("skills", []),
                     }
-                    for pack in previous_packs
-                    if str(pack.get("id")) in managed_ids
+                    for pack in replaced_previous
                 ]
             )
         )

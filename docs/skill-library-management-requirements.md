@@ -1,6 +1,6 @@
 ---
 artifact: prd
-version: "1.3"
+version: "1.4"
 created: 2026-09-02
 status: implemented
 ---
@@ -68,6 +68,7 @@ Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデ�
 | US-5 | repository管理者として、push前に全差分と書込み先を確認し、PR経由で公開したい | P0 |
 | US-6 | 利用者として、途中失敗しても現在利用中のpackを壊したくない | P0 |
 | US-7 | 保守者として、remote更新とローカル有効版の差分をアプリで確認したい | P1 |
+| US-8 | 利用者として、登録済みpack／skillを一覧し、内部IDを入力せず更新・削除したい | P0 |
 
 ## Scope
 
@@ -113,6 +114,10 @@ Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデ�
 - FR-6: 公開前検証はskill／pack ID重複、INDEX参照先欠落、path traversal、symlink、secret候補、`SKILL.md`、frontmatter、trigger、boundary、acceptance schemaをfail-closedで検査しなければならない。登録元の`acceptance.json`は任意とし、不在時は内部互換メタデータを生成する。`test-prompts.json`があれば、そのSHA-256を生成物へ結び付けなければならない。
 - FR-7: アプリはskillを既存packへ追加するか、新しいpackを作成する選択を提供しなければならない。
 - FR-8: アプリはINDEXの`depends-on`、`composes-with`、`contrasts-with`を取込み・検証し、未知skill、自己参照、dependency cycleを拒否しなければならない。`contrasts-with`のskillは同じpackへ共存できるが、実依頼への適用時に同時採用してはならない。
+- FR-26: アプリはcatalogからpack→skillの階層、表示名、説明、所属を一覧表示しなければならない。内部IDは照合用に表示できるが、CRUD操作の入力値として利用者に要求してはならない。
+- FR-27: 選択したskillまたはpackを同じIDのフォルダーから更新できなければならない。ID不一致、構成不正、検証失敗時はcatalog、INDEX、skillファイルを変更前へ戻さなければならない。
+- FR-28: 選択したskillまたはpackを削除できなければならない。依存されているskill、最後のpack／skillは拒否し、pack削除では他packと共有されていないskillファイルだけを削除しなければならない。
+- FR-29: 別pack IDであってもskill集合が同一なら重複packとして新規登録を拒否しなければならない。remote検証後の有効化では同じrepository URLの旧pack集合をcatalogの現行集合で置換し、削除済みpackをメニューへ残してはならない。
 
 ### Publish Transaction
 

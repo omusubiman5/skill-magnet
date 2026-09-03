@@ -9,17 +9,17 @@
 <!-- explorer-results-ledger:start
 {
   "release_scope": "package-leaves",
-  "release_version": "0.5.3",
+  "release_version": "0.5.4",
   "distribution_scope": "local-self-signed",
-  "full_test_count": 163,
+  "full_test_count": 168,
   "menu_leaf_count": 3,
   "menu_action_count": 4,
   "library_manager_entry_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_counts": [9, 9, 12],
-  "release_code_sha": "3000d3c89284992faadd3f053631530c4f29b1c4",
-  "wheel_payload_sha256": "f300d219367c1deda0e7d6b9281bfc04e04eafbaa0c8f930133abc6b1bdd8651",
-  "automated_status": "LOCAL_RELEASE_GATE_PASS_163",
+  "release_code_sha": "9713a7f0fdfeb0dad9bc4a97f872f8e045f6105e",
+  "wheel_payload_sha256": "60d4aa77a48739a772ed3c58efad58a1fee838e15ee4fec10106743497fbff72",
+  "automated_status": "LOCAL_RELEASE_GATE_PASS_168",
   "windows_explorer_field_status": "PASS_REAL_RIGHT_CLICK_MENU_AND_CONFIRMATION_UI_0_5_1",
   "macos_finder_field_status": "CI_SEMANTIC_ONLY_REAL_UI_NOT_CLAIMED_FOR_0_5_2",
   "public_distribution_status": "NOT_CLAIMED_REQUIRES_EXTERNAL_PUBLISHER",
@@ -27,7 +27,7 @@
 }
 explorer-results-ledger:end -->
 
-- 統合テスト: `python -m unittest discover -s tests -v` — 163 tests PASS、環境依存1件skip
+- 統合テスト: `python -m unittest discover -s tests -v` — 168 tests PASS、環境依存1件skip
 - menu contract: active 3 package leaves / `Library Manager` 1 fixed action / selection kind `package` / pack別skill数 `[9, 9, 12]`
 - 自動証拠: contract固定、GitHub固定commitのINDEX/全SKILL参照、archiveのメモリ内検証、deep-link binding、ローカルskill残留ゼロ
 - wheel再現性: 独立した2 directoryで0.4.0 wheelをbuildし、論理payload SHA-256が両方`c9a0ffe8f542fd475144ac8fecd284175a46863d69d1d44ec5be78ed901ba38f`で一致した。
@@ -52,6 +52,7 @@ explorer-results-ledger:end -->
 - 登録済みpackの手動再選択を冪等なno-opにした候補wheelは、独立した2 buildで共通の論理payload SHA-256 `d6103119acede635c07fa938e9c0dbf5fc8bf504d8391681d7a21dfffe799dc6`を確認した。release codeは`857bf42910bbf0bd357d2737b1b6835aeda4ca2f`である。実ユーザーstateの`codex-cli` 9 skillを再選択し、`already_registered=true`とcatalog SHA-256不変を確認した。
 - Library ManagerのWindowsアクセス拒否、中断復旧、remote既存ファイル保護を修正した。remote verifierは毎回固有directoryを使い、cleanup失敗を完了結果と分離する。GUI／CLIから同一transactionの再開またはローカル破棄を選べ、管理対象外ファイルを保持し、削除差分を送信前に拒否する。危険な削除を含んでいた既存PR #1はCLOSED、transaction `0d954338e09c4a97ad19639e69d5298a`は`abandoned`へ移行し、remote branchは証拠と利用者管理のため保持した。独立した2 buildの論理payload SHA-256はともに`50a8e34971809707268945270ef249da893e4d7a8e5153f872c85067237b3f71`で一致した。
 - 0.5.3ではPR OPENを正常な`waiting_for_merge`として扱い、remote副作用後のlocal-only破棄、同一library／remoteの重複transaction、差分0件のPR作成、操作ボタンの二重実行を禁止した。重複PR #2はCLOSED、継続対象PR #3はOPENのまま保持した。独立した2 buildの論理payload SHA-256はともに`b74fb3843339667f1afe917082d4cda021e73c82d84451f341a032d41d7a351a`で一致した。release codeは`dad49a227f57abe3d2246196db293b27d31e62a9`である。
+- 0.5.4ではLibrary Managerへpack→skill一覧とCRUDを追加し、管理対象ファイルだけの削除公開、依存削除防止、隔離候補rollback、同一repository旧packの有効設定除去を実装した。168 tests PASS、環境依存1件skip。CI wheelの論理payload SHA-256は`60d4aa77a48739a772ed3c58efad58a1fee838e15ee4fec10106743497fbff72`である。release codeは`9713a7f0fdfeb0dad9bc4a97f872f8e045f6105e`である。
 - Library Manager transaction `8dc76704a259400e9b0a2259612155ce`を完走し、skill保管庫PR #3をmerge、merge commitのmanifestを再検証して`codex-cli`と`conflict-clarity`を有効化した。現行menuは3 package leavesとLibrary Managerの計4 actionで、`menu_contract_matches_config: true`、`usable_installed_state: true`である。
 - 3 pack有効化後の0.5.3 wheelは、独立した2 buildで論理payload SHA-256 `f300d219367c1deda0e7d6b9281bfc04e04eafbaa0c8f930133abc6b1bdd8651`が一致した。release codeは`3000d3c89284992faadd3f053631530c4f29b1c4`である。
 - 実機証拠: 0.5.1 wheelをWindowsへinstallし、modern context menuのstatusが`usable_installed_state: true`、`menu_contract_matches_config: true`、`menu_leaf_count: 1`を返した。File Explorerの`C:\Projects\skill-magnet`背景を実際に右クリックし、`Skill Magnet`→`Delivery Assurance`から`Skill Magnet — 実行確認`画面が起動すること、画面上のproject、pack、用途、実行AI、依頼内容、実行/取消UIを確認した。外部AIへのテスト依頼送信はフィールドUI受入の対象外とし、確認画面を取消で閉じた。実際のTSVはpack ID `codex-delivery-assurance`、表示名`Delivery Assurance`、固定commit `8f12af5ddfdd3b985f26d33dad09d6061d675342`を記録した。

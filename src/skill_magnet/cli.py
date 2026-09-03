@@ -13,8 +13,13 @@ from .library_manager import (
     DEFAULT_REPOSITORY_NAME,
     LibraryTransaction,
     add_skill,
+    delete_pack,
+    delete_skill,
     initialize_library,
+    library_inventory,
     list_transactions,
+    update_pack_source,
+    update_skill_source,
     validate_library,
 )
 from .library_ui import show_library_manager
@@ -170,6 +175,18 @@ def _parser() -> argparse.ArgumentParser:
     library_add.add_argument("--source", type=Path)
     library_validate = library_commands.add_parser("validate")
     library_validate.add_argument("--repository", required=True, type=Path)
+    library_list = library_commands.add_parser("list", help="List registered packs and skills.")
+    library_list.add_argument("--repository", required=True, type=Path)
+    library_update = library_commands.add_parser("update", help="Update a selected pack or skill.")
+    library_update.add_argument("--repository", required=True, type=Path)
+    library_update.add_argument("--kind", required=True, choices=("pack", "skill"))
+    library_update.add_argument("--id", required=True)
+    library_update.add_argument("--source", required=True, type=Path)
+    library_delete = library_commands.add_parser("delete", help="Delete a selected pack or skill.")
+    library_delete.add_argument("--repository", required=True, type=Path)
+    library_delete.add_argument("--kind", required=True, choices=("pack", "skill"))
+    library_delete.add_argument("--id", required=True)
+    library_delete.add_argument("--confirm", action="store_true")
     library_prepare = library_commands.add_parser("prepare")
     library_prepare.add_argument("--library", "--draft", dest="draft", required=True, type=Path)
     library_prepare.add_argument("--remote", required=True)
@@ -242,6 +259,16 @@ def _run_library_command(args: argparse.Namespace) -> dict[str, object]:
         )
     if command == "validate":
         return validate_library(args.repository).as_dict()
+    if command == "list":
+        return library_inventory(args.repository)
+    if command == "update":
+        if args.kind == "pack":
+            return update_pack_source(args.repository, args.id, args.source)
+        return update_skill_source(args.repository, args.id, args.source)
+    if command == "delete":
+        if args.kind == "pack":
+            return delete_pack(args.repository, args.id, confirmed=args.confirm)
+        return delete_skill(args.repository, args.id, confirmed=args.confirm)
     state_dir = _library_state_dir(args)
     if command == "status" and args.transaction_id is None:
         return list_transactions(state_dir, args.config)
