@@ -40,7 +40,7 @@ Library Managerへpack→skillの階層一覧とCreate・Read・Update・Delete�
 - 実ユーザーlibrary本体とGitHub repositoryはスモークで変更していない。
 - Windows導入状態: `menu_contract_matches_config=true`、`usable_installed_state=true`
 - GitHub差分0件の再同期transaction `ac27c80846834b6db61760cda8f364d1`を実行し、旧`Delivery Assurance`を除去。現行menuは2 pack＋Library Manager。
-- 0.5.4 release candidate wheel論理payload SHA-256: `ce651401d6c84ad174633f31f98d249bad89b13cfce0bc79893d71e034749f1e`
+- 0.5.4 CI検証済みwheel論理payload SHA-256: `ce651401d6c84ad174633f31f98d249bad89b13cfce0bc79893d71e034749f1e`
 - 実機へ0.5.4 wheelとWindows 11 modern context menuを再登録済み。
 
 ## 配布
