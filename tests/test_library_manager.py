@@ -214,6 +214,35 @@ class LibraryManagerTests(unittest.TestCase):
         self.assertEqual((repository / CATALOG_FILENAME).read_bytes(), before)
         self.assertTrue(import_selected_skill(repository, source))
 
+    def test_registration_preserves_skill_supporting_resources(self) -> None:
+        repository = managed_repository_path(self.root)
+        initialize_library(repository, DEFAULT_REPOSITORY_NAME)
+        source = self.root / "resource-skill"
+        (source / "references").mkdir(parents=True)
+        (source / "scripts").mkdir()
+        (source / "agents").mkdir()
+        (source / "SKILL.md").write_text(
+            "---\nname: resource-skill\ndescription: Apply when resource output is requested.\n"
+            "---\n\n# Resource skill\n\n## Trigger\n\nUse for resource output.\n\n"
+            "## Boundary\n\nDo not publish externally.\n",
+            encoding="utf-8",
+        )
+        (source / "references" / "schema.md").write_text("# Schema\n", encoding="utf-8")
+        (source / "scripts" / "render.py").write_text("print('ok')\n", encoding="utf-8")
+        (source / "agents" / "openai.yaml").write_text(
+            'interface:\n  display_name: "Resource skill"\n', encoding="utf-8"
+        )
+        (source / "scripts" / "__pycache__").mkdir()
+        (source / "scripts" / "__pycache__" / "render.pyc").write_bytes(b"cache")
+
+        register_skill_source(repository, source)
+
+        registered = repository / "resource-skill"
+        self.assertTrue((registered / "references" / "schema.md").is_file())
+        self.assertTrue((registered / "scripts" / "render.py").is_file())
+        self.assertTrue((registered / "agents" / "openai.yaml").is_file())
+        self.assertFalse((registered / "scripts" / "__pycache__").exists())
+
     def test_japanese_usage_phrase_and_constraints_heading_define_contract(self) -> None:
         repository = managed_repository_path(self.root)
         initialize_library(repository, DEFAULT_REPOSITORY_NAME)

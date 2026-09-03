@@ -105,7 +105,7 @@ print(json.dumps({
             )
             self.assertEqual(probed.returncode, 0, probed.stderr or probed.stdout)
             result = json.loads(probed.stdout)
-            self.assertEqual(result["commit"], "f985520627aad4f7d5949cbaccf0fd2606c7bead")
+            self.assertEqual(result["commit"], "7af6c4f36b7183d9eaaaddf11c510769b632d2b8")
             self.assertEqual(result["skills"], 9)
             self.assertTrue(result["config"])
             self.assertTrue(result["native"])

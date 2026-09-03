@@ -135,6 +135,7 @@ GUIでは登録・更新・削除の操作自体を、その変更について�
 
 - [Library Manager自動公開・反映 実装計画](docs/library-manager-automatic-sync-plan-2026-09-03.md)
 - [Library Manager自動公開・反映 実装報告](docs/library-manager-automatic-sync-report-2026-09-03.md)
+- [CMA004 Markdown出力への訂正・対応報告](docs/cma004-markdown-output-correction-2026-09-03.md)
 
 - [Skill Library Manager要件定義](docs/skill-library-management-requirements.md)
 - [Skill CRUDユーザーニーズ](docs/skill-crud-user-needs.md)
