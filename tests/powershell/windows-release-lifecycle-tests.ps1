@@ -143,10 +143,12 @@ try {
         "Installed release status is not usable."
     Assert-True ([int]$status.menu_leaf_count -eq 2) `
         "Installed release does not expose the two active package leaves."
-    Assert-True ([int]$status.menu_action_count -eq 3) `
-        "Installed release does not expose two packs plus Library Manager."
+    Assert-True ([int]$status.menu_action_count -eq 4) `
+        "Installed release does not expose folder registration, two packs, and Library Manager."
     Assert-True ([int]$status.library_manager_entry_count -eq 1) `
         "Installed release does not expose one Library Manager action."
+    Assert-True ([int]$status.register_folder_entry_count -eq 1) `
+        "Installed release does not expose one selected-folder registration action."
 
     $rollbackOutput = python -m skill_magnet rollback-context-menu `
         --platform windows --confirm | Out-String

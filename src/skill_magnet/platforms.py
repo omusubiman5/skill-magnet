@@ -21,6 +21,7 @@ from .core import Config, Engine, Pack, SafetyError, SkillMagnetError, _is_link
 _PACKAGE_ROOT = Path(__file__).resolve().parent
 _SOURCE_ROOT = _PACKAGE_ROOT.parent
 LIBRARY_MANAGER_MENU_LABEL = "Library Manager"
+REGISTER_FOLDER_MENU_LABEL = "このフォルダーのスキルを登録"
 
 
 def _absolute_path(path: Path) -> Path:
@@ -281,26 +282,43 @@ WINDOWS_MODERN_PROJECT_MARKER = "__SKILL_MAGNET_PROJECT__"
 
 
 def windows_library_manager_command_argv(
-    config: Path, project: str
+    config: Path, project: str, *, register_selected: bool = False
 ) -> tuple[str, ...]:
     """Build the context-menu command for the standalone library manager GUI."""
-    return (
+    command = (
         *_cli_prefix(config),
         "library",
         "ui",
         "--repository",
         project,
     )
+    return (*command, "--register-selected") if register_selected else command
 
 
 def render_windows_modern_menu_manifest(config: Path) -> str:
     """Render the immutable, low-cost menu data consumed by IExplorerCommand."""
     loaded = Config.load(config)
+    registration_command = windows_command(
+        windows_library_manager_command_argv(
+            config, WINDOWS_MODERN_PROJECT_MARKER, register_selected=True
+        )
+    )
     manager_command = windows_command(
         windows_library_manager_command_argv(config, WINDOWS_MODERN_PROJECT_MARKER)
     )
     lines = [
         "skill-magnet-menu-v4",
+        "\t".join(
+            (
+                "__register_folder__",
+                "Skill Magnet",
+                "register",
+                "register-folder",
+                REGISTER_FOLDER_MENU_LABEL,
+                "右クリックしたフォルダー内のスキルを検証して登録します。",
+                registration_command,
+            )
+        ),
         "\t".join(
             (
                 "__library_manager__",
@@ -455,6 +473,7 @@ def windows_modern_context_menu_status(
     menu_leaf_count = 0
     menu_action_count = 0
     library_manager_entry_count = 0
+    register_folder_entry_count = 0
     menu_selection_kinds: list[str] = []
     menu_contract_valid = False
     menu_contract_matches_config: bool | None = None
@@ -478,6 +497,11 @@ def windows_modern_context_menu_status(
                 for record in records
                 if len(record) == 7 and record[2] == "manager"
             )
+            register_folder_entry_count = sum(
+                1
+                for record in records
+                if len(record) == 7 and record[2] == "register"
+            )
             menu_selection_kinds = [
                 record[2]
                 for record in records
@@ -488,10 +512,11 @@ def windows_modern_context_menu_status(
                 and lines[0] == "skill-magnet-menu-v4"
                 and records
                 and library_manager_entry_count == 1
+                and register_folder_entry_count == 1
                 and all(
                     len(record) == 7
                     and record[1] == "Skill Magnet"
-                    and record[2] in {"package", "skill", "manager"}
+                    and record[2] in {"package", "skill", "manager", "register"}
                     and all(record[index] for index in (0, 3, 4, 5, 6))
                     and WINDOWS_MODERN_PROJECT_MARKER in record[6]
                     for record in records
@@ -577,6 +602,7 @@ def windows_modern_context_menu_status(
             "menu_leaf_count": menu_leaf_count,
             "menu_action_count": menu_action_count,
             "library_manager_entry_count": library_manager_entry_count,
+            "register_folder_entry_count": register_folder_entry_count,
             "menu_selection_kinds": menu_selection_kinds,
             "manifest_contexts": manifest_contexts,
             "contexts": expected_contexts,

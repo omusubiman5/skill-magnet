@@ -3209,10 +3209,23 @@ class ActivationEndToEndTest(unittest.TestCase):
         rendered = render_windows_modern_menu_manifest(self.config_path)
         lines = rendered.splitlines()
         self.assertEqual(lines[0], "skill-magnet-menu-v4")
-        self.assertEqual(len(lines), 4)
+        self.assertEqual(len(lines), 5)
         records = [line.split("\t") for line in lines[1:]]
         self.assertTrue(all(len(record) == 7 for record in records))
-        manager = records[0]
+        registration = records[0]
+        self.assertEqual(
+            registration[:5],
+            [
+                "__register_folder__",
+                "Skill Magnet",
+                "register",
+                "register-folder",
+                "このフォルダーのスキルを登録",
+            ],
+        )
+        self.assertEqual(registration[6].count("__SKILL_MAGNET_PROJECT__"), 1)
+        self.assertIn("--register-selected", registration[6])
+        manager = records[1]
         self.assertEqual(
             manager[:5],
             [
@@ -3226,7 +3239,7 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertEqual(manager[6].count("__SKILL_MAGNET_PROJECT__"), 1)
         self.assertIn("library ui", manager[6])
         self.assertIn("--repository", manager[6])
-        skill_records = records[1:]
+        skill_records = records[2:]
         self.assertCountEqual(
             [(record[0], record[3], record[4]) for record in skill_records],
             [
@@ -3257,6 +3270,12 @@ class ActivationEndToEndTest(unittest.TestCase):
         )
         self.assertNotIn("--pack", command)
         self.assertNotIn("--runtime", command)
+        registration = windows_library_manager_command_argv(
+            self.config_path,
+            "C:\\selected library",
+            register_selected=True,
+        )
+        self.assertIn("--register-selected", registration)
 
     def test_windows_modern_appx_registers_both_explorer_contexts(self) -> None:
         manifest = (

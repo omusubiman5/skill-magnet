@@ -162,6 +162,11 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="Offer a selected SKILL.md folder as the import source.",
     )
+    library_ui.add_argument(
+        "--register-selected",
+        action="store_true",
+        help="Validate and register the selected Explorer/Finder folder on launch.",
+    )
     library_init = library_commands.add_parser("init")
     library_init.add_argument("--repository", required=True, type=Path)
     library_init.add_argument("--name", default=DEFAULT_REPOSITORY_NAME)
@@ -226,7 +231,10 @@ def _library_state_dir(args: argparse.Namespace) -> Path:
 
 
 def _show_library_manager_ui(
-    args: argparse.Namespace, initial_repository: Path | None = None
+    args: argparse.Namespace,
+    initial_repository: Path | None = None,
+    *,
+    register_selected: bool = False,
 ) -> dict[str, object]:
     def update_menu(config_path: Path, platform: str) -> object:
         if platform == "windows":
@@ -237,6 +245,7 @@ def _show_library_manager_ui(
         config_path=args.config,
         state_dir=_library_state_dir(args),
         initial_repository=initial_repository,
+        register_selected=register_selected,
         menu_update=update_menu,
     )
 
@@ -244,7 +253,11 @@ def _show_library_manager_ui(
 def _run_library_command(args: argparse.Namespace) -> dict[str, object]:
     command = args.library_command
     if command == "ui":
-        return _show_library_manager_ui(args, args.repository)
+        return _show_library_manager_ui(
+            args,
+            args.repository,
+            register_selected=args.register_selected,
+        )
     if command == "init":
         return initialize_library(args.repository, args.name)
     if command == "add":
