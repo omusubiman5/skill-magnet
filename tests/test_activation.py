@@ -3624,7 +3624,7 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertFalse(valid.exists())
         self.assertTrue(unrelated.exists())
 
-    def test_windows_recovers_lost_certificate_ownership_before_residue_cleanup(self) -> None:
+    def test_windows_recovers_bom_certificate_ownership_before_residue_cleanup(self) -> None:
         from skill_magnet.platforms import (
             _cleanup_windows_context_residue,
             _recover_windows_certificate_ownership_from_residue,
@@ -3639,7 +3639,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                 "created_my": False,
                 "created_trusted_people": False,
                 "created_machine_trusted_people": False,
-            }), encoding="utf-8")
+            }), encoding="utf-8-sig")
         residue = root.with_name("ContextMenu.rollback.interrupted-20260829-0929")
         (residue / "external").mkdir(parents=True)
         (residue / "backup.json").write_text(json.dumps({"version": 2}), encoding="utf-8")
@@ -3649,7 +3649,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                 "created_my": True,
                 "created_trusted_people": True,
                 "created_machine_trusted_people": True,
-            }), encoding="utf-8")
+            }), encoding="utf-8-sig")
         self.assertTrue(_recover_windows_certificate_ownership_from_residue(root))
         recovered = json.loads((root / "certificate-state.json").read_text(encoding="utf-8"))
         self.assertTrue(all(recovered[flag] for flag in (
