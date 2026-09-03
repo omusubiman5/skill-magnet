@@ -38,8 +38,8 @@ def validate_consistency(text: str, *, observed_test_count: int,
     summary = re.search(r"統合テスト: .*?— (\d+) tests PASS", text)
     if summary is None or int(summary.group(1)) != observed_test_count:
         errors.append("human-readable test count mismatch")
-    if ledger.get("release_scope") != "package-leaves":
-        errors.append("release_scope must be package-leaves")
+    if ledger.get("release_scope") != "configured-selection-leaves":
+        errors.append("release_scope must be configured-selection-leaves")
     if observed_version is not None:
         required_release_state = {
             "release_version": observed_version,

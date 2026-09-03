@@ -141,10 +141,12 @@ try {
     $status = $statusOutput | ConvertFrom-Json
     Assert-True ([bool]$status.usable_installed_state) `
         "Installed release status is not usable."
-    Assert-True ([int]$status.menu_leaf_count -eq 2) `
-        "Installed release does not expose the two active package leaves."
-    Assert-True ([int]$status.menu_action_count -eq 4) `
-        "Installed release does not expose folder registration, two packs, and Library Manager."
+    Assert-True ([int]$status.menu_leaf_count -eq 3) `
+        "Installed release does not expose the two pack leaves and CMA004 skill leaf."
+    Assert-True ([int]$status.menu_action_count -eq 5) `
+        "Installed release does not expose registration, two packs, CMA004, and Library Manager."
+    Assert-True (($status.menu_selection_kinds -join ',') -eq 'package,package,skill') `
+        "Installed release does not preserve the package/package/skill selection contract."
     Assert-True ([int]$status.library_manager_entry_count -eq 1) `
         "Installed release does not expose one Library Manager action."
     Assert-True ([int]$status.register_folder_entry_count -eq 1) `

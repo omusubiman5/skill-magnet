@@ -863,6 +863,239 @@ class LibraryManagerTests(unittest.TestCase):
         self.assertEqual(result["commit"], merge_commit)
         check.assert_called_once_with("https://github.com/example/skills.git", merge_commit)
 
+    def test_automatic_merge_is_requested_once_and_then_only_polled(self) -> None:
+        transaction = LibraryTransaction(self.root / "state", "transaction-auto-merge")
+        merge_commit = "b" * 40
+        manifest = {"INDEX.md": "digest"}
+        transaction._write_journal(
+            {
+                "schema_version": 1,
+                "transaction_id": transaction.transaction_id,
+                "status": "published_pending",
+                "commit": "a" * 40,
+                "remote": "https://github.com/example/skills.git",
+                "pr_url": "https://github.com/example/skills/pull/1",
+                "preview": {"manifest": manifest},
+            }
+        )
+        transaction.root.mkdir(parents=True, exist_ok=True)
+        transaction.run = mock.Mock(
+            side_effect=[
+                subprocess.CompletedProcess([], 0, "", ""),
+                subprocess.CompletedProcess(
+                    [], 0, '{"state":"OPEN","mergeCommit":null}', ""
+                ),
+                subprocess.CompletedProcess(
+                    [],
+                    0,
+                    json.dumps(
+                        {"state": "MERGED", "mergeCommit": {"oid": merge_commit}}
+                    ),
+                    "",
+                ),
+            ]
+        )
+        verified = SimpleNamespace(manifest=manifest, menu_shape="menu")
+        with mock.patch.object(
+            transaction, "_remote_manifest", return_value=verified
+        ):
+            waiting = transaction.merge_pull_request(confirmed=True)
+            completed = transaction.merge_pull_request(confirmed=True)
+        self.assertEqual(waiting["wait_state"], "waiting_for_merge")
+        self.assertEqual(completed["status"], "verified")
+        merge_commands = [
+            call.args[0]
+            for call in transaction.run.call_args_list
+            if call.args[0][:3] == ["gh", "pr", "merge"]
+        ]
+        self.assertEqual(len(merge_commands), 1)
+        self.assertIn("--auto", merge_commands[0])
+        self.assertIn("--delete-branch", merge_commands[0])
+
+    def test_automatic_sync_runs_every_state_to_active(self) -> None:
+        transaction = LibraryTransaction(self.root / "state", "transaction-auto-sync")
+        draft = self.root / "draft-auto-sync"
+        draft.mkdir()
+        remote = "https://github.com/example/skills.git"
+        config = self.root / "config-auto-sync.json"
+        config.write_text("{}", encoding="utf-8")
+
+        def prepare(**_: object) -> dict[str, object]:
+            transaction._write_journal(
+                {
+                    "status": "prepared",
+                    "transaction_id": transaction.transaction_id,
+                    "draft": str(draft),
+                    "remote": remote,
+                }
+            )
+            return transaction._journal()
+
+        def publish(**_: object) -> dict[str, object]:
+            journal = transaction._journal()
+            journal.update(status="published_pending", pr_url=remote + "/pull/1")
+            transaction._write_journal(journal)
+            return journal
+
+        def merge(**_: object) -> dict[str, object]:
+            journal = transaction._journal()
+            journal["status"] = "verified"
+            transaction._write_journal(journal)
+            return journal
+
+        receipt = {"status": "active", "transaction_id": transaction.transaction_id}
+        with (
+            mock.patch.object(transaction, "prepare", side_effect=prepare) as prepared,
+            mock.patch.object(transaction, "publish", side_effect=publish) as published,
+            mock.patch.object(
+                transaction, "merge_pull_request", side_effect=merge
+            ) as merged,
+            mock.patch.object(transaction, "activate", return_value=receipt) as activated,
+        ):
+            result = transaction.complete_automatically(
+                draft=draft,
+                remote=remote,
+                config_path=config,
+                confirmed=True,
+            )
+        self.assertEqual(result, receipt)
+        prepared.assert_called_once()
+        published.assert_called_once_with(confirmed=True)
+        merged.assert_called_once_with(confirmed=True)
+        activated.assert_called_once()
+
+    def test_automatic_merge_falls_back_when_repository_disables_auto_merge(self) -> None:
+        transaction = LibraryTransaction(self.root / "state", "transaction-merge-fallback")
+        merge_commit = "c" * 40
+        manifest = {"INDEX.md": "digest"}
+        transaction._write_journal(
+            {
+                "schema_version": 1,
+                "transaction_id": transaction.transaction_id,
+                "status": "published_pending",
+                "commit": "a" * 40,
+                "remote": "https://github.com/example/skills.git",
+                "pr_url": "https://github.com/example/skills/pull/1",
+                "preview": {"manifest": manifest},
+            }
+        )
+        transaction.root.mkdir(parents=True, exist_ok=True)
+        transaction.run = mock.Mock(
+            side_effect=[
+                SkillMagnetError(
+                    "Command failed (gh): GraphQL: Auto merge is not allowed for this repository"
+                ),
+                subprocess.CompletedProcess([], 0, "", ""),
+                subprocess.CompletedProcess(
+                    [],
+                    0,
+                    json.dumps({"state": "MERGED", "mergeCommit": {"oid": merge_commit}}),
+                    "",
+                ),
+            ]
+        )
+        verified = SimpleNamespace(manifest=manifest, menu_shape="menu")
+        with mock.patch.object(transaction, "_remote_manifest", return_value=verified):
+            completed = transaction.merge_pull_request(confirmed=True)
+        self.assertEqual(completed["status"], "verified")
+        self.assertEqual(completed["merge_strategy"], "github_immediate_merge_fallback")
+        commands = [call.args[0] for call in transaction.run.call_args_list]
+        self.assertIn("--auto", commands[0])
+        self.assertNotIn("--auto", commands[1])
+
+    def test_custom_skill_collection_activates_as_individual_skill_actions(self) -> None:
+        generated = LibraryTransaction._config_pack(
+            {
+                "id": "custom-skills",
+                "display_name": "Custom skills",
+                "purpose": "Loose skills",
+                "skills": ["cma-004"],
+                "skill_metadata": {
+                    "cma-004": {
+                        "display_name": "CMA004 — AI NEWS Podcast Audio",
+                        "purpose": "Create the requested podcast",
+                    }
+                },
+            },
+            "https://github.com/example/skills.git",
+            "a" * 40,
+        )
+        self.assertEqual(generated["selection_kind"], "skill")
+        self.assertEqual(generated["skills"], ["cma-004"])
+
+    def test_activation_updates_menu_when_only_selection_kind_changes(self) -> None:
+        transaction = LibraryTransaction(self.root / "state", "transaction-menu-shape")
+        remote = "https://github.com/example/skills.git"
+        commit = "a" * 40
+        manifest = {"INDEX.md": "digest"}
+        catalog = {
+            "packs": [
+                {
+                    "id": "custom-skills",
+                    "display_name": "Custom skills",
+                    "purpose": "Loose skills",
+                    "skills": ["cma-004"],
+                    "skill_metadata": {
+                        "cma-004": {
+                            "display_name": "CMA004 — AI NEWS Podcast Audio",
+                            "purpose": "Create the requested podcast",
+                        }
+                    },
+                }
+            ]
+        }
+        transaction.root.mkdir(parents=True, exist_ok=True)
+        transaction.verifier.mkdir(parents=True, exist_ok=True)
+        (transaction.verifier / CATALOG_FILENAME).write_text(
+            json.dumps(catalog), encoding="utf-8"
+        )
+        transaction._write_journal(
+            {
+                "schema_version": 1,
+                "transaction_id": transaction.transaction_id,
+                "status": "verified",
+                "remote": remote,
+                "commit": commit,
+                "preview": {
+                    "changed_files": [],
+                    "pack_ids": ["custom-skills"],
+                    "skill_ids": ["cma-004"],
+                },
+                "remote_manifest": manifest,
+            }
+        )
+        config = self.root / "config-menu-shape.json"
+        old_pack = LibraryTransaction._config_pack(catalog["packs"][0], remote, commit)
+        old_pack["selection_kind"] = "package"
+        config.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "allowed_github_owners": ["example"],
+                    "state_dir": str(self.root / "runtime"),
+                    "packs": [old_pack],
+                }
+            ),
+            encoding="utf-8",
+        )
+        menu_updates: list[Path] = []
+        verified = SimpleNamespace(manifest=manifest, menu_shape="catalog-shape")
+        with (
+            mock.patch.object(transaction, "_remote_manifest", return_value=verified),
+            mock.patch.object(transaction, "cleanup", return_value=[]),
+        ):
+            result = transaction.activate(
+                config_path=config,
+                confirmed=True,
+                menu_update=menu_updates.append,
+            )
+        self.assertTrue(result["menu_changed"])
+        self.assertEqual(menu_updates, [config.resolve()])
+        self.assertEqual(
+            json.loads(config.read_text(encoding="utf-8"))["packs"][0]["selection_kind"],
+            "skill",
+        )
+
     def test_find_resumable_transaction_reuses_latest_matching_work(self) -> None:
         state = self.root / "state"
         draft = self.root / "draft"
@@ -932,6 +1165,9 @@ class LibraryManagerTests(unittest.TestCase):
 
     def test_cli_exposes_guided_library_flow(self) -> None:
         self.assertEqual(library_wizard_steps(), ("Skill Library Manager",))
+        self.assertEqual(
+            library_action_label("sync"), "GitHubへ反映"
+        )
         self.assertEqual(
             [library_action_label(stage) for stage in ("prepare", "publish", "open_pr", "verify", "activate")],
             [

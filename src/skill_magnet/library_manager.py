@@ -1496,14 +1496,130 @@ class LibraryTransaction:
         self._write_journal(journal)
         return journal
 
+    def merge_pull_request(self, *, confirmed: bool) -> dict[str, Any]:
+        """Request an automatic GitHub merge and verify the resulting commit.
+
+        A completed merge request is persisted before verification.  Re-entry
+        checks the existing PR instead of issuing the merge command again.
+        """
+        if not confirmed:
+            raise SkillMagnetError("Pull request merge requires explicit confirmation")
+        journal = self._journal()
+        if journal["status"] in {"verified", "active"}:
+            return journal
+        if journal["status"] != "published_pending":
+            raise SkillMagnetError("Only a published-pending transaction can be merged")
+        pr_url = str(journal.get("pr_url", ""))
+        if not pr_url:
+            raise SkillMagnetError("Published transaction has no pull request URL")
+        if not journal.get("merge_requested_at"):
+            command_cwd = self.workspace if self.workspace.is_dir() else self.root
+            try:
+                self.run(
+                    [
+                        "gh",
+                        "pr",
+                        "merge",
+                        pr_url,
+                        "--merge",
+                        "--auto",
+                        "--delete-branch",
+                    ],
+                    cwd=command_cwd,
+                )
+            except Exception as exc:
+                # GitHub repositories may deliberately leave the repository-wide
+                # auto-merge feature disabled.  That is not a failed library
+                # transaction: an otherwise mergeable PR can still be merged
+                # immediately by the same explicitly confirmed operation.
+                if "Auto merge is not allowed for this repository" not in str(exc):
+                    journal.update(
+                        failed_stage="merge",
+                        last_error=str(exc),
+                        last_strategy="request_github_auto_merge",
+                    )
+                    self._write_journal(journal)
+                    raise
+                self.run(
+                    [
+                        "gh",
+                        "pr",
+                        "merge",
+                        pr_url,
+                        "--merge",
+                        "--delete-branch",
+                    ],
+                    cwd=command_cwd,
+                )
+                journal["merge_strategy"] = "github_immediate_merge_fallback"
+            else:
+                journal["merge_strategy"] = "github_auto_merge"
+            journal.update(
+                merge_requested_at=_utc_now(),
+            )
+            journal.pop("failed_stage", None)
+            journal.pop("last_error", None)
+            journal.pop("last_strategy", None)
+            self._write_journal(journal)
+        return self.mark_merged()
+
+    def complete_automatically(
+        self,
+        *,
+        draft: Path,
+        remote: str,
+        config_path: Path,
+        confirmed: bool,
+        menu_update: Callable[[Path], Any] | None = None,
+    ) -> dict[str, Any]:
+        """Resume and run prepare, PR publish, merge, verify and activation.
+
+        The user's register/update/delete action is the confirmation source.
+        Every external transition remains journaled and can be re-entered
+        without creating a duplicate commit, branch, or pull request.
+        """
+        if not confirmed:
+            raise SkillMagnetError("Automatic library synchronization requires confirmation")
+        journal = self._journal()
+        status = str(journal.get("status", "draft"))
+        if status in {"preparing", "interrupted", "publishing"}:
+            journal = self.recover()
+            status = str(journal.get("status", "draft"))
+        if status == "draft":
+            self.prepare(draft=draft, remote=remote)
+            journal = self._journal()
+            status = str(journal["status"])
+        if status == "prepared":
+            self.publish(confirmed=True)
+            journal = self._journal()
+            status = str(journal["status"])
+        if status == "published_pending":
+            merged = self.merge_pull_request(confirmed=True)
+            if str(merged.get("status")) == "published_pending":
+                return merged
+            journal = merged
+            status = str(journal["status"])
+        if status == "verified":
+            return self.activate(
+                config_path=config_path,
+                confirmed=True,
+                menu_update=menu_update,
+            )
+        if status == "active":
+            return _read_json(self.receipt_path)
+        raise SkillMagnetError(f"Automatic synchronization cannot continue from: {status}")
+
     @staticmethod
     def _config_pack(pack: dict[str, Any], remote: str, commit: str) -> dict[str, Any]:
         skills = list(map(str, pack["skills"]))
         metadata = pack.get("skill_metadata", {})
+        # A loose collection created by repeated single-skill registrations is
+        # not one executable pack.  Expose every member as its own menu action.
+        selection_kind = "skill" if str(pack["id"]) == "custom-skills" else "package"
         return {
             "id": str(pack["id"]),
             "menu_label": str(pack.get("display_name", pack["id"])),
-            "selection_kind": "package",
+            "selection_kind": selection_kind,
             "repo_url": remote,
             "expected_commit": commit,
             "purpose": str(pack.get("purpose", "Skill library pack")),
@@ -1555,24 +1671,31 @@ class LibraryTransaction:
             for pack in _pack_map(catalog).values()
         ]
         candidate = {**config, "packs": retained + generated}
-        previous_shape = _sha256(
-            _canonical(
-                [
-                    {
-                        "id": pack.get("id"),
-                        "label": pack.get("menu_label"),
-                        "skills": pack.get("skills", []),
-                    }
-                    for pack in replaced_previous
-                ]
+        def config_menu_shape(packs: list[dict[str, Any]]) -> str:
+            return _sha256(
+                _canonical(
+                    [
+                        {
+                            "id": pack.get("id"),
+                            "label": pack.get("menu_label"),
+                            "selection_kind": pack.get("selection_kind", "package"),
+                            "purpose": pack.get("purpose", ""),
+                            "skills": pack.get("skills", []),
+                            "skill_metadata": pack.get("skill_metadata", {}),
+                        }
+                        for pack in packs
+                    ]
+                )
             )
-        )
+
+        previous_shape = config_menu_shape(replaced_previous)
+        generated_shape = config_menu_shape(generated)
         temporary = config_path.with_name(f".{config_path.name}.{self.transaction_id}.candidate")
         _atomic_json(temporary, candidate)
         try:
             Config.load(temporary)
             os.replace(temporary, config_path)
-            menu_changed = previous_shape != remote_validation.menu_shape
+            menu_changed = previous_shape != generated_shape
             menu_result: Any = {"updated": False, "reason": "menu_shape_unchanged"}
             if menu_changed and menu_update is not None:
                 menu_result = menu_update(config_path)
