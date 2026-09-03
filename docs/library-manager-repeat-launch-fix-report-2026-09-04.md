@@ -19,4 +19,13 @@
 | 強制終了 | holder processをkill後、次processが同じlockを取得できる |
 | 通常終了 | window closeと例外経路の双方でlock handleを解放する |
 
-実行結果、release commit、wheel digest、インストール済み版の確認結果はリリース完了時に本書へ追記する。
+## 自動検証結果
+
+- Library Manager単体: 37件PASS。
+- 全suite: 181件PASS、環境依存1件skip。
+- 別process競合: 同一folderの2つ目を拒否し、別folderを別要求として拒否。
+- 異常終了復旧: lock holderを強制終了後、同じstateとfolderでlock再取得に成功。
+- 再現build: 独立した2 wheelの論理payload SHA-256が`f046efc06554f6ca15fce18d8ec924c308f628c7988e6ca09fe6aeee0b1ae05d`で一致。
+- release code: `03088d6bd96ecf6a10de19db616bc8d5dcd38452`。
+
+インストール済みwheelとExplorer context menuの確認結果は、PR merge後の最終導入時に追記する。
