@@ -23,6 +23,7 @@ status: implemented
 - macOS Finderではクイックアクション`Skill Magnet`の共通画面内にある`Library Manager`から開く。
 - GUIの作業用repositoryは製品state内で自動作成・再利用し、保存先、repository名、`Draft directory`を入力させない。右クリックしたfolderから単一skill、pack、pack collectionを自動判定する。画面を開くだけではpublishもactivateも実行しない。
 - `python -m skill_magnet library ui`でコンパクトなSkill Library Managerを開く。
+- 右クリック起動はwindow表示後にfolder登録を開始し、画面上部へ受付・処理名・完了を表示する。同一stateの別processはOS file lockで排他し、同一folderの二重投入と別folderの並行投入を区別して拒否する。process異常終了ではOSがlockを解放するため、残存lock fileに阻害されず次回起動できる。
 - 登録とGitHub公開をタブのない1画面へ統合した。標準構成の作成済みスキルfolderを右クリックした場合は自動importして登録欄を隠し、手動登録時だけ同じ画面上部へfolder欄を表示する。repository、catalog/INDEX、validation、preview、activationの独立画面は設けない。
 - 公開操作は状態連動の1ボタンへ統合した。初期状態は`送信内容を確認する`だけを表示し、成功後に同じボタンを`GitHubへ送る`、`GitHubのマージを確認する`、`Skill Magnetへ反映`へ切り替える。Transaction未作成時に後続操作を押せる経路をなくした。
 - OSは実行環境から自動判定し、利用者へ選択させない。構成不備、URL不備、validation失敗は操作時のエラーダイアログで停止する。

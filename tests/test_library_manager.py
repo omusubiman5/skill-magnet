@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -32,6 +33,7 @@ from skill_magnet.library_manager import (
     validate_library,
 )
 from skill_magnet.library_ui import (
+    acquire_library_ui_lease,
     configured_repository_url,
     import_selected_skill,
     library_action_label,
@@ -160,6 +162,60 @@ class LibraryManagerTests(unittest.TestCase):
             managed_repository_path(self.root),
             (self.root / "library" / "skill-magnet-skills").resolve(),
         )
+
+    def test_library_ui_lease_serializes_repeated_context_menu_requests(self) -> None:
+        state = self.root / "lease-state"
+        selected = self.root / "selected-skill"
+        selected.mkdir()
+
+        first = acquire_library_ui_lease(state, selected)
+        self.assertTrue(first.acquired)
+        try:
+            duplicate = acquire_library_ui_lease(state, selected)
+            self.assertFalse(duplicate.acquired)
+            self.assertTrue(duplicate.same_request)
+
+            other = self.root / "other-skill"
+            other.mkdir()
+            competing = acquire_library_ui_lease(state, other)
+            self.assertFalse(competing.acquired)
+            self.assertFalse(competing.same_request)
+        finally:
+            first.release()
+        recovered = acquire_library_ui_lease(state, other)
+        self.assertTrue(recovered.acquired)
+        recovered.release()
+        self.assertTrue((state / "library-manager.lock").exists())
+
+    def test_library_ui_lease_blocks_other_process_and_recovers_after_exit(self) -> None:
+        state = self.root / "process-lease-state"
+        selected = self.root / "selected-process-skill"
+        selected.mkdir()
+        code = (
+            "import json, pathlib, time; "
+            "from skill_magnet.library_ui import acquire_library_ui_lease; "
+            f"lease=acquire_library_ui_lease(pathlib.Path({str(state)!r}), pathlib.Path({str(selected)!r})); "
+            "print(json.dumps({'acquired': lease.acquired}), flush=True); "
+            "time.sleep(30)"
+        )
+        child = subprocess.Popen(
+            [sys.executable, "-c", code],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            self.assertEqual(json.loads(child.stdout.readline()), {"acquired": True})
+            duplicate = acquire_library_ui_lease(state, selected)
+            self.assertFalse(duplicate.acquired)
+            self.assertTrue(duplicate.same_request)
+        finally:
+            child.kill()
+            child.communicate(timeout=5)
+
+        recovered = acquire_library_ui_lease(state, selected)
+        self.assertTrue(recovered.acquired)
+        recovered.release()
 
     def test_standard_selected_skill_is_imported_automatically(self) -> None:
         repository = managed_repository_path(self.root)
