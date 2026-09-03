@@ -19,7 +19,7 @@
 - Windows modern context menuの実機状態が設定と一致する。
 - Windows／macOS CIと全自動テストがPASSする。
 
-## リリース候補
+## CI検証済み成果物
 
 - release code: `7c4b60a878e1e008ddef89fa2bf97f69c1f96103`
 - wheel論理payload SHA-256: `22a78075ff5208939e601ebea241cd06760046191fa08163171365a8c2d7b187`
