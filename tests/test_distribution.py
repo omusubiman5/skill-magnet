@@ -105,12 +105,12 @@ print(json.dumps({
             )
             self.assertEqual(probed.returncode, 0, probed.stderr or probed.stdout)
             result = json.loads(probed.stdout)
-            self.assertEqual(result["commit"], "66de8f309ca27825435b2d72b45432edc79c4a7b")
+            self.assertEqual(result["commit"], "f985520627aad4f7d5949cbaccf0fd2606c7bead")
             self.assertEqual(result["skills"], 9)
             self.assertTrue(result["config"])
             self.assertTrue(result["native"])
             self.assertTrue(result["package_script"])
-            self.assertEqual(result["leaves"], 2)
+            self.assertEqual(result["leaves"], 3)
             self.assertTrue(result["command_uses_installed_package"], result)
 
     def test_python_and_msix_versions_are_synchronized(self) -> None:

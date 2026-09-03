@@ -76,7 +76,7 @@ Windows Explorerでは登録元フォルダーを右クリックして`Skill Mag
 
 #### 3. 同じ画面でGitHubへ送る
 
-現在使っているスキル保管庫が1つなら、そのGitHub URLを既存設定から自動表示します。初回または別の保管庫へ変える時だけURLを入力します。操作ボタンは常に1個だけです。最初は`送信内容を確認する`と表示され、検査が終わると同じ場所のボタンが`GitHubへ送る`、`GitHubでPRを開く`、`GitHubのマージを確認する`、`Skill Magnetへ反映`の順に切り替わります。PRがOPENなら正常なマージ待ちとして保持し、エラーや復旧画面にはしません。今の段階で押せない操作は表示されません。不足や不正があればエラーダイアログで止まり、GitHubへは送りません。差分が0件ならPRを作らず完了します。OSはアプリが自動判定し、反映失敗時は直前の正常な状態へ戻します。
+現在使っているスキル保管庫が1つなら、そのGitHub URLを既存設定から自動表示します。初回または別の保管庫へ変える時だけURLを入力します。右クリックの`このフォルダーのスキルを登録`、または画面内の登録・更新・削除を実行すると、検査、専用branchへのpush、PR作成、自動マージ、merge commit検証、本体設定更新、右クリックメニュー再登録までを続けて実行します。追加の段階ボタンはありません。GitHubの必須check待ちは同じtransactionで自動監視し、アプリを閉じても次回起動時に再開します。不足や不正があればGitHubへ送信する前に停止します。差分が0件ならPRを作らず、検証済みremoteをそのまま反映します。反映失敗時は直前の正常な設定へ戻します。
 
 途中でGit、Windows、通信などのエラーが起きた場合は、同じtransactionを保存して再試行できます。commit／push／PRというGitHub側の副作用がないと確認できる段階だけ「ローカル作業を破棄」を選べます。送信済み、または送信済みか不明な段階では破棄を禁止し、remote状態を照合して既存branch／PRを再利用します。アプリを閉じても、次回起動時に未完了作業を検出し、新しいtransactionやPRを作らず続きから再開します。公開処理は管理対象ファイルだけを上書きし、GitHubに元からあるREADME、監査資料、テスト資料などを削除しません。削除差分が1件でも検出された場合は送信前に停止します。
 
@@ -129,9 +129,12 @@ python -m skill_magnet library recover --transaction-id TRANSACTION_ID
 python -m skill_magnet library abandon --transaction-id TRANSACTION_ID --confirm
 ```
 
-`publish`と`activate`はそれぞれ確認なしでは動きません。default branchへの直接pushは、`prepare --branch <default-branch>`と`publish --direct --no-pr --confirm`を両方明示し、repository policyがpushを許可した場合だけ成立します。PR未merge、remote digest不一致、secret候補、symlink、path traversal、dependency cycle、同一pack内のcontrastは有効化されません。GitHub tokenを引数、config、journal、receiptへ保存しません。
+GUIでは登録・更新・削除の操作自体を、その変更についてのGitHub公開・自動マージ・反映承認として扱います。CLIの個別`publish`と`activate`は引き続き確認なしでは動きません。default branchへの直接pushは、`prepare --branch <default-branch>`と`publish --direct --no-pr --confirm`を両方明示し、repository policyがpushを許可した場合だけ成立します。PR未merge、remote digest不一致、secret候補、symlink、path traversal、dependency cycle、同一pack内のcontrastは有効化されません。GitHub tokenを引数、config、journal、receiptへ保存しません。
 
 関連文書:
+
+- [Library Manager自動公開・反映 実装計画](docs/library-manager-automatic-sync-plan-2026-09-03.md)
+- [Library Manager自動公開・反映 実装報告](docs/library-manager-automatic-sync-report-2026-09-03.md)
 
 - [Skill Library Manager要件定義](docs/skill-library-management-requirements.md)
 - [Skill CRUDユーザーニーズ](docs/skill-crud-user-needs.md)
@@ -165,7 +168,7 @@ python -m skill_magnet library abandon --transaction-id TRANSACTION_ID --confirm
 
    ```powershell
    python -m pip wheel . --no-deps --wheel-dir .\dist
-   python -m pip install --force-reinstall .\dist\skill_magnet-0.5.7-py3-none-any.whl
+   python -m pip install --force-reinstall .\dist\skill_magnet-0.5.8-py3-none-any.whl
    ```
 
 3. Windowsの右クリックメニューを登録します。このcommandはrepository rootで、そのままcopy/pasteできます。

@@ -1829,12 +1829,12 @@ class ActivationEndToEndTest(unittest.TestCase):
     def test_product_menu_has_one_leaf_per_active_pack(self) -> None:
         product_config = Path(__file__).resolve().parents[1] / "skill-magnet.json"
         leaves = windows_menu_leaves(product_config, "%1")
-        self.assertEqual(len(leaves), 2)
+        self.assertEqual(len(leaves), 3)
         self.assertEqual(
             {leaf.pack_id for leaf in leaves},
-            {"codex-cli", "conflict-clarity"},
+            {"codex-cli", "conflict-clarity", "custom-skills"},
         )
-        self.assertEqual(sorted(len(leaf.skill_ids) for leaf in leaves), [9, 12])
+        self.assertEqual(sorted(len(leaf.skill_ids) for leaf in leaves), [1, 9, 12])
         for leaf in leaves:
             self.assertIsNone(leaf.skill_id)
             self.assertTrue(leaf.skill_label.startswith("Skill Pack: "))
@@ -1851,14 +1851,14 @@ class ActivationEndToEndTest(unittest.TestCase):
                 command_keys = [
                     key for key, _, _ in entries if key.endswith(r"\command")
                 ]
-                self.assertEqual(len(command_keys), 3)
+                self.assertEqual(len(command_keys), 4)
                 leaf_command_keys = [
                     key for key in command_keys if r"\shell\leaf-" in key
                 ]
                 manager_command_keys = [
                     key for key in command_keys if r"\shell\library-manager" in key
                 ]
-                self.assertEqual(len(leaf_command_keys), 2)
+                self.assertEqual(len(leaf_command_keys), 3)
                 self.assertEqual(len(manager_command_keys), 1)
                 self.assertTrue(
                     all(

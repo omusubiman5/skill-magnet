@@ -10,10 +10,10 @@
       "menu_label": "Codex CLI Official Documentation",
       "selection_kind": "package",
       "repo_url": "https://github.com/omusubiman5/codex-pmo-skills.git",
-      "expected_commit": "66de8f309ca27825435b2d72b45432edc79c4a7b",
+      "expected_commit": "f985520627aad4f7d5949cbaccf0fd2606c7bead",
       "purpose": "Imported skill pack: Codex CLI Official Documentation",
       "approved_by": "Skill Library Manager",
-      "approved_at": "2026-09-03T00:48:33.500712+00:00",
+      "approved_at": "2026-09-03T03:52:05.574066+00:00",
       "skill_metadata": {
         "codex-execution-mode-routing": {
           "display_name": "対話・自動化・cloudの実行形態選択",
@@ -69,10 +69,10 @@
       "menu_label": "conflict-clarity",
       "selection_kind": "package",
       "repo_url": "https://github.com/omusubiman5/codex-pmo-skills.git",
-      "expected_commit": "66de8f309ca27825435b2d72b45432edc79c4a7b",
+      "expected_commit": "f985520627aad4f7d5949cbaccf0fd2606c7bead",
       "purpose": "悩み、葛藤、自己矛盾、価値判断、継続、対話、境界線を扱う11個の実行skillを、相互リンクを保った一つのライブラリとして使う。ユーザーが$conflict-clarity、このライブラリ、またはリンク済みskillの使用を明示したときに使用する。危機時は通常実行を停止し、該当skillがなければ無理に適用しない。子skill名の羅列で終えず、確認できる情報の範囲で実行手順を具体化する。",
       "approved_by": "Skill Library Manager",
-      "approved_at": "2026-09-03T00:48:33.500712+00:00",
+      "approved_at": "2026-09-03T03:52:05.574066+00:00",
       "skill_metadata": {
         "conflict-clarity": {
           "display_name": "conflict-clarity",
@@ -136,6 +136,25 @@
         "future-authored-meaning",
         "restart-as-continuation",
         "possibility-under-uncertainty"
+      ]
+    },
+    {
+      "id": "custom-skills",
+      "menu_label": "Custom skills",
+      "selection_kind": "package",
+      "repo_url": "https://github.com/omusubiman5/codex-pmo-skills.git",
+      "expected_commit": "f985520627aad4f7d5949cbaccf0fd2606c7bead",
+      "purpose": "前日分のAIニュースdigestから本文読み上げ、キャラクターコメント、BGMを合成し、動画を作らず単一のポッドキャストMP3を生成する。CMA004、AI NEWS podcast、音声版ニュース生成を依頼された時に使う。",
+      "approved_by": "Skill Library Manager",
+      "approved_at": "2026-09-03T03:52:05.574066+00:00",
+      "skill_metadata": {
+        "cma-004": {
+          "display_name": "CMA004 — AI NEWS Podcast Audio",
+          "purpose": "前日分のAIニュースdigestから本文読み上げ、キャラクターコメント、BGMを合成し、動画を作らず単一のポッドキャストMP3を生成する。CMA004、AI NEWS podcast、音声版ニュース生成を依頼された時に使う。"
+        }
+      },
+      "skills": [
+        "cma-004"
       ]
     }
   ]

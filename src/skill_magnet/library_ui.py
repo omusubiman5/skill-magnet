@@ -32,6 +32,8 @@ LIBRARY_WIZARD_STEPS = (
 )
 
 LIBRARY_ACTION_LABELS = {
+    "sync": "GitHubへ反映",
+    "waiting": "GitHubのマージ待ち",
     "prepare": "送信内容を確認する",
     "publish": "GitHubへ送る",
     "open_pr": "GitHubでPRを開く",
@@ -198,7 +200,7 @@ def show_library_manager(
         )
     )
     transaction_id = tk.StringVar()
-    action_stage = tk.StringVar(value="prepare")
+    action_stage = tk.StringVar(value="sync")
     platform = "windows" if os.name == "nt" else "macos"
     result: dict[str, Any] = {"status": "closed_without_activation"}
     busy = False
@@ -403,6 +405,7 @@ def show_library_manager(
                 )
                 registration.grid_remove()
                 refresh_inventory()
+                root.after(0, run_current_action)
                 return
             messagebox.showinfo(
                 "Skill",
@@ -412,6 +415,7 @@ def show_library_manager(
             )
             registration.grid_remove()
             refresh_inventory()
+            root.after(0, run_current_action)
         except Exception as exc:
             show_error(exc)
 
@@ -442,7 +446,7 @@ def show_library_manager(
                 updated = update_skill_source(repository_path, identifier, Path(value))
             set_text(preview_output, updated)
             refresh_inventory()
-            messagebox.showinfo("更新完了", "ローカル管理領域を更新しました。GitHubへ送る内容を確認してください。", parent=root)
+            root.after(0, run_current_action)
         except Exception as exc:
             show_error(exc)
 
@@ -463,6 +467,7 @@ def show_library_manager(
                 deleted = delete_skill(repository_path, identifier, confirmed=True)
             set_text(preview_output, deleted)
             refresh_inventory()
+            root.after(0, run_current_action)
         except Exception as exc:
             show_error(exc)
 
@@ -607,11 +612,64 @@ def show_library_manager(
         except Exception as exc:
             handle_transaction_error(exc, "activate")
 
+    def automatic_sync() -> None:
+        """Complete the user-requested library change without manual stage buttons."""
+        nonlocal result
+        current: LibraryTransaction | None = None
+        try:
+            if not remote.get().strip():
+                raise SkillMagnetError("公開先のGitHub URLを入力してください")
+            if transaction_id.get().strip():
+                current = transaction()
+            else:
+                current = find_resumable_transaction(
+                    state_dir,
+                    draft=require_repository(),
+                    remote=remote.get().strip(),
+                ) or LibraryTransaction(state_dir)
+                transaction_id.set(current.transaction_id)
+
+            def update(path: Path) -> Any:
+                return menu_update(path, platform) if menu_update else None
+
+            result = current.complete_automatically(
+                draft=require_repository(),
+                remote=remote.get().strip(),
+                config_path=config_path,
+                confirmed=True,
+                menu_update=update if menu_update else None,
+            )
+            set_text(preview_output, result)
+            if str(result.get("status")) == "published_pending":
+                set_stage("waiting")
+
+                def poll_merge() -> None:
+                    if not root.winfo_exists():
+                        return
+                    set_stage("sync")
+                    run_current_action()
+
+                root.after(15_000, poll_merge)
+                return
+            set_stage("complete")
+            refresh_inventory()
+            messagebox.showinfo(
+                "Library Manager",
+                "GitHubへの送信・マージ・Skill Magnetへの反映が完了しました。",
+                parent=root,
+            )
+        except Exception as exc:
+            if current is not None and current.journal_path.is_file():
+                handle_transaction_error(exc, "sync")
+            else:
+                transaction_id.set("")
+                show_error(exc)
+
     def stage_for_status(status: str, fallback: str = "prepare") -> str:
         return {
-            "prepared": "publish",
-            "published_pending": "open_pr",
-            "verified": "activate",
+            "prepared": "sync",
+            "published_pending": "sync",
+            "verified": "sync",
             "active": "complete",
         }.get(status, fallback)
 
@@ -633,7 +691,7 @@ def show_library_manager(
         action_stage.set(value)
         action_button.configure(
             text=library_action_label(value),
-            state="disabled" if value == "complete" or busy else "normal",
+            state="disabled" if value in {"complete", "waiting"} or busy else "normal",
         )
 
     def run_current_action() -> None:
@@ -641,6 +699,7 @@ def show_library_manager(
         if busy:
             return
         actions = {
+            "sync": automatic_sync,
             "prepare": prepare,
             "publish": publish,
             "open_pr": open_pull_request,
@@ -659,7 +718,7 @@ def show_library_manager(
 
     action_button = ttk.Button(
         publish_frame,
-        text=library_action_label("prepare"),
+        text=library_action_label("sync"),
         command=run_current_action,
     )
     action_button.grid(row=4, column=0, columnspan=3, sticky="e", pady=(8, 0))
@@ -677,20 +736,7 @@ def show_library_manager(
         )
 
     if initial_registration is not None:
-        if initial_registration["already_registered"]:
-            initial_message = "右クリックしたフォルダーは登録済みです。"
-        else:
-            initial_message = (
-                f"右クリックしたフォルダーから"
-                f"{len(initial_registration['imported_pack_ids'])}パック、"
-                f"{len(initial_registration['imported_skill_ids'])}スキルを登録しました。"
-            )
-        root.after(
-            0,
-            lambda message=initial_message: messagebox.showinfo(
-                "フォルダー登録完了", message, parent=root
-            ),
-        )
+        root.after(0, run_current_action)
 
     def offer_interrupted_transaction() -> None:
         try:
@@ -707,21 +753,13 @@ def show_library_manager(
             raw = transaction()._journal()
             if str(raw.get("status")) == "published_pending":
                 set_text(preview_output, raw)
-                set_stage("open_pr")
-                messagebox.showinfo(
-                    "GitHubでのマージ待ち",
-                    "作成済みのPRがあります。新しいPRは作らず、この作業を続けます。",
-                    parent=root,
-                )
+                set_stage("sync")
+                root.after(0, run_current_action)
                 return
             if str(raw.get("status")) == "verified":
                 set_text(preview_output, raw)
-                set_stage("activate")
-                messagebox.showinfo(
-                    "Skill Magnetへの反映待ち",
-                    "GitHub上の内容は検証済みです。この作業を続けて反映できます。",
-                    parent=root,
-                )
+                set_stage("sync")
+                root.after(0, run_current_action)
                 return
             if raw.get("commit") or raw.get("pr_url") or str(raw.get("status")) == "publishing":
                 set_text(preview_output, raw)
@@ -756,7 +794,8 @@ def show_library_manager(
         except Exception as exc:
             show_error(exc)
 
-    root.after(0, offer_interrupted_transaction)
+    if initial_registration is None:
+        root.after(0, offer_interrupted_transaction)
 
     root.mainloop()
     return result

@@ -121,7 +121,7 @@ Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデ�
 
 ### Publish Transaction
 
-- FR-9: アプリは書込み前にrepository、branch、追加・変更file、pack差分、関係差分、予定される本体更新とメニュー更新を一画面でpreviewし、明示確認を要求しなければならない。GUIの操作ボタンは現在実行可能な1個だけを表示し、preview前にpublish、remote検証、有効化を選択できてはならない。
+- FR-9: 登録・更新・削除の利用者操作を、その変更に限ったGitHub公開、自動マージ、remote検証、本体更新、メニュー更新の明示承認として扱う。アプリは実行結果と対象repository、branch、変更file、pack、commit、PR、反映結果を一画面へ表示し、追加の段階ボタンを要求してはならない。validation失敗時はpublish前に停止する。
 - FR-10: 編集作業は利用者の既存checkoutではなく、製品所有のisolated temporary workspaceで行い、未コミット作業を変更してはならない。
 - FR-11: defaultでは専用branchへcommit・pushしてPRを作成し、default branchへの直接pushは明示的に選択され、かつrepository policyが許可する場合だけ実行できなければならない。
 - FR-12: remote commit確定後、アプリは40文字commit SHA、INDEX、全対象SKILL.md、acceptance.json、catalogのSHA-256をremote contentから再取得して照合しなければならない。
@@ -146,12 +146,12 @@ Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデ�
 
 ### User Experience
 
-- FR-22: Library ManagerはOSの右クリック`Skill Magnet`入口から開けなければならない。Windows Explorerでは`Skill Magnet`配下の`Library Manager`として直接選択でき、macOS Finderでは`Skill Magnet`クイックアクションが開く共通画面内から選択できる。実行項目は`Skill Pack: <表示名>`（単体skill選択を構成する場合は`Skill: <表示名>`）とし、管理機能・pack・skillの種別を見ただけで区別できなければならない。作業用repositoryはアプリ専用state内で自動管理し、利用者へ保存先やrepository名を入力させない。右クリック対象に`SKILL.md`がある場合だけskill import候補へ事前入力し、publishまたはactivateを自動実行してはならない。
+- FR-22: Library ManagerはOSの右クリック`Skill Magnet`入口から開けなければならない。Windows Explorerでは`Skill Magnet`配下の`Library Manager`として直接選択でき、macOS Finderでは`Skill Magnet`クイックアクションが開く共通画面内から選択できる。実行項目は`Skill Pack: <表示名>`（単体skill選択を構成する場合は`Skill: <表示名>`）とし、管理機能・pack・skillの種別を見ただけで区別できなければならない。作業用repositoryはアプリ専用state内で自動管理し、利用者へ保存先やrepository名を入力させない。右クリック対象に`SKILL.md`がある場合だけ登録処理を開始し、登録後はFR-9の自動公開・反映transactionを完了する。
 
 基本flowはタブのない1画面とする。作業用repository、catalog、INDEX、validation、preview、activationのためだけの独立画面は設けず、自動処理または同じ画面へ統合する。
 
 1. 右クリック対象が単一skill、1 pack、または複数pack collectionの標準構成なら、全候補を自動importして登録欄を隠す。作成済みskill／packを手動登録する場合だけ同じ画面の上部へfolder指定欄を表示する。画面内でskillを新規作成してはならない。pack情報からcatalogと統合INDEXを自動生成する。
-2. 同じ画面でGitHub URLを入力し、validationと全差分を確認してからPRを明示公開し、merge後のremoteを照合する。OSを自動判定してactivationを明示確認し、active version、menu、testsをreceiptで確認する。
+2. 既存GitHub URLを自動取得し、validation後に専用branch、PR、自動マージ、merge後remote照合、OS自動判定、activation、menu再登録を一つのtransactionで完了し、active versionとreceiptを表示する。
 
 OSは利用者へ選択させず実行環境から自動判定する。URL未入力、標準構成不備、validation失敗はその操作時のエラーとして表示し、外部書込みまたはactivationを行わない。PRのOPENはエラーではなく正常なマージ待ちとして表示する。
 手動登録画面で利用者が指定するのはfolderだけとする。単一skillでは`Custom skills`へ登録し、pack folderではfolder名をPack IDにして直下の全skillを登録し、collection folderでは直下の全packを一括登録する。`SKILL.md`が一件もない、INDEX参照先がない、IDが衝突するなど完全性を証明できない場合は、全体をrollbackしてエラー停止する。
@@ -323,6 +323,7 @@ OSは利用者へ選択させず実行環境から自動判定する。URL未入
 | Version | Date | Author | Changes |
 |---|---|---|---|
 | 1.0 | 2026-09-02 | Codex | 初版。汎用repository命名とアプリ内skill追加transactionを定義 |
+| 1.4 | 2026-09-03 | Codex | 登録・更新・削除からGitHub公開、PR自動マージ、本体反映、メニュー再登録までの自動transactionを必須化 |
 | 1.1 | 2026-09-02 | Codex | FR-1〜FR-21の実装・検証完了に伴いstatusをimplementedへ更新 |
 | 1.2 | 2026-09-02 | Codex | 実行ターゲットをCodex Desktopアプリ／Claude Codeデスクトップアプリとして明記 |
 | 1.3 | 2026-09-02 | Codex | OS右クリックからSkill Library Managerを開くFR-22を追加し、Windows実機で検証 |
