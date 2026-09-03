@@ -36,5 +36,5 @@ Library Managerの登録・更新・削除から、GitHub公開、PR自動マー
 初回実行ではskill保管庫のGitHub auto-merge無効設定を検出した。これを利用者エラーにせず、同じPRを即時mergeする経路を追加してtransactionを再開し、重複branch／commit／PRを作らずactiveまで完了した。
 
 - 製品repository PR: `https://github.com/omusubiman5/skill-magnet/pull/28`
-- CI: push run `33714369411`とPR run `33714371737`のWindows/macOS計4 jobsがPASS
-- PRは上記gate合格後にmergeする。
+- 最終CI: push run `33714616444`とPR run `33714618403`のWindows/macOS計4 jobsがPASS
+- 製品PR #28: MERGED、merge commit `fb2f1451ddc689c26824e90f5ebe54d6dc93b53b`
