@@ -56,7 +56,7 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 
 Skill Library Managerは、登録済みのパックとスキルを一覧し、新規登録・更新・削除してGitHubへ公開し、Skill Magnetで使える状態にするための管理画面です。作業途中のファイルはアプリ専用領域へ自動保存されます。利用者が作業用フォルダーやrepository名、内部IDを入力する必要はありません。
 
-Windows Explorerでは登録元フォルダーを右クリックして`Skill Magnet` → `Library Manager`、macOS Finderではクイックアクション`Skill Magnet`を開いて`Library Manager`を選びます。単一スキル、1パック、複数パックを含む親フォルダーのどれでも指定できます。標準構成を検出できればアプリが全件を自動で取り込み、登録欄を隠します。手動登録する場合だけ、同じ画面の上部にフォルダー選択欄を表示します。
+Windows Explorerでは登録元フォルダーを右クリックして`Skill Magnet` → `このフォルダーのスキルを登録`を選びます。選択したフォルダーがそのまま検証・登録されるため、アプリ内でもう一度選び直す必要はありません。`Library Manager`は登録済みスキルの一覧・更新・削除・GitHub公開に使います。単一スキル、1パック、複数パックを含む親フォルダーのいずれも登録できます。macOS Finderでも選択フォルダーをクイックアクションへ渡します。
 
 ### 操作ガイド（1画面）
 
@@ -138,6 +138,7 @@ python -m skill_magnet library abandon --transaction-id TRANSACTION_ID --confirm
 - [Skill CRUD修正方針](docs/skill-crud-remediation-policy.md)
 - [Skill CRUD実行方針](docs/skill-crud-execution-plan.md)
 - [Skill CRUD実装報告](docs/skill-crud-implementation-report-2026-09-03.md)
+- [0.5.5リリース報告](docs/release-0.5.5.md)
 - [0.5.4リリース報告](docs/release-0.5.4.md)
 - [実装計画](docs/skill-library-manager-implementation-plan-2026-09-02.md)
 - [実装報告](docs/skill-library-manager-implementation-report-2026-09-02.md)
@@ -162,7 +163,7 @@ python -m skill_magnet library abandon --transaction-id TRANSACTION_ID --confirm
 
    ```powershell
    python -m pip wheel . --no-deps --wheel-dir .\dist
-   python -m pip install --force-reinstall .\dist\skill_magnet-0.5.4-py3-none-any.whl
+   python -m pip install --force-reinstall .\dist\skill_magnet-0.5.5-py3-none-any.whl
    ```
 
 3. Windowsの右クリックメニューを登録します。このcommandはrepository rootで、そのままcopy/pasteできます。
@@ -215,8 +216,9 @@ python -m skill_magnet context-menu-status --platform windows
   "self_signed_launcher_referenced": false,
   "deprecated_launcher_exists": false,
   "menu_leaf_count": 2,
-  "menu_action_count": 3,
+  "menu_action_count": 4,
   "library_manager_entry_count": 1,
+  "register_folder_entry_count": 1,
   "usable_installed_state": true
 }
 ```

@@ -936,6 +936,28 @@ class LibraryManagerTests(unittest.TestCase):
             )
         self.assertEqual(show.call_args.kwargs["initial_repository"], selected)
 
+    def test_context_entry_can_register_selected_repository(self) -> None:
+        selected = self.root / "selected library"
+        selected.mkdir()
+        with mock.patch(
+            "skill_magnet.cli.show_library_manager",
+            return_value={"status": "closed_without_activation"},
+        ) as show:
+            self.assertEqual(
+                cli_main(
+                    [
+                        "library",
+                        "ui",
+                        "--repository",
+                        str(selected),
+                        "--register-selected",
+                    ]
+                ),
+                0,
+            )
+        self.assertEqual(show.call_args.kwargs["initial_repository"], selected)
+        self.assertTrue(show.call_args.kwargs["register_selected"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -418,7 +418,7 @@ static MenuNode* LoadRoot() {
         const auto fields = SplitFields(line);
         if (fields.size() != 7 || fields[0].empty() || fields[1] != L"Skill Magnet" ||
             (fields[2] != L"package" && fields[2] != L"skill" &&
-             fields[2] != L"manager") ||
+            fields[2] != L"manager" && fields[2] != L"register") ||
             fields[3].empty() || fields[4].empty() ||
             fields[5].empty() || fields[6].find(kProjectMarker) == std::wstring::npos) continue;
         // Windows 11's compact Explorer surface renders only the extension

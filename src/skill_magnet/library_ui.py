@@ -160,6 +160,7 @@ def show_library_manager(
     config_path: Path,
     state_dir: Path,
     initial_repository: Path | None = None,
+    register_selected: bool = False,
     menu_update: Callable[[Path, str], Any] | None = None,
 ) -> dict[str, Any]:
     """Open the compact library manager and return its final status."""
@@ -289,11 +290,17 @@ def show_library_manager(
             raise SkillMagnetError("スキルを保存するフォルダーを指定してください")
         return Path(repository.get()).resolve()
 
-    try:
-        selected_skill_imported = import_selected_skill(repository_path, initial_repository)
-    except Exception as exc:
-        selected_skill_imported = False
-        show_error(exc)
+    selected_skill_imported = False
+    initial_registration: dict[str, Any] | None = None
+    if register_selected:
+        try:
+            if initial_repository is None:
+                raise SkillMagnetError("右クリックしたフォルダーを取得できませんでした")
+            source = require_registration_source(str(initial_repository))
+            initial_registration = register_skill_source(repository_path, source)
+            selected_skill_imported = True
+        except Exception as exc:
+            show_error(exc)
 
     inventory_frame = ttk.LabelFrame(page, text="登録済みのスキル", padding=10)
     inventory_frame.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
@@ -656,6 +663,22 @@ def show_library_manager(
     action_button.grid(row=4, column=0, columnspan=3, sticky="e", pady=(8, 0))
 
     refresh_inventory()
+
+    if initial_registration is not None:
+        if initial_registration["already_registered"]:
+            initial_message = "右クリックしたフォルダーは登録済みです。"
+        else:
+            initial_message = (
+                f"右クリックしたフォルダーから"
+                f"{len(initial_registration['imported_pack_ids'])}パック、"
+                f"{len(initial_registration['imported_skill_ids'])}スキルを登録しました。"
+            )
+        root.after(
+            0,
+            lambda message=initial_message: messagebox.showinfo(
+                "フォルダー登録完了", message, parent=root
+            ),
+        )
 
     def offer_interrupted_transaction() -> None:
         try:
