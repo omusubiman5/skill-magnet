@@ -22,6 +22,7 @@ Library Managerにも、Skill登録時に`SKILL.md`と`acceptance.json`だけを
 
 - Library Managerテスト35件: PASS
 - 全テスト179件: PASS（環境依存1件skip）
+- wheel論理payload SHA-256: `1e816dfaca8311c35bc9ff5b6847867bf128a9c2e5634f161f0bf67f039f6ffd`
 - CMA004の構造・trigger・boundary検証: PASS
 - 架空ニュース8件のMarkdown dry-run: `result=ready`、planned 8件
 - GitHub PR作成、マージ、固定commitのリモートmanifest照合: PASS
