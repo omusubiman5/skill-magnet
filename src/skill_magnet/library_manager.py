@@ -497,15 +497,19 @@ def import_skill_source(root: Path, source: Path) -> dict[str, Any]:
             prepared[skill_id] = (skill_bytes, acceptance, generated)
             metadata_by_skill[skill_id] = (display_name, purpose)
 
-    previous_catalog = catalog_path.read_bytes()
-    index_path = root / "INDEX.md"
-    previous_index = index_path.read_bytes() if index_path.exists() else None
-    added_directories: list[Path] = []
-    try:
-        packs = catalog.setdefault("packs", [])
+    def mutation(candidate: Path) -> None:
+        candidate_catalog_path = candidate / CATALOG_FILENAME
+        candidate_catalog = _read_json(candidate_catalog_path)
+        candidate_existing_packs = (
+            _pack_map(candidate_catalog) if candidate_catalog.get("packs") else {}
+        )
+        packs = candidate_catalog.setdefault("packs", [])
         for pack in discovered:
-            if pack["id"] == "custom-skills" and pack["id"] in existing_packs:
-                target_pack = existing_packs[pack["id"]]
+            if (
+                pack["id"] == "custom-skills"
+                and pack["id"] in candidate_existing_packs
+            ):
+                target_pack = candidate_existing_packs[pack["id"]]
             else:
                 target_pack = {
                     "id": pack["id"],
@@ -519,9 +523,8 @@ def import_skill_source(root: Path, source: Path) -> dict[str, Any]:
                 }
                 packs.append(target_pack)
             for skill_id in pack["skills"]:
-                target = root / skill_id
+                target = candidate / skill_id
                 target.mkdir()
-                added_directories.append(target)
                 skill_bytes, acceptance, _ = prepared[skill_id]
                 (target / "SKILL.md").write_bytes(skill_bytes)
                 _atomic_json(target / "acceptance.json", acceptance)
@@ -531,18 +534,9 @@ def import_skill_source(root: Path, source: Path) -> dict[str, Any]:
                     "display_name": display_name,
                     "purpose": purpose,
                 }
-        _atomic_json(catalog_path, catalog)
-        index_path.write_text(render_index(catalog), encoding="utf-8", newline="\n")
-        result = validate_library(root).as_dict()
-    except Exception:
-        for target in reversed(added_directories):
-            shutil.rmtree(target, ignore_errors=True)
-        catalog_path.write_bytes(previous_catalog)
-        if previous_index is None:
-            index_path.unlink(missing_ok=True)
-        else:
-            index_path.write_bytes(previous_index)
-        raise
+        _atomic_json(candidate_catalog_path, candidate_catalog)
+
+    result = _mutate_library_candidate(root, mutation).as_dict()
     result.update(
         source_kind=("collection" if len(discovered) > 1 else "pack" if len(incoming_skills) > 1 else "skill"),
         imported_pack_ids=incoming_pack_ids,
@@ -638,6 +632,35 @@ def _mutate_library_candidate(
         shutil.rmtree(staging_root, ignore_errors=True)
         if backup.exists() and root.exists():
             shutil.rmtree(backup, ignore_errors=True)
+
+
+def recover_interrupted_library(root: Path) -> dict[str, Any]:
+    """Restore a valid backup left by an abrupt stop during directory replacement."""
+    root = root.resolve()
+    backups = sorted(
+        root.parent.glob(f".{root.name}-backup-*"),
+        key=lambda path: path.stat().st_mtime_ns,
+        reverse=True,
+    )
+    if root.exists():
+        return {"recovered": False, "repository": str(root)}
+    valid_backups: list[Path] = []
+    for backup in backups:
+        try:
+            validate_library(backup)
+            valid_backups.append(backup)
+        except (OSError, SkillMagnetError):
+            continue
+    if not valid_backups:
+        return {"recovered": False, "repository": str(root)}
+    selected = valid_backups[0]
+    os.replace(selected, root)
+    validate_library(root)
+    return {
+        "recovered": True,
+        "repository": str(root),
+        "backup": str(selected),
+    }
 
 
 def _write_source_skill(
@@ -916,13 +939,21 @@ def validate_library(
         if metadata.get("name") != skill:
             raise SkillMagnetError(f"SKILL.md name must equal directory id: {skill}")
         lowered = skill_text.casefold()
-        has_trigger = (
+        has_trigger = bool(
             "trigger" in lowered
             or "触発" in skill_text
             or "使用場面" in skill_text
             or "適用条件" in skill_text
+            or re.search(r"(?:とき|時|場合)に使(?:う|用)", skill_text)
+            or re.search(r"(?:依頼|指定|必要).{0,20}(?:とき|時|場合)", skill_text)
         )
-        has_boundary = "boundary" in lowered or "境界" in skill_text or "使用しない" in skill_text
+        has_boundary = bool(
+            "boundary" in lowered
+            or "境界" in skill_text
+            or "使用しない" in skill_text
+            or re.search(r"(?m)^#{1,6}\s*(?:制約|禁止事項|対象外|非対象)\s*$", skill_text)
+            or re.search(r"(?:行わない|してはならない|禁止する|対象外とする)", skill_text)
+        )
         if not has_trigger or not has_boundary:
             raise SkillMagnetError(f"Skill {skill} must define trigger and boundary")
         try:

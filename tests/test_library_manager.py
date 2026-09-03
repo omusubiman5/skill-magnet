@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -24,6 +25,7 @@ from skill_magnet.library_manager import (
     import_skill_source,
     initialize_library,
     library_inventory,
+    recover_interrupted_library,
     render_index,
     update_pack_source,
     update_skill_source,
@@ -211,6 +213,51 @@ class LibraryManagerTests(unittest.TestCase):
         self.assertTrue(repeated["already_registered"])
         self.assertEqual((repository / CATALOG_FILENAME).read_bytes(), before)
         self.assertTrue(import_selected_skill(repository, source))
+
+    def test_japanese_usage_phrase_and_constraints_heading_define_contract(self) -> None:
+        repository = managed_repository_path(self.root)
+        initialize_library(repository, DEFAULT_REPOSITORY_NAME)
+        source = self.root / "cma-004"
+        source.mkdir()
+        (source / "SKILL.md").write_text(
+            "---\n"
+            "name: cma-004\n"
+            "description: 音声版ニュース生成を依頼された時に使う。\n"
+            "---\n\n"
+            "# CMA004\n\n"
+            "## ワークフロー\n\n音声を生成する。\n\n"
+            "## 制約\n\n- 動画生成は行わない。\n- 認証値を出力しない。\n",
+            encoding="utf-8",
+        )
+        registered = register_skill_source(repository, source)
+        self.assertFalse(registered["already_registered"])
+        self.assertEqual(registered["imported_skill_ids"], ["cma-004"])
+        self.assertTrue(validate_library(repository).as_dict()["valid"])
+        self.assertTrue(register_skill_source(repository, source)["already_registered"])
+
+    def test_abrupt_close_between_backup_and_replace_is_recovered(self) -> None:
+        repository = self.make_crud_library()
+        before = validate_library(repository).as_dict()["manifest"]
+        invalid = self.root / "invalid-import"
+        invalid.mkdir()
+        (invalid / "SKILL.md").write_text(
+            "---\nname: invalid-import\ndescription: invalid\n---\n# Invalid\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(SkillMagnetError, "trigger and boundary"):
+            register_skill_source(repository, invalid)
+        self.assertEqual(validate_library(repository).as_dict()["manifest"], before)
+
+        backup = repository.parent / f".{repository.name}-backup-interrupted"
+        os.replace(repository, backup)
+        self.assertFalse(repository.exists())
+
+        recovery = recover_interrupted_library(repository)
+
+        self.assertTrue(recovery["recovered"])
+        self.assertTrue(repository.is_dir())
+        self.assertFalse(backup.exists())
+        self.assertEqual(validate_library(repository).as_dict()["manifest"], before)
 
     def test_books_folder_imports_every_pack_and_skill_without_candidate_omission(self) -> None:
         repository = managed_repository_path(self.root)
