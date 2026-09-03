@@ -28,4 +28,6 @@
 - 再現build: 独立した2 wheelの論理payload SHA-256が`f046efc06554f6ca15fce18d8ec924c308f628c7988e6ca09fe6aeee0b1ae05d`で一致。
 - release code: `03088d6bd96ecf6a10de19db616bc8d5dcd38452`。
 
+初回merge後の実Windows再導入で、BOM付きの正常な`certificate-state.json`をPythonが拒否する別の再登録阻害を検出した。`utf-8-sig`読込とBOM付き回帰fixtureで修正し、最終release codeを`20050a4eccdbd7215e3dfbf31be90c275452c561`、wheel論理payload SHA-256を`c7afd078594a48b2f4fbcdeab2f4b3717bb4f7b6485b2ae059072438867fc71d`へ更新した。詳細は[Windows右クリックメニュー再登録拒否の原因調査](windows-certificate-bom-root-cause-2026-09-04.md)に記録した。
+
 インストール済みwheelとExplorer context menuの確認結果は、PR merge後の最終導入時に追記する。
