@@ -771,7 +771,7 @@ def _recover_windows_certificate_ownership_from_residue(install_root: Path) -> b
     if not current_path.is_file():
         return False
     try:
-        current = json.loads(current_path.read_text(encoding="utf-8"))
+        current = json.loads(current_path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         raise SafetyError("Invalid current certificate ownership state") from exc
     thumbprint = str(current.get("thumbprint", ""))
@@ -790,7 +790,7 @@ def _recover_windows_certificate_ownership_from_residue(install_root: Path) -> b
         if not historical_path.is_file():
             continue
         try:
-            historical = json.loads(historical_path.read_text(encoding="utf-8"))
+            historical = json.loads(historical_path.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError) as exc:
             raise SafetyError(f"Invalid historical certificate state: {candidate}") from exc
         if str(historical.get("thumbprint", "")).casefold() != thumbprint.casefold():
