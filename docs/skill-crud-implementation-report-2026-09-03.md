@@ -38,7 +38,7 @@ Library Managerへpack→skillの階層一覧とCreate・Read・Update・Delete�
 - 実ユーザーlibraryのコピー: 2 pack／21 skillのRead、skill Update、pack Delete、再validationがPASS
 - 実ユーザーlibrary本体とGitHub repositoryはスモークで変更していない。
 - Windows導入状態: `menu_contract_matches_config=true`、`usable_installed_state=true`
-- 0.5.4 wheel論理payload SHA-256: `84b9e81156b3e4bbdffa609788742e2cb47cfb1b1051e70bbfb9b25933566202`（独立2 build一致）
+- 0.5.4 CI wheel論理payload SHA-256: `60d4aa77a48739a772ed3c58efad58a1fee838e15ee4fec10106743497fbff72`
 - 実機へ0.5.4 wheelとWindows 11 modern context menuを再登録済み。
 
 ## 配布
