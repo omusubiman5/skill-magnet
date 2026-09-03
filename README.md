@@ -139,6 +139,7 @@ python -m skill_magnet library abandon --transaction-id TRANSACTION_ID --confirm
 - [Skill CRUD実行方針](docs/skill-crud-execution-plan.md)
 - [Skill CRUD実装報告](docs/skill-crud-implementation-report-2026-09-03.md)
 - [0.5.6スキル登録スモークテスト](docs/skill-registration-smoke-test-2026-09-03.md)
+- [`&#x20;`再発の原因調査](docs/root-cause-u0020-recurrence-2026-09-03.md) / [対応報告](docs/fix-report-u0020-recurrence-2026-09-03.md)
 - [0.5.5リリース報告](docs/release-0.5.5.md)
 - [0.5.4リリース報告](docs/release-0.5.4.md)
 - [実装計画](docs/skill-library-manager-implementation-plan-2026-09-02.md)
@@ -164,7 +165,7 @@ python -m skill_magnet library abandon --transaction-id TRANSACTION_ID --confirm
 
    ```powershell
    python -m pip wheel . --no-deps --wheel-dir .\dist
-   python -m pip install --force-reinstall .\dist\skill_magnet-0.5.6-py3-none-any.whl
+   python -m pip install --force-reinstall .\dist\skill_magnet-0.5.7-py3-none-any.whl
    ```
 
 3. Windowsの右クリックメニューを登録します。このcommandはrepository rootで、そのままcopy/pasteできます。
