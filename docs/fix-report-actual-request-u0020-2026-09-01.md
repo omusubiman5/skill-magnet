@@ -1,5 +1,7 @@
 # 実依頼の `&#x20;` 再露出 対応報告
 
+> 2026-09-03追記: 本対応は新規planで作るcontractを対象としており、修正前に保存された未消費contractのhandoff経路が未対応だった。後方互換対応は[`fix-report-u0020-recurrence-2026-09-03.md`](fix-report-u0020-recurrence-2026-09-03.md)を参照すること。
+
 日付: 2026-09-01
 
 原因調査: [`root-cause-actual-request-u0020-2026-09-01.md`](root-cause-actual-request-u0020-2026-09-01.md)

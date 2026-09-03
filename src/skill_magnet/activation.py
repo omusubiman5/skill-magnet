@@ -181,6 +181,17 @@ class LaunchContract:
         return value
 
 
+def _effective_actual_request(contract: LaunchContract) -> str:
+    """Return the request text used at every runtime and evidence boundary.
+
+    Contracts written before request canonicalization was introduced can still
+    contain a literal numeric U+0020 reference.  The signed contract remains
+    immutable, but handoff, hashing, verification, and result rendering must
+    agree on the same canonical request.
+    """
+    return normalize_actual_request(contract.purpose)
+
+
 class ActivationEngine:
     """Fail-closed, one-shot activation path. It never installs local skills."""
 
@@ -661,6 +672,7 @@ class ActivationEngine:
         self.engine._write_json_atomic(path, value)
 
     def _task_envelope(self, contract: LaunchContract, pack: Pack) -> str:
+        actual_request = _effective_actual_request(contract)
         provenance = {
             "pack_id": contract.pack_id,
             "repository_url": contract.repository_url,
@@ -671,11 +683,11 @@ class ActivationEngine:
             "instruction_digest": contract.instruction_digest,
             "challenge_nonce": contract.nonce,
             "actual_request_sha256": hashlib.sha256(
-                contract.purpose.encode("utf-8")
+                actual_request.encode("utf-8")
             ).hexdigest(),
         }
         actual_request_sha256 = hashlib.sha256(
-            contract.purpose.encode("utf-8")
+            actual_request.encode("utf-8")
         ).hexdigest()
         pack_index = self._pack_index(pack, contract.selection_kind)
         index_section = (
@@ -691,7 +703,7 @@ class ActivationEngine:
         return (
             "Skill Magnet verified task envelope.\n"
             f"PROVENANCE={json.dumps(provenance, ensure_ascii=False, sort_keys=True)}\n"
-            f"PURPOSE={contract.purpose}\n"
+            f"PURPOSE={actual_request}\n"
             f"TARGET_PROJECT={contract.project}\n"
             "The PURPOSE field is the user's actual request. Complete that request, "
             "not a demonstration or readiness exercise. Read every supplied skill "
@@ -725,8 +737,9 @@ class ActivationEngine:
         runtime_name: str = "Codex Desktop",
     ) -> str:
         """Build a human-readable Desktop/Web task bound to one contract."""
+        actual_request = _effective_actual_request(contract)
         actual_request_sha256 = hashlib.sha256(
-            contract.purpose.encode("utf-8")
+            actual_request.encode("utf-8")
         ).hexdigest()
         owner, repository = _parse_github_repo(pack.repo_url)
         raw_root = (
@@ -802,7 +815,7 @@ class ActivationEngine:
             f"依頼SHA-256: {actual_request_sha256}\n"
             f"指示SHA-256: {contract.instruction_digest}\n"
             "\n実際の依頼:\n"
-            f"{contract.purpose}\n"
+            f"{actual_request}\n"
             "\n期待する成果:\n"
             "上記依頼そのものを完了した具体的な成果を返してください。成果の形式は実際の依頼と"
             "適用したskillに従い、自然文、JSON、コード、ファイルその他の形式を一律に禁止"
@@ -840,6 +853,7 @@ class ActivationEngine:
         self.evidence_dir.mkdir(parents=True, exist_ok=True)
         prompt = self._desktop_task_prompt(contract, pack)
         prompt_digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        actual_request = _effective_actual_request(contract)
         self._consume(contract)
         return {
             "status": "desktop_handoff_prepared",
@@ -852,7 +866,7 @@ class ActivationEngine:
             "project": contract.project,
             "skill_ids": list(contract.skill_ids),
             "actual_request_sha256": hashlib.sha256(
-                contract.purpose.encode("utf-8")
+                actual_request.encode("utf-8")
             ).hexdigest(),
             "instruction_digest": contract.instruction_digest,
             "skill_hashes": dict(contract.skill_hashes),
@@ -1013,6 +1027,7 @@ class ActivationEngine:
     def _output_schema(
         contract: LaunchContract, checks: dict[str, dict[str, Any]]
     ) -> dict[str, Any]:
+        actual_request = _effective_actual_request(contract)
         result_properties: dict[str, Any] = {
             "task_output": {"type": "string", "minLength": 1},
             "saved_paths": {
@@ -1080,7 +1095,7 @@ class ActivationEngine:
             },
             "skill_execution_status": {"type": "string", "const": "completed"},
             "actual_request_sha256": ActivationEngine._const_schema(
-                hashlib.sha256(contract.purpose.encode("utf-8")).hexdigest()
+                hashlib.sha256(actual_request.encode("utf-8")).hexdigest()
             ),
         }
         return {
@@ -1167,7 +1182,7 @@ class ActivationEngine:
         if evidence.get("skill_execution_status") != "completed":
             raise _AcceptanceFailed("Skill execution did not report completion")
         actual_request_sha256 = hashlib.sha256(
-            contract.purpose.encode("utf-8")
+            _effective_actual_request(contract).encode("utf-8")
         ).hexdigest()
         if evidence.get("actual_request_sha256") != actual_request_sha256:
             raise _AcceptanceFailed("Completed skill evidence targets a different request")
@@ -1247,7 +1262,7 @@ class ActivationEngine:
         return {
             "title": "完了",
             "executed_skill": "、".join(skill_names),
-            "request": contract.purpose,
+            "request": _effective_actual_request(contract),
             "result": result["task_output"],
             "saved_or_changed": "\n".join(change_lines),
             "details": {

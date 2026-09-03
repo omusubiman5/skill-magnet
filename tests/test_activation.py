@@ -506,6 +506,25 @@ class ActivationEndToEndTest(unittest.TestCase):
             ttl_minutes=30,
         )
 
+    def _rewrite_as_legacy_entity_contract(
+        self, engine: ActivationEngine, contract_id: str, purpose: str
+    ) -> None:
+        """Simulate a valid contract signed by a pre-canonicalization release."""
+        path = engine.contract_dir / f"{contract_id}.json"
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["purpose"] = purpose
+        unsigned = dict(record)
+        unsigned.pop("contract_digest")
+        record["contract_digest"] = hashlib.sha256(
+            json.dumps(
+                unsigned,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+
     def test_desktop_handoff_requires_pack_skill_application_without_metered_api(self) -> None:
         engine = ActivationEngine(self.config, self.state)
         contract = engine.confirm(self._plan(engine), confirmed=True)
@@ -849,6 +868,50 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertNotIn("prompt", result)
         evidence = self.state / "evidence" / f"{result['contract_id']}-desktop-handoff.json"
         self.assertTrue(evidence.is_file())
+
+    def test_legacy_contract_u0020_is_canonicalized_at_desktop_handoff(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        contract = engine.confirm(self._plan(engine), confirmed=True)
+        legacy_request = "（私が最も見たくない結論）&#x20;"
+        canonical_request = "（私が最も見たくない結論） "
+        self._rewrite_as_legacy_entity_contract(
+            engine, contract.contract_id, legacy_request
+        )
+
+        prepared = engine.prepare_codex_desktop_handoff(contract.contract_id)
+
+        self.assertIn(canonical_request, prepared["prompt"])
+        self.assertNotIn("&#x20;", prepared["prompt"])
+        self.assertEqual(
+            prepared["actual_request_sha256"],
+            hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+        )
+
+    def test_legacy_contract_u0020_uses_one_value_through_verified_execution(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        contract = engine.confirm(self._plan(engine), confirmed=True)
+        legacy_request = "（私が最も見たくない結論）&#x20;"
+        canonical_request = "（私が最も見たくない結論） "
+        self._rewrite_as_legacy_entity_contract(
+            engine, contract.contract_id, legacy_request
+        )
+
+        utf8_test_runtime = (
+            self.fake_codex[0],
+            "-X",
+            "utf8",
+            self.fake_codex[1],
+        )
+        result = engine.execute(
+            contract.contract_id, codex_executable=utf8_test_runtime
+        )
+
+        user_result = result["user_result"]
+        self.assertEqual(user_result["request"], canonical_request)
+        self.assertEqual(user_result["result"], canonical_request)
+        self.assertEqual(
+            user_result["details"]["verification_status"], "verified_completed"
+        )
 
     def test_codex_handoff_rejects_source_change_after_validation(self) -> None:
         engine = ActivationEngine(self.config, self.state)
