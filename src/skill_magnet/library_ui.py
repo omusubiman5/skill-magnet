@@ -20,6 +20,7 @@ from .library_manager import (
     find_resumable_transaction,
     list_transactions,
     library_inventory,
+    recover_interrupted_library,
     update_pack_source,
     update_skill_source,
     validate_library,
@@ -180,6 +181,7 @@ def show_library_manager(
     page.rowconfigure(2, weight=1)
 
     repository_path = managed_repository_path(state_dir)
+    recovery = recover_interrupted_library(repository_path)
     catalog_path = repository_path / CATALOG_FILENAME
     if catalog_path.is_file():
         json.loads(catalog_path.read_text(encoding="utf-8"))
@@ -663,6 +665,16 @@ def show_library_manager(
     action_button.grid(row=4, column=0, columnspan=3, sticky="e", pady=(8, 0))
 
     refresh_inventory()
+
+    if recovery["recovered"]:
+        root.after(
+            0,
+            lambda: messagebox.showinfo(
+                "前回の登録を復旧しました",
+                "アプリ終了前のスキルライブラリを復旧しました。もう一度登録できます。",
+                parent=root,
+            ),
+        )
 
     if initial_registration is not None:
         if initial_registration["already_registered"]:
