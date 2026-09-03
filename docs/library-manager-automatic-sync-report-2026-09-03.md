@@ -31,7 +31,7 @@ Library Managerの登録・更新・削除から、GitHub公開、PR自動マー
 - menu contract: `menu_contract_matches_config=true`、`usable_installed_state=true`
 - 全テスト: 178 tests PASS、環境依存1件skip
 - 配布物再現性: 独立した2 wheel buildの論理payload SHA-256がともに`5b12f4ffc835586adaadb759d89be9d34b17065143f3909542fb05134e6c0452`
-- release code: `17cbcc9a85182d9ffc726d4e25d3f34492606389`
+- release code: `4a750ab95040a3b4af6615692d7406e50d285aae`
 
 初回実行ではskill保管庫のGitHub auto-merge無効設定を検出した。これを利用者エラーにせず、同じPRを即時mergeする経路を追加してtransactionを再開し、重複branch／commit／PRを作らずactiveまで完了した。
 
