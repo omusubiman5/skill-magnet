@@ -143,7 +143,7 @@ Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデ�
 - FR-23: どの処理段階で中断してもjournalから同じtransactionを再開できなければならない。remote副作用がないことを確認できる段階だけ、GUIとCLIで「ローカル作業を破棄」を許可する。commit／push／PRが存在する、または存在が不明な段階ではlocal-only破棄を禁止し、remote状態を照合して既存branch／PRを再利用する。公開は管理対象ファイルのoverlayに限定し、既存remoteファイルの削除差分をfail-closedで拒否しなければならない。
 - FR-24: PRのOPENは正常な`waiting_for_merge`であり、例外、処理中断、復旧対象として表示してはならない。CLOSED未merge、MERGED、未知状態、merge後digest不一致を別状態として扱う。差分0件ではcommit、push、PRを作成してはならない。
 - FR-25: 同一libraryとremoteに非終端transactionがある場合、新transactionを作らず最新の対象を再開しなければならない。操作中は実行ボタンを無効化し、二重clickで段階を跨いだ操作を実行してはならない。
-- FR-26: 右クリック起動では、対象folderの検証より先に画面と受付状態を表示し、現在の処理名を継続表示しなければならない。Library Managerは同一stateにつき1 processだけ実行可能とし、同一folderの連続投入は重複処理せず、別folderの並行投入は理由と再試行方法を表示して拒否する。実行lockはprocess異常終了時にOSが解放し、lock fileの残存だけを理由に次回起動を拒否してはならない。
+- FR-30: 右クリック起動では、対象folderの検証より先に画面と受付状態を表示し、現在の処理名を継続表示しなければならない。Library Managerは同一stateにつき1 processだけ実行可能とし、同一folderの連続投入は重複処理せず、別folderの並行投入は理由と再試行方法を表示して拒否する。実行lockはprocess異常終了時にOSが解放し、lock fileの残存だけを理由に次回起動を拒否してはならない。
 
 ### User Experience
 
@@ -258,6 +258,7 @@ OSは利用者へ選択させず実行環境から自動判定する。URL未入
 | FR-20 | 5状態のstatus表示snapshot test | Automated + QA |
 | FR-21 | 同一transaction retryのcommit・push・menu重複ゼロtest | Automated |
 | FR-22 | Explorer/Finder右クリック導線、選択folder prefill、no-auto-write test | Automated + Windows QA |
+| FR-30 | window先行表示、同一／別folder競合、強制終了後lock再取得test | Automated + Windows QA |
 
 ### Stop and Escalate
 
@@ -332,3 +333,4 @@ OSは利用者へ選択させず実行環境から自動判定する。URL未入
 | 1.2 | 2026-09-02 | Codex | 実行ターゲットをCodex Desktopアプリ／Claude Codeデスクトップアプリとして明記 |
 | 1.3 | 2026-09-02 | Codex | OS右クリックからSkill Library Managerを開くFR-22を追加し、Windows実機で検証 |
 | 1.4 | 2026-09-02 | Codex | 右クリック表示を`Library Manager`、`Skill Pack: <表示名>`、`Skill: <表示名>`に分類 |
+| 1.5 | 2026-09-04 | Codex | 右クリック受付表示、process間排他、異常終了後の再取得をFR-30として追加 |
