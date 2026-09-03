@@ -143,6 +143,7 @@ Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデ�
 - FR-23: どの処理段階で中断してもjournalから同じtransactionを再開できなければならない。remote副作用がないことを確認できる段階だけ、GUIとCLIで「ローカル作業を破棄」を許可する。commit／push／PRが存在する、または存在が不明な段階ではlocal-only破棄を禁止し、remote状態を照合して既存branch／PRを再利用する。公開は管理対象ファイルのoverlayに限定し、既存remoteファイルの削除差分をfail-closedで拒否しなければならない。
 - FR-24: PRのOPENは正常な`waiting_for_merge`であり、例外、処理中断、復旧対象として表示してはならない。CLOSED未merge、MERGED、未知状態、merge後digest不一致を別状態として扱う。差分0件ではcommit、push、PRを作成してはならない。
 - FR-25: 同一libraryとremoteに非終端transactionがある場合、新transactionを作らず最新の対象を再開しなければならない。操作中は実行ボタンを無効化し、二重clickで段階を跨いだ操作を実行してはならない。
+- FR-26: 右クリック起動では、対象folderの検証より先に画面と受付状態を表示し、現在の処理名を継続表示しなければならない。Library Managerは同一stateにつき1 processだけ実行可能とし、同一folderの連続投入は重複処理せず、別folderの並行投入は理由と再試行方法を表示して拒否する。実行lockはprocess異常終了時にOSが解放し、lock fileの残存だけを理由に次回起動を拒否してはならない。
 
 ### User Experience
 
@@ -172,6 +173,9 @@ OSは利用者へ選択させず実行環境から自動判定する。URL未入
 | PRがOPEN | 正常なマージ待ちとしてPRを開く導線を表示し、破棄／復旧ダイアログを出さない |
 | PRがCLOSED未merge | 再openまたは状態保持を案内し、新PRを自動作成しない |
 | 同じlibrary／remoteの操作を再開 | 既存transaction、branch、PRを再利用する |
+| 同じfolderを処理中に再度右クリック | 既存処理を維持し、二重登録・二重transaction・二重PRを作らない |
+| 別folderを処理中に右クリック | 並行処理を開始せず、実行中であることと完了後の再試行を表示する |
+| Library Managerが強制終了 | OS lock解放後の次回起動を許可し、journalがあれば既存transactionを再開する |
 | 差分0件 | GitHubへ送信せず「変更なし」で完了する |
 | GitHub接続が切れた | local temporary編集を安全に保持し、外部成功を主張しない |
 | config更新後にmenu登録が失敗した | configとmenuを直前版へrollbackする |

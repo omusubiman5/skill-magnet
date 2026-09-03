@@ -4,6 +4,7 @@ import json
 import os
 import re
 import webbrowser
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -41,6 +42,92 @@ LIBRARY_ACTION_LABELS = {
     "activate": "Skill Magnetへ反映",
     "complete": "完了",
 }
+
+
+@dataclass
+class LibraryUiLease:
+    path: Path
+    acquired: bool
+    owner: dict[str, Any]
+    handle: Any | None = None
+    owner_path: Path | None = None
+
+    @property
+    def same_request(self) -> bool:
+        return bool(self.owner.get("same_request"))
+
+    def release(self) -> None:
+        if not self.acquired:
+            return
+        try:
+            if self.handle is not None:
+                _unlock_library_ui_file(self.handle)
+        finally:
+            if self.handle is not None:
+                self.handle.close()
+            self.handle = None
+            self.acquired = False
+
+
+def _try_lock_library_ui_file(handle: Any) -> bool:
+    handle.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
+    import fcntl
+
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError):
+        return False
+    return True
+
+
+def _unlock_library_ui_file(handle: Any) -> None:
+    handle.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def acquire_library_ui_lease(
+    state_dir: Path, selected_source: Path | None = None
+) -> LibraryUiLease:
+    """Allow one Library Manager process and recover a lock left by a crash."""
+    state_dir = state_dir.resolve()
+    state_dir.mkdir(parents=True, exist_ok=True)
+    path = state_dir / "library-manager.lock"
+    owner_path = state_dir / "library-manager.owner.json"
+    selected = str(selected_source.resolve()) if selected_source is not None else ""
+    payload = {"pid": os.getpid(), "selected_source": selected}
+    handle = path.open("a+b")
+    if path.stat().st_size == 0:
+        handle.write(b"\0")
+        handle.flush()
+    if _try_lock_library_ui_file(handle):
+        owner_path.write_text(
+            json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        return LibraryUiLease(path, True, payload, handle, owner_path)
+    try:
+        owner = json.loads(owner_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        owner = {}
+    handle.close()
+    owner["same_request"] = bool(
+        selected and selected == str(owner.get("selected_source", ""))
+    )
+    return LibraryUiLease(path, False, owner, owner_path=owner_path)
 
 
 def library_wizard_steps() -> tuple[str, ...]:
@@ -173,6 +260,21 @@ def show_library_manager(
     except ImportError as exc:
         raise SkillMagnetError("Tk is required for the Skill Library Manager UI") from exc
 
+    lease = acquire_library_ui_lease(state_dir, initial_repository if register_selected else None)
+    if not lease.acquired:
+        notice = tk.Tk()
+        notice.withdraw()
+        detail = (
+            "同じフォルダーの登録を処理中です。\n"
+            "重複する処理は開始しません。開いているLibrary Managerで進行状況を確認してください。"
+            if lease.same_request
+            else "Library Managerで別の処理を実行中です。\n"
+            "並行処理は開始しません。開いている画面の完了後にもう一度実行してください。"
+        )
+        messagebox.showinfo("Library Managerは処理中です", detail, parent=notice)
+        notice.destroy()
+        return {"status": "already_running", "same_request": lease.same_request}
+
     root = tk.Tk()
     root.title("Library Manager")
     root.geometry("920x680")
@@ -180,7 +282,12 @@ def show_library_manager(
     page = ttk.Frame(root, padding=12)
     page.pack(fill="both", expand=True)
     page.columnconfigure(0, weight=1)
-    page.rowconfigure(2, weight=1)
+    page.rowconfigure(3, weight=1)
+    processing_status = tk.StringVar(value="待機中")
+    ttk.Label(page, textvariable=processing_status, anchor="w", padding=(8, 6)).grid(
+        row=0, column=0, sticky="ew", pady=(0, 8)
+    )
+    controls: list[Any] = []
 
     repository_path = managed_repository_path(state_dir)
     recovery = recover_interrupted_library(repository_path)
@@ -205,13 +312,39 @@ def show_library_manager(
     result: dict[str, Any] = {"status": "closed_without_activation"}
     busy = False
 
+    def set_busy(value: bool, label: str = "") -> None:
+        nonlocal busy
+        busy = value
+        root.title("Library Manager — 処理中" if value else "Library Manager")
+        if value:
+            processing_status.set(f"処理中：{label}")
+            root.configure(cursor="wait")
+        else:
+            root.configure(cursor="")
+            if action_stage.get() == "complete":
+                processing_status.set("完了")
+            elif action_stage.get() == "waiting":
+                processing_status.set("処理中：GitHubのマージ完了を待っています…")
+            else:
+                processing_status.set("待機中")
+        for control in controls:
+            try:
+                control.configure(state="disabled" if value else "normal")
+            except Exception:
+                pass
+        root.update_idletasks()
+
     def row(page: Any, number: int, label: str, variable: Any, browse: Callable[[], None] | None = None) -> None:
         ttk.Label(page, text=label).grid(row=number, column=0, sticky="w", padx=4, pady=5)
-        ttk.Entry(page, textvariable=variable, width=74).grid(
+        entry = ttk.Entry(page, textvariable=variable, width=74)
+        entry.grid(
             row=number, column=1, sticky="ew", padx=4, pady=5
         )
+        controls.append(entry)
         if browse is not None:
-            ttk.Button(page, text="Browse", command=browse).grid(row=number, column=2, padx=4)
+            browse_button = ttk.Button(page, text="Browse", command=browse)
+            browse_button.grid(row=number, column=2, padx=4)
+            controls.append(browse_button)
         page.columnconfigure(1, weight=1)
 
     def select_import() -> None:
@@ -294,20 +427,10 @@ def show_library_manager(
             raise SkillMagnetError("スキルを保存するフォルダーを指定してください")
         return Path(repository.get()).resolve()
 
-    selected_skill_imported = False
     initial_registration: dict[str, Any] | None = None
-    if register_selected:
-        try:
-            if initial_repository is None:
-                raise SkillMagnetError("右クリックしたフォルダーを取得できませんでした")
-            source = require_registration_source(str(initial_repository))
-            initial_registration = register_skill_source(repository_path, source)
-            selected_skill_imported = True
-        except Exception as exc:
-            show_error(exc)
 
     inventory_frame = ttk.LabelFrame(page, text="登録済みのスキル", padding=10)
-    inventory_frame.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
+    inventory_frame.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
     inventory_frame.columnconfigure(0, weight=1)
     inventory_frame.rowconfigure(0, weight=1)
     inventory_tree = ttk.Treeview(
@@ -385,13 +508,16 @@ def show_library_manager(
         )
 
     registration = ttk.LabelFrame(page, text="作成済みスキルを登録", padding=10)
-    registration.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+    registration.grid(row=2, column=0, sticky="ew", pady=(0, 10))
     ttk.Label(registration, text="スキル、スキルパック、または複数パックを含むフォルダーを登録します。").grid(
         row=0, column=0, columnspan=3, sticky="w", pady=(0, 12)
     )
     row(registration, 1, "スキル／スキルパックのフォルダー", import_source, select_import)
 
     def add() -> None:
+        if busy:
+            return
+        set_busy(True, "選択したフォルダーを検証・登録しています…")
         try:
             ensure_editable_library()
             source = require_registration_source(import_source.get())
@@ -418,13 +544,14 @@ def show_library_manager(
             root.after(0, run_current_action)
         except Exception as exc:
             show_error(exc)
+        finally:
+            set_busy(False)
 
-    ttk.Button(registration, text="登録", command=add).grid(
+    register_button = ttk.Button(registration, text="登録", command=add)
+    register_button.grid(
         row=2, column=1, sticky="e", pady=(8, 0)
     )
-
-    if selected_skill_imported:
-        registration.grid_remove()
+    controls.append(register_button)
 
     def create_selected() -> None:
         value = filedialog.askdirectory(title="登録するスキルまたはパックを選択")
@@ -473,10 +600,15 @@ def show_library_manager(
 
     inventory_buttons = ttk.Frame(inventory_frame)
     inventory_buttons.grid(row=2, column=0, columnspan=4, sticky="e", pady=(8, 0))
-    ttk.Button(inventory_buttons, text="新規登録", command=create_selected).pack(side="left", padx=3)
-    ttk.Button(inventory_buttons, text="選択項目を更新", command=update_selected).pack(side="left", padx=3)
-    ttk.Button(inventory_buttons, text="選択項目を削除", command=delete_selected_item).pack(side="left", padx=3)
-    ttk.Button(inventory_buttons, text="再読込", command=refresh_inventory).pack(side="left", padx=3)
+    for label, command in (
+        ("新規登録", create_selected),
+        ("選択項目を更新", update_selected),
+        ("選択項目を削除", delete_selected_item),
+        ("再読込", refresh_inventory),
+    ):
+        button = ttk.Button(inventory_buttons, text=label, command=command)
+        button.pack(side="left", padx=3)
+        controls.append(button)
 
     def set_text(widget: Any, value: Any) -> None:
         widget.configure(state="normal")
@@ -485,7 +617,7 @@ def show_library_manager(
         widget.configure(state="disabled")
 
     publish_frame = ttk.LabelFrame(page, text="GitHubへ送る", padding=10)
-    publish_frame.grid(row=2, column=0, sticky="nsew")
+    publish_frame.grid(row=3, column=0, sticky="nsew")
     ttk.Label(
         publish_frame,
         text=(
@@ -695,7 +827,6 @@ def show_library_manager(
         )
 
     def run_current_action() -> None:
-        nonlocal busy
         if busy:
             return
         actions = {
@@ -708,12 +839,18 @@ def show_library_manager(
         }
         action = actions.get(action_stage.get())
         if action is not None:
-            busy = True
-            action_button.configure(state="disabled")
+            labels = {
+                "sync": "GitHubへの送信・マージ確認・Skill Magnetへの反映を実行しています…",
+                "prepare": "GitHubへ送る内容を検証しています…",
+                "publish": "GitHubへ送信しています…",
+                "verify": "GitHubのマージ結果を確認しています…",
+                "activate": "Skill Magnetへ反映しています…",
+            }
+            set_busy(True, labels.get(action_stage.get(), "処理を実行しています…"))
             try:
                 action()
             finally:
-                busy = False
+                set_busy(False)
                 set_stage(action_stage.get())
 
     action_button = ttk.Button(
@@ -722,8 +859,7 @@ def show_library_manager(
         command=run_current_action,
     )
     action_button.grid(row=4, column=0, columnspan=3, sticky="e", pady=(8, 0))
-
-    refresh_inventory()
+    controls.append(action_button)
 
     if recovery["recovered"]:
         root.after(
@@ -735,8 +871,26 @@ def show_library_manager(
             ),
         )
 
-    if initial_registration is not None:
-        root.after(0, run_current_action)
+    def run_initial_registration() -> None:
+        nonlocal initial_registration
+        if busy:
+            return
+        set_busy(True, "右クリックしたフォルダーを検証・登録しています…")
+        succeeded = False
+        try:
+            if initial_repository is None:
+                raise SkillMagnetError("右クリックしたフォルダーを取得できませんでした")
+            source = require_registration_source(str(initial_repository))
+            initial_registration = register_skill_source(repository_path, source)
+            registration.grid_remove()
+            refresh_inventory()
+            succeeded = True
+        except Exception as exc:
+            show_error(exc)
+        finally:
+            set_busy(False)
+        if succeeded:
+            root.after(0, run_current_action)
 
     def offer_interrupted_transaction() -> None:
         try:
@@ -794,8 +948,31 @@ def show_library_manager(
         except Exception as exc:
             show_error(exc)
 
-    if initial_registration is None:
+    def begin_after_window_is_visible() -> None:
+        if register_selected:
+            run_initial_registration()
+            return
+        set_busy(True, "登録済みスキルを読み込んでいます…")
+        try:
+            refresh_inventory()
+        finally:
+            set_busy(False)
         root.after(0, offer_interrupted_transaction)
 
-    root.mainloop()
+    processing_status.set(
+        "受付完了：右クリックしたフォルダーの登録を開始します…"
+        if register_selected
+        else "受付完了：Library Managerを読み込んでいます…"
+    )
+    root.after(50, begin_after_window_is_visible)
+
+    def close_manager() -> None:
+        lease.release()
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", close_manager)
+    try:
+        root.mainloop()
+    finally:
+        lease.release()
     return result
