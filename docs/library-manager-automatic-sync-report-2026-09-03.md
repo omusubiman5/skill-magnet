@@ -26,10 +26,13 @@ Library Managerの登録・更新・削除から、GitHub公開、PR自動マー
 - 公開差分: `INDEX.md`、`cma-004/SKILL.md`、`cma-004/acceptance.json`、`skill-magnet.catalog.json`
 - remote再検証: 3 pack・22 skill、SHA-256 manifest一致
 - Skill Magnet設定: `custom-skills` packと`cma-004`を固定merge commitで追加
-- Windowsメニュー: 3 package leaves、登録1 action、Library Manager 1 action、合計5 actions
+- Windowsメニュー: 2 package leaves、`Skill: CMA004 — AI NEWS Podcast Audio` 1 leaf、登録1 action、Library Manager 1 action、合計5 actions
 - Windows package: `SkillMagnet.ContextMenu_0.5.8.0_x64__byy1sc3mfzfz4`
 - menu contract: `menu_contract_matches_config=true`、`usable_installed_state=true`
+- 全テスト: 178 tests PASS、環境依存1件skip
+- 配布物再現性: 独立した2 wheel buildの論理payload SHA-256がともに`5b12f4ffc835586adaadb759d89be9d34b17065143f3909542fb05134e6c0452`
+- release code: `17cbcc9a85182d9ffc726d4e25d3f34492606389`
 
 初回実行ではskill保管庫のGitHub auto-merge無効設定を検出した。これを利用者エラーにせず、同じPRを即時mergeする経路を追加してtransactionを再開し、重複branch／commit／PRを作らずactiveまで完了した。
 
-全テスト、配布物再現性、製品repository CIの最終実測値は同repositoryのリリースcommit確定後に追記する。
+製品repository CIとPR mergeの実測値は完了後に追記する。
