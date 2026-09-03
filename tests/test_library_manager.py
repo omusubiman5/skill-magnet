@@ -212,6 +212,26 @@ class LibraryManagerTests(unittest.TestCase):
         self.assertEqual((repository / CATALOG_FILENAME).read_bytes(), before)
         self.assertTrue(import_selected_skill(repository, source))
 
+    def test_japanese_usage_phrase_and_constraints_heading_define_contract(self) -> None:
+        repository = managed_repository_path(self.root)
+        initialize_library(repository, DEFAULT_REPOSITORY_NAME)
+        source = self.root / "cma-004"
+        source.mkdir()
+        (source / "SKILL.md").write_text(
+            "---\n"
+            "name: cma-004\n"
+            "description: 音声版ニュース生成を依頼された時に使う。\n"
+            "---\n\n"
+            "# CMA004\n\n"
+            "## ワークフロー\n\n音声を生成する。\n\n"
+            "## 制約\n\n- 動画生成は行わない。\n- 認証値を出力しない。\n",
+            encoding="utf-8",
+        )
+        registered = register_skill_source(repository, source)
+        self.assertFalse(registered["already_registered"])
+        self.assertEqual(registered["imported_skill_ids"], ["cma-004"])
+        self.assertTrue(validate_library(repository).as_dict()["valid"])
+
     def test_books_folder_imports_every_pack_and_skill_without_candidate_omission(self) -> None:
         repository = managed_repository_path(self.root)
         initialize_library(repository, DEFAULT_REPOSITORY_NAME)
