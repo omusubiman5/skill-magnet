@@ -30,4 +30,8 @@
 
 初回merge後の実Windows再導入で、BOM付きの正常な`certificate-state.json`をPythonが拒否する別の再登録阻害を検出した。`utf-8-sig`読込とBOM付き回帰fixtureで修正し、最終release codeを`20050a4eccdbd7215e3dfbf31be90c275452c561`、wheel論理payload SHA-256を`c7afd078594a48b2f4fbcdeab2f4b3717bb4f7b6485b2ae059072438867fc71d`へ更新した。詳細は[Windows右クリックメニュー再登録拒否の原因調査](windows-certificate-bom-root-cause-2026-09-04.md)に記録した。
 
-インストール済みwheelとExplorer context menuの確認結果は、PR merge後の最終導入時に追記する。
+## 実Windows導入スモーク
+
+- 候補wheelをsite-packagesへ強制再導入し、checkoutではなくインストール済みmoduleを使用して排他・強制終了復旧2件がPASSした。
+- 隔離stateで実GUIを起動し、`Library Manager` windowの表示を確認してprocessを強制終了した。同じstateで直後に再起動し、再びwindow表示まで成功した。
+- BOM修正後にExplorer menu再登録が成功した。最終statusは`menu_contract_matches_config: true`、`usable_installed_state: true`、3 selection leaves、Library Manager 1 action、folder登録1 actionである。
