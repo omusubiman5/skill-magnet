@@ -62,7 +62,7 @@ Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデ�
 | ID | User Story | Priority |
 |---|---|---|
 | US-1 | 利用者として、汎用名のskill repositoryをアプリから作成または接続し、複数skillを蓄積したい | P0 |
-| US-2 | skill作者として、SKILL.mdを追加し、trigger／boundary不足を公開前に発見したい | P0 |
+| US-2 | skill作者として、標準構成のSKILL.mdを追加し、必須frontmatter不足を公開前に発見したい | P0 |
 | US-3 | pack管理者として、skill所属とdepends-on／composes-with／contrasts-withを画面で編集したい | P0 |
 | US-4 | 利用者として、commit、digest計算、本体反映、メニュー更新をアプリへ任せたい | P0 |
 | US-5 | repository管理者として、push前に全差分と書込み先を確認し、PR経由で公開したい | P0 |
@@ -111,7 +111,7 @@ Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデ�
 ### Skill Authoring and Validation
 
 - FR-5: 利用者はfolderを1つ指定し、単一skill、1 pack、または複数pack collectionを登録できなければならない。アプリは直下構造、`SKILL.md`、`INDEX.md`からpack／skillの母集合、ID、表示名、目的、順序、関係、root entry skillを自動取得しなければならない。全候補を登録または理由付き拒否へ分類し、一部だけを黙って登録してはならない。同一内容の登録済みsourceを再選択した場合は成功するno-opとし、重複エラーや再書込みを行ってはならない。catalogと保存ファイルが部分的にしか一致しない場合はfail-closedで停止しなければならない。
-- FR-6: 公開前検証はskill／pack ID重複、INDEX参照先欠落、path traversal、symlink、secret候補、`SKILL.md`、frontmatter、trigger、boundary、acceptance schemaをfail-closedで検査しなければならない。登録元の`acceptance.json`は任意とし、不在時は内部互換メタデータを生成する。`test-prompts.json`があれば、そのSHA-256を生成物へ結び付けなければならない。
+- FR-6: 公開前検証はskill／pack ID重複、INDEX参照先欠落、path traversal、symlink、secret候補、`SKILL.md`、必須frontmatterの`name`／`description`、acceptance schemaをfail-closedで検査しなければならない。`trigger`／`boundary`という文字列や特定の日本語見出しは標準Skillの必須構造ではないため、固定語の有無で登録を拒否してはならない。登録元の`acceptance.json`は任意とし、不在時は内部互換メタデータを生成する。`test-prompts.json`があれば、そのSHA-256を生成物へ結び付けなければならない。
 - FR-7: アプリはskillを既存packへ追加するか、新しいpackを作成する選択を提供しなければならない。
 - FR-8: アプリはINDEXの`depends-on`、`composes-with`、`contrasts-with`を取込み・検証し、未知skill、自己参照、dependency cycleを拒否しなければならない。`contrasts-with`のskillは同じpackへ共存できるが、実依頼への適用時に同時採用してはならない。
 - FR-26: アプリはcatalogからpack→skillの階層、表示名、説明、所属を一覧表示しなければならない。内部IDは照合用に表示できるが、CRUD操作の入力値として利用者に要求してはならない。

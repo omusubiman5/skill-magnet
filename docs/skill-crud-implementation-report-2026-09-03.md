@@ -22,7 +22,7 @@ Library Managerへpack→skillの階層一覧とCreate・Read・Update・Delete�
 | 起点 | 分岐 | 結果 |
 |---|---|---|
 | 更新 | 選択IDとフォルダーIDが違う | 変更前に拒否 |
-| 更新 | SKILL.mdのtrigger／boundary不足 | 隔離候補のvalidationで拒否しrollback |
+| 更新 | SKILL.mdの必須`name`／`description`不足 | 隔離候補のvalidationで拒否しrollback |
 | 更新 | packからskillが消える | 他pack未使用なら管理ファイルを削除、共有中なら保持 |
 | 削除 | 他skillからdepends-onされている | 依存元を表示して拒否 |
 | 削除 | 最後のpack／skillになる | 公開不能な空libraryを作らず拒否 |
