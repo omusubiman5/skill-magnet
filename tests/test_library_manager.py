@@ -716,8 +716,11 @@ class LibraryManagerTests(unittest.TestCase):
         preview = transaction.prepare(draft=draft, remote=str(remote), branch="main")
         self.assertTrue(preview["no_changes"])
         self.assertFalse(preview["requires_confirmation"])
+        self.assertEqual(transaction._journal()["status"], "verified")
+        self.assertEqual(len(transaction._journal()["commit"]), 40)
         published = transaction.publish(confirmed=True, direct=True, create_pr=False)
-        self.assertEqual(published["status"], "no_changes")
+        self.assertEqual(published["status"], "verified")
+        self.assertNotIn("pr_url", published)
         self.assertFalse(transaction.workspace.exists())
 
     def test_cleanup_retries_windows_access_denied_without_losing_journal(self) -> None:

@@ -25,8 +25,8 @@ class ExplorerResultsGateTest(unittest.TestCase):
     def validate(self, text: str, count: int | None = None) -> list[str]:
         return validate_consistency(
             text, observed_test_count=self.count if count is None else count,
-            observed_leaf_count=3, observed_selection_kinds=["package"],
-            observed_pack_skill_counts=[9, 9, 12], observed_version="0.5.4")
+            observed_leaf_count=2, observed_selection_kinds=["package"],
+            observed_pack_skill_counts=[9, 12], observed_version="0.5.4")
 
     def test_canonical_results_are_consistent(self) -> None:
         self.assertEqual(self.validate(self.text), [])
@@ -34,7 +34,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
 
     def test_gate_rejects_counts_menu_shape_and_stale_claims(self) -> None:
         self.assertTrue(self.validate(self.text, self.count + 1))
-        self.assertTrue(self.validate(self.text.replace('"menu_leaf_count": 3', '"menu_leaf_count": 18')))
+        self.assertTrue(self.validate(self.text.replace('"menu_leaf_count": 2', '"menu_leaf_count": 18')))
         self.assertTrue(self.validate(self.text + "\n固定9 skills × Codex の18個別leaf\n"))
         self.assertTrue(
             self.validate(

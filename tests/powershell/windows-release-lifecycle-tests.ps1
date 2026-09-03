@@ -141,10 +141,10 @@ try {
     $status = $statusOutput | ConvertFrom-Json
     Assert-True ([bool]$status.usable_installed_state) `
         "Installed release status is not usable."
-    Assert-True ([int]$status.menu_leaf_count -eq 3) `
-        "Installed release does not expose the three active package leaves."
-    Assert-True ([int]$status.menu_action_count -eq 4) `
-        "Installed release does not expose three packs plus Library Manager."
+    Assert-True ([int]$status.menu_leaf_count -eq 2) `
+        "Installed release does not expose the two active package leaves."
+    Assert-True ([int]$status.menu_action_count -eq 3) `
+        "Installed release does not expose two packs plus Library Manager."
     Assert-True ([int]$status.library_manager_entry_count -eq 1) `
         "Installed release does not expose one Library Manager action."
 

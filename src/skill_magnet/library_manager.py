@@ -1247,8 +1247,13 @@ class LibraryTransaction:
             "requires_confirmation": bool(changed),
             "no_changes": not changed,
         }
+        current_commit = ""
+        if not changed:
+            current_commit = self.run(
+                ["git", "rev-parse", "HEAD"], cwd=self.workspace
+            ).stdout.strip()
         journal.update(
-            status="prepared" if changed else "no_changes",
+            status="prepared" if changed else "verified",
             draft=str(draft),
             remote=remote,
             branch=branch_name,
@@ -1256,6 +1261,12 @@ class LibraryTransaction:
             preview=preview,
             draft_digest=before,
         )
+        if not changed:
+            journal.update(
+                commit=current_commit,
+                remote_manifest=staged_manifest,
+                verification="remote_unchanged_manifest_verified",
+            )
         self._write_journal(journal)
         if not changed:
             pending = self.cleanup()

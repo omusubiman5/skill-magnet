@@ -651,7 +651,7 @@ class ActivationEndToEndTest(unittest.TestCase):
     def test_product_pack_cross_platform_runtime_handoff_e2e(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         product_config = Config.load(project_root / "skill-magnet.json")
-        pack = product_config.packs["codex-delivery-assurance"]
+        pack = product_config.packs["codex-cli"]
         purpose = (
             "Design a CI delivery workflow that combines execution mode, sandbox, "
             "egress, MCP, bounded subagents, and patch handoff controls."
@@ -1766,12 +1766,12 @@ class ActivationEndToEndTest(unittest.TestCase):
     def test_product_menu_has_one_leaf_per_active_pack(self) -> None:
         product_config = Path(__file__).resolve().parents[1] / "skill-magnet.json"
         leaves = windows_menu_leaves(product_config, "%1")
-        self.assertEqual(len(leaves), 3)
+        self.assertEqual(len(leaves), 2)
         self.assertEqual(
             {leaf.pack_id for leaf in leaves},
-            {"codex-delivery-assurance", "codex-cli", "conflict-clarity"},
+            {"codex-cli", "conflict-clarity"},
         )
-        self.assertEqual(sorted(len(leaf.skill_ids) for leaf in leaves), [9, 9, 12])
+        self.assertEqual(sorted(len(leaf.skill_ids) for leaf in leaves), [9, 12])
         for leaf in leaves:
             self.assertIsNone(leaf.skill_id)
             self.assertTrue(leaf.skill_label.startswith("Skill Pack: "))
@@ -1788,14 +1788,14 @@ class ActivationEndToEndTest(unittest.TestCase):
                 command_keys = [
                     key for key, _, _ in entries if key.endswith(r"\command")
                 ]
-                self.assertEqual(len(command_keys), 4)
+                self.assertEqual(len(command_keys), 3)
                 leaf_command_keys = [
                     key for key in command_keys if r"\shell\leaf-" in key
                 ]
                 manager_command_keys = [
                     key for key in command_keys if r"\shell\library-manager" in key
                 ]
-                self.assertEqual(len(leaf_command_keys), 3)
+                self.assertEqual(len(leaf_command_keys), 2)
                 self.assertEqual(len(manager_command_keys), 1)
                 self.assertTrue(
                     all(
@@ -1819,7 +1819,7 @@ class ActivationEndToEndTest(unittest.TestCase):
     def test_both_roots_propagate_complete_pack_contract_and_reject_tampering(self) -> None:
         product_config = Path(__file__).resolve().parents[1] / "skill-magnet.json"
         config = Config.load(product_config)
-        purpose = config.packs["codex-delivery-assurance"].purpose
+        purpose = config.packs["codex-cli"].purpose
         cases = (("Directory", "%1"), ("Background", "%V"))
         for root_name, placeholder in cases:
             with self.subTest(root=root_name):
@@ -1839,7 +1839,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                 self.assertEqual(details["selection_kind"], "pack")
                 self.assertIsNone(details["selected_skill_id"])
                 self.assertEqual(details["skill_ids"], config.packs[leaf.pack_id].skills)
-                self.assertEqual(details["skill_display_name"], "Delivery Assurance")
+                self.assertEqual(details["skill_display_name"], "Codex CLI Official Documentation")
                 self.assertEqual(len(details["all_skill_ids"]), 9)
                 self.assertEqual(details["instruction_digest"], leaf.instruction_digest)
                 self.assertEqual(details["acceptance_digest"], leaf.acceptance_digest)

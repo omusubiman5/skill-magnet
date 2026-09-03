@@ -515,11 +515,11 @@ def show_library_manager(
             set_text(preview_output, preview)
             if preview.get("no_changes"):
                 messagebox.showinfo(
-                    "変更はありません",
-                    "GitHub上の内容と同じため、PRは作成しません。",
+                    "GitHubへの変更はありません",
+                    "GitHub上の内容は同じです。検証済み内容をSkill Magnetへ反映できます。",
                     parent=root,
                 )
-                set_stage("complete")
+                set_stage("activate")
             else:
                 set_stage("publish")
         except Exception as exc:

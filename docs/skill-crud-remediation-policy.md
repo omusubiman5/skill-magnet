@@ -18,6 +18,7 @@ Library Managerの内部正本を`skill-magnet.catalog.json`とし、画面操�
 ## GitHubと有効化
 
 - CRUDはローカル管理領域だけを変更し、既存の確認→専用branch→PR→merge検証→有効化を再利用する。
+- GitHub差分が0件でもremote commitとmanifestを検証済みにし、古いconfig／menuだけを現catalogへ再同期できるようにする。この場合PRは作成しない。
 - 有効化時はpack IDだけでなく、同じ`repo_url`に属する旧packを置換対象にする。これによりGitHub正本から削除されたpackをメニューから除去する。
 - 別GitHub保管庫のpackは保持する。
 - PR作成後のローカル破棄禁止、再試行、マージ待ちの扱いは既存の復旧契約を維持する。

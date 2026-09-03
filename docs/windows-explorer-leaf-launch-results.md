@@ -12,11 +12,11 @@
   "release_version": "0.5.4",
   "distribution_scope": "local-self-signed",
   "full_test_count": 168,
-  "menu_leaf_count": 3,
-  "menu_action_count": 4,
+  "menu_leaf_count": 2,
+  "menu_action_count": 3,
   "library_manager_entry_count": 1,
   "selection_kinds": ["package"],
-  "pack_skill_counts": [9, 9, 12],
+  "pack_skill_counts": [9, 12],
   "release_code_sha": "9713a7f0fdfeb0dad9bc4a97f872f8e045f6105e",
   "wheel_payload_sha256": "60d4aa77a48739a772ed3c58efad58a1fee838e15ee4fec10106743497fbff72",
   "automated_status": "LOCAL_RELEASE_GATE_PASS_168",
@@ -28,7 +28,7 @@
 explorer-results-ledger:end -->
 
 - 統合テスト: `python -m unittest discover -s tests -v` — 168 tests PASS、環境依存1件skip
-- menu contract: active 3 package leaves / `Library Manager` 1 fixed action / selection kind `package` / pack別skill数 `[9, 9, 12]`
+- menu contract: active 2 package leaves / `Library Manager` 1 fixed action / selection kind `package` / pack別skill数 `[9, 12]`
 - 自動証拠: contract固定、GitHub固定commitのINDEX/全SKILL参照、archiveのメモリ内検証、deep-link binding、ローカルskill残留ゼロ
 - wheel再現性: 独立した2 directoryで0.4.0 wheelをbuildし、論理payload SHA-256が両方`c9a0ffe8f542fd475144ac8fecd284175a46863d69d1d44ec5be78ed901ba38f`で一致した。
 - 0.4.1 path修正版も独立した2 directoryでbuildし、論理payload SHA-256が両方`c8da150b48878b11dccb709902e93ebe05d8f360c83433787259aab9f921c2a1`で一致した。
