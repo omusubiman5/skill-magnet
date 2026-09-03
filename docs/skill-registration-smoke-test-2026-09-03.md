@@ -1,38 +1,26 @@
 # 選択フォルダーからのスキル登録スモークテスト
 
-## 発見した問題
+## 今回発見した問題
 
-`C:\Users\HOMEA\.codex\skills\cma-004`を右クリック登録すると、`Skill cma-004 must define trigger and boundary`で停止した。
+実ファイル`C:\Users\HOMEA\.codex\skills\android-cli\SKILL.md`は、標準構成として必須のfrontmatter `name`／`description`とMarkdown本文を持つ。それにもかかわらずLibrary Managerは、本文中に英語の`trigger`／`boundary`または一部の固定日本語がないことを理由に登録を拒否した。
 
-`cma-004`には、frontmatterのdescriptionへ「依頼された時に使う」、本文へ`## 制約`と「行わない」が記載されていた。原因はスキル側の不足ではなく、Library Managerが`trigger`／`boundary`など限られた固定語だけで判定していたことである。
+## 根本原因と前回修正の誤り
+
+Library Managerが、Skillの適用範囲をLLMが判断するための意味情報と、保存時に機械検証できるファイル構造を混同していた。前回は日本語の固定語を正規表現へ追加しただけで、標準仕様にない独自必須条件を残した。このためCMA004という一例だけが通り、同じ原因を持つ`android-cli`で再発した。
 
 ## 修正
 
-- 「とき／時／場合に使う」「依頼・指定・必要となる時」を適用条件として認識する。
-- `制約`、`禁止事項`、`対象外`、`非対象`の見出しを境界として認識する。
-- 「行わない」「してはならない」「禁止する」「対象外とする」を境界として認識する。
-- 適用条件・境界の両方が本当にないスキルは引き続き拒否する。
+- `trigger`／`boundary`および日本語の固定語を探す登録拒否ロジックを撤去した。
+- 機械検証は標準構造の`SKILL.md`、frontmatter `name`／`description`を基準にする。
+- 適用対象や境界の意味評価は、実行時にSkill本文を読むLLMの選定処理へ残し、Library Managerの単純な文字列検索では代替しない。
 
-## スモークテスト
+## 実データ・スモーク範囲
 
-1. 実ファイル`cma-004/SKILL.md`を読み取る。
-2. 現在のユーザーlibraryを隔離コピーする。
-3. 実`cma-004`フォルダーを隔離コピーへ登録する。
-4. `custom-skills`パックへ`cma-004`が追加されることを確認する。
-5. 自動生成された`acceptance.json`を含め、library全体を再検証する。
-6. 元のユーザーlibraryが変更されていないことを確認する。
+1. 実`android-cli`フォルダーを空の隔離libraryへ登録する。
+2. `acceptance.json`の自動生成とlibrary全体のvalidationを確認する。
+3. 同一フォルダーの再登録が成功するno-opになることを確認する。
+4. `C:\Users\HOMEA\.codex\skills`直下の非hiddenな全132候補を、一件ごとに空の隔離libraryへ登録する。
+5. packを含む候補では全構成skillも数え、最初のエラーで停止せず全件の成否を集計する。
+6. description欠落、secret候補、ID不一致、候補入替中断、backup後中断の失敗経路を回帰試験する。
 
-結果は、1 skill登録、library全体22 skills、validation PASSだった。
-
-## 誤操作・強制終了シミュレーション
-
-- 登録開始前に閉じる: libraryへの書込みなし。
-- 候補コピー作成中に閉じる: 正本libraryは変更されない。
-- 正本をbackupへ移動した直後に閉じる: 次回起動時に検証済みbackupを自動復旧する。
-- 登録完了後、完了メッセージ前に閉じる: 登録内容は保持され、再登録は`already_registered`の正常終了になる。
-- 検証エラーで閉じる: 候補だけを破棄し、正本manifestが不変であることを確認する。
-
-## リリース候補
-
-- release code: `3be279210f724ec3270fe3c8e06e528dcdb9e808`
-- wheel論理payload SHA-256: `fbfe1f67087ef4c5544b691ee7bcddf91d21ee6a7b6db2e40f68affbc78c8b32`
+実行結果は対応報告書へ記録する。

@@ -116,10 +116,10 @@ class LibraryManagerTests(unittest.TestCase):
             update_skill_source(repository, "first-skill", wrong)
         invalid = self.make_source_skill(self.root / "invalid", "first-skill")
         (invalid / "SKILL.md").write_text(
-            "---\nname: first-skill\ndescription: invalid\n---\n\n# Invalid\n",
+            "---\nname: first-skill\ndescription:\n---\n\n# Invalid\n",
             encoding="utf-8",
         )
-        with self.assertRaisesRegex(SkillMagnetError, "trigger and boundary"):
+        with self.assertRaisesRegex(SkillMagnetError, "descriptionがありません"):
             update_skill_source(repository, "first-skill", invalid)
         self.assertEqual((repository / "first-skill" / "SKILL.md").read_bytes(), before)
         validate_library(repository)
@@ -243,24 +243,23 @@ class LibraryManagerTests(unittest.TestCase):
         self.assertTrue((registered / "agents" / "openai.yaml").is_file())
         self.assertFalse((registered / "scripts" / "__pycache__").exists())
 
-    def test_japanese_usage_phrase_and_constraints_heading_define_contract(self) -> None:
+    def test_standard_skill_does_not_require_literal_contract_headings(self) -> None:
         repository = managed_repository_path(self.root)
         initialize_library(repository, DEFAULT_REPOSITORY_NAME)
-        source = self.root / "cma-004"
+        source = self.root / "android-cli"
         source.mkdir()
         (source / "SKILL.md").write_text(
             "---\n"
-            "name: cma-004\n"
-            "description: 音声版ニュース生成を依頼された時に使う。\n"
+            "name: android-cli\n"
+            "description: Provides instructions for installing and using the android CLI.\n"
             "---\n\n"
-            "# CMA004\n\n"
-            "## ワークフロー\n\n音声を生成する。\n\n"
-            "## 制約\n\n- 動画生成は行わない。\n- 認証値を出力しない。\n",
+            "# Android CLI Specialist\n\n"
+            "Manage Android SDK components and interact with virtual devices.\n",
             encoding="utf-8",
         )
         registered = register_skill_source(repository, source)
         self.assertFalse(registered["already_registered"])
-        self.assertEqual(registered["imported_skill_ids"], ["cma-004"])
+        self.assertEqual(registered["imported_skill_ids"], ["android-cli"])
         self.assertTrue(validate_library(repository).as_dict()["valid"])
         self.assertTrue(register_skill_source(repository, source)["already_registered"])
 
@@ -270,10 +269,10 @@ class LibraryManagerTests(unittest.TestCase):
         invalid = self.root / "invalid-import"
         invalid.mkdir()
         (invalid / "SKILL.md").write_text(
-            "---\nname: invalid-import\ndescription: invalid\n---\n# Invalid\n",
+            "---\nname: invalid-import\ndescription:\n---\n# Invalid\n",
             encoding="utf-8",
         )
-        with self.assertRaisesRegex(SkillMagnetError, "trigger and boundary"):
+        with self.assertRaisesRegex(SkillMagnetError, "descriptionがありません"):
             register_skill_source(repository, invalid)
         self.assertEqual(validate_library(repository).as_dict()["manifest"], before)
 
@@ -481,7 +480,7 @@ class LibraryManagerTests(unittest.TestCase):
         self.assertEqual(catalog["repository"]["name"], "skill-magnet-skills")
         self.assertNotEqual(catalog["repository"]["name"], "bounded-review")
 
-    def test_validation_rejects_secret_symlink_and_missing_boundaries(self) -> None:
+    def test_validation_rejects_secret_and_missing_required_description(self) -> None:
         library = self.make_library()
         skill = library / "first-skill" / "SKILL.md"
         skill.write_text(
@@ -491,10 +490,15 @@ class LibraryManagerTests(unittest.TestCase):
         with self.assertRaisesRegex(SkillMagnetError, "Secret candidate"):
             validate_library(library)
         skill.write_text(
-            "---\nname: first-skill\ndescription: test\n---\nNo contract sections.\n",
+            "---\nname: first-skill\ndescription: test\n---\nNo fixed section names.\n",
             encoding="utf-8",
         )
-        with self.assertRaisesRegex(SkillMagnetError, "trigger and boundary"):
+        self.assertTrue(validate_library(library).as_dict()["valid"])
+        skill.write_text(
+            "---\nname: first-skill\ndescription:\n---\nInstructions.\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(SkillMagnetError, "descriptionがありません"):
             validate_library(library)
 
     def test_validation_rejects_unknown_and_cycle_but_allows_contrast_in_pack(self) -> None:

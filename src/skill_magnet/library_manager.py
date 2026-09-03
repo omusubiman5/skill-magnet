@@ -950,24 +950,8 @@ def validate_library(
         metadata = _frontmatter(skill_text, skill_path)
         if metadata.get("name") != skill:
             raise SkillMagnetError(f"SKILL.md name must equal directory id: {skill}")
-        lowered = skill_text.casefold()
-        has_trigger = bool(
-            "trigger" in lowered
-            or "触発" in skill_text
-            or "使用場面" in skill_text
-            or "適用条件" in skill_text
-            or re.search(r"(?:とき|時|場合)に使(?:う|用)", skill_text)
-            or re.search(r"(?:依頼|指定|必要).{0,20}(?:とき|時|場合)", skill_text)
-        )
-        has_boundary = bool(
-            "boundary" in lowered
-            or "境界" in skill_text
-            or "使用しない" in skill_text
-            or re.search(r"(?m)^#{1,6}\s*(?:制約|禁止事項|対象外|非対象)\s*$", skill_text)
-            or re.search(r"(?:行わない|してはならない|禁止する|対象外とする)", skill_text)
-        )
-        if not has_trigger or not has_boundary:
-            raise SkillMagnetError(f"Skill {skill} must define trigger and boundary")
+        if not metadata.get("description", "").strip():
+            raise SkillMagnetError(f"SKILL.mdのdescriptionがありません: {skill}")
         try:
             acceptance = json.loads(files[acceptance_path].decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:

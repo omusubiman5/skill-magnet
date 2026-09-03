@@ -38,7 +38,7 @@ status: implemented
 - repository rootに`skill-magnet.catalog.json` schema v1を導入した。
 - 一repository内の複数pack、複数skill、表示順、metadata、relationsをcatalogで管理する。
 - packごとの元`INDEX.md`をcatalogへ保持し、複数packでは決定的な統合`INDEX.md`を生成する。元INDEXがないpackはcatalog relationsから生成する。
-- skill／pack ID重複、INDEX参照先欠落、unsafe path、symlink、secret候補、SKILL.md不足、frontmatter名不一致、trigger/boundary不足、acceptance assertion不正を拒否する。
+- skill／pack ID重複、INDEX参照先欠落、unsafe path、symlink、secret候補、SKILL.md不足、frontmatterの`name`不一致／`description`不足、acceptance assertion不正を拒否する。標準Skillへ独自の`Trigger`／`Boundary`見出しを強制しない。
 - `depends-on`の未知skill・欠落依存・cycleを拒否する。`contrasts-with`は同一pack内の候補関係として保持し、実依頼での同時適用禁止をINDEX経由でLLMへ渡す。
 
 ### Publish transaction
@@ -69,7 +69,7 @@ status: implemented
 | FR-3 | machine-readable catalog schema v1 | catalog validation/manifest test |
 | FR-4 | 既存directory接続、既存名維持、remote default branch読取 | GUI connect、prepare E2E |
 | FR-5 | folder 1つからskill／pack／collectionを判別し、候補母集合を一括import | collection completeness test、実`books` smoke |
-| FR-6 | path/symlink/secret/frontmatter/trigger/boundary/acceptance検証、不在acceptance生成 | negative tests、generated metadata test |
+| FR-6 | path/symlink/secret、必須frontmatter、acceptance検証、不在acceptance生成。固定契約見出しは非強制 | negative tests、標準Skill互換test、generated metadata test |
 | FR-7 | pack ID指定で既存追加／新規作成 | add round-trip test |
 | FR-8 | 3 relation、unknown/cycle検証、contrast共存 | relation parse/negative tests |
 | FR-9 | staged blob manifestを含むpreviewと確認gate | publish confirmation test |

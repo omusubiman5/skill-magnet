@@ -70,7 +70,7 @@ Windows Explorerでは登録元フォルダーを右クリックして`Skill Mag
 
 `選択項目を更新`では一覧でパックまたはスキルを選び、同じIDの更新元フォルダーを選びます。IDが異なるフォルダーは別物への誤更新として拒否します。`選択項目を削除`では一覧の対象を削除します。依存されているスキルと最後のパック／スキルは削除できません。いずれもローカル管理領域で検証してから反映し、失敗時は変更前へ戻します。GitHubへは直ちに送らず、下段の送信確認へ進みます。
 
-登録元で必須なのは各スキルの`SKILL.md`です。`acceptance.json`がない場合は、Library Managerが公開用の内部互換メタデータを生成します。同じフォルダーに`test-prompts.json`があれば、そのSHA-256も記録します。同じ内容の登録済みスキル／パックをもう一度選んだ場合は正常な再選択として扱い、上書きせず`登録済み`と表示します。空フォルダー、INDEXが参照するスキルの欠落、重複ID、壊れた関係、登録情報と保存ファイルの不一致は登録前にエラーで停止し、一部だけを登録しません。
+登録元で必須なのは、各スキルの`SKILL.md`と、そのfrontmatterにある`name`／`description`です。`Trigger`／`Boundary`という見出しや固定の日本語表現は必須ではなく、それらの単語がない標準Skillも登録できます。`acceptance.json`がない場合は、Library Managerが公開用の内部互換メタデータを生成します。同じフォルダーに`test-prompts.json`があれば、そのSHA-256も記録します。同じ内容の登録済みスキル／パックをもう一度選んだ場合は正常な再選択として扱い、上書きせず`登録済み`と表示します。空フォルダー、INDEXが参照するスキルの欠落、重複ID、壊れた関係、登録情報と保存ファイルの不一致は登録前にエラーで停止し、一部だけを登録しません。
 
 例: `C:\Projects\cangjie-skill-clean\books`を指定すると、直下の`codex-cli`、`conflict-clarity`、`harness-bootstrap-prompt-v2-1`を3パックとして一括登録します。確認済みの構成では合計33スキルです。
 
@@ -136,6 +136,7 @@ GUIでは登録・更新・削除の操作自体を、その変更について�
 - [Library Manager自動公開・反映 実装計画](docs/library-manager-automatic-sync-plan-2026-09-03.md)
 - [Library Manager自動公開・反映 実装報告](docs/library-manager-automatic-sync-report-2026-09-03.md)
 - [CMA004 Markdown出力への訂正・対応報告](docs/cma004-markdown-output-correction-2026-09-03.md)
+- [標準Skill登録拒否の原因調査](docs/root-cause-standard-skill-rejection-2026-09-03.md) / [対応報告](docs/standard-skill-validation-fix-report-2026-09-03.md)
 
 - [Skill Library Manager要件定義](docs/skill-library-management-requirements.md)
 - [Skill CRUDユーザーニーズ](docs/skill-crud-user-needs.md)
