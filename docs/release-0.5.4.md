@@ -18,7 +18,7 @@ Skill CRUD実装はローカルリリースゲート合格。
 - 全自動テスト: 168 PASS、環境依存1 skip
 - Library Managerテスト: 26 PASS
 - 実libraryコピーによるCRUDスモーク: PASS
-- CI wheel論理payload SHA-256: `60d4aa77a48739a772ed3c58efad58a1fee838e15ee4fec10106743497fbff72`
+- release candidate wheel論理payload SHA-256: `ce651401d6c84ad174633f31f98d249bad89b13cfce0bc79893d71e034749f1e`
 - Windows package: `SkillMagnet.ContextMenu_0.5.4.0_x64__byy1sc3mfzfz4`
 - Windows status: `menu_contract_matches_config=true`、`usable_installed_state=true`
 
