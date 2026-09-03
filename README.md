@@ -214,8 +214,8 @@ python -m skill_magnet context-menu-status --platform windows
   "command_target_signature_valid": true,
   "self_signed_launcher_referenced": false,
   "deprecated_launcher_exists": false,
-  "menu_leaf_count": 3,
-  "menu_action_count": 4,
+  "menu_leaf_count": 2,
+  "menu_action_count": 3,
   "library_manager_entry_count": 1,
   "usable_installed_state": true
 }
@@ -315,7 +315,7 @@ python -m skill_magnet --config /path/to/skill-magnet.json uninstall-context-men
 実packを変更せず事前検証するには `activation-plan` を使います。
 
 ```powershell
-python -m skill_magnet activation-plan --platform windows --project C:\path\to\target --pack codex-delivery-assurance --purpose "このタスクの目的"
+python -m skill_magnet activation-plan --platform windows --project C:\path\to\target --pack codex-cli --purpose "このタスクの目的"
 ```
 
 保管庫契約は [`docs/skill-repository-contract.md`](docs/skill-repository-contract.md) を参照してください。

@@ -13,6 +13,7 @@ Library Managerへpack→skillの階層一覧とCreate・Read・Update・Delete�
 - Atomicity: 全変更をアプリ管理領域のコピーへ適用し、完全validation後に入れ替える。失敗時は元のlibraryを保持。
 - Publish: 以前のcatalogで管理されていたファイルだけ削除差分を許可し、READMEなど管理対象外ファイルの削除は従来どおり拒否。
 - Activation: 同じGitHub repository URLの旧pack集合を新catalogで置換し、削除済み・旧名packをメニューへ残さない。別repositoryのpackは保持。
+- Reconcile: GitHub差分0件でもremote manifestを検証し、古いconfig／menuだけを現catalogへ再同期できる。
 - CLI: `library list`、`library update`、`library delete`を追加。
 - GUI: タブを増やさず、一覧と`新規登録`、`選択項目を更新`、`選択項目を削除`、`再読込`を既存の単一画面へ追加。
 
@@ -38,7 +39,8 @@ Library Managerへpack→skillの階層一覧とCreate・Read・Update・Delete�
 - 実ユーザーlibraryのコピー: 2 pack／21 skillのRead、skill Update、pack Delete、再validationがPASS
 - 実ユーザーlibrary本体とGitHub repositoryはスモークで変更していない。
 - Windows導入状態: `menu_contract_matches_config=true`、`usable_installed_state=true`
-- 0.5.4 CI wheel論理payload SHA-256: `60d4aa77a48739a772ed3c58efad58a1fee838e15ee4fec10106743497fbff72`
+- GitHub差分0件の再同期transaction `ac27c80846834b6db61760cda8f364d1`を実行し、旧`Delivery Assurance`を除去。現行menuは2 pack＋Library Manager。
+- 0.5.4 release candidate wheel論理payload SHA-256: `ce651401d6c84ad174633f31f98d249bad89b13cfce0bc79893d71e034749f1e`
 - 実機へ0.5.4 wheelとWindows 11 modern context menuを再登録済み。
 
 ## 配布

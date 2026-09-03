@@ -41,7 +41,7 @@ expected_path = str(pathlib.Path(sys.argv[2]).resolve())
 runtime = sys.argv[3]
 assert record["adapter"] == "macos_finder_quick_action"
 assert record["selected_path"] == expected_path
-assert record["pack_id"] == "codex-delivery-assurance"
+assert record["pack_id"] == "codex-cli"
 assert record["selection_kind"] == "pack"
 assert len(record["skill_ids"]) == 9
 assert record["runtime"] == runtime

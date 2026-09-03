@@ -6,65 +6,6 @@
   "state_dir": "~/.skill-magnet",
   "packs": [
     {
-      "id": "codex-delivery-assurance",
-      "menu_label": "Delivery Assurance",
-      "selection_kind": "package",
-      "repo_url": "https://github.com/omusubiman5/codex-pmo-skills.git",
-      "expected_commit": "8f12af5ddfdd3b985f26d33dad09d6061d675342",
-      "purpose": "Assess delivery readiness with reviewed Codex execution, authorization, sandbox, MCP, CI, context-routing, and handoff controls.",
-      "approved_by": "user",
-      "approved_at": "2026-08-22T18:15:11.6526999+09:00",
-      "skill_metadata": {
-        "codex-auth-boundary-selection": {
-          "display_name": "認証境界を選ぶ",
-          "purpose": "認証情報を残さず、安全な認証境界を選びます。"
-        },
-        "codex-bounded-subagents": {
-          "display_name": "サブエージェントの範囲を定める",
-          "purpose": "サブエージェントへ渡す作業と権限の境界を定めます。"
-        },
-        "codex-ci-patch-handoff": {
-          "display_name": "CI修正を引き継ぐ",
-          "purpose": "CIで判明した問題と修正差分を安全に引き継ぎます。"
-        },
-        "codex-context-entry-routing": {
-          "display_name": "依頼の入口を振り分ける",
-          "purpose": "依頼内容に合うコンテキストと処理経路を選びます。"
-        },
-        "codex-egress-surface-governance": {
-          "display_name": "外部送信を管理する",
-          "purpose": "外部へ出る情報と操作の境界を確認します。"
-        },
-        "codex-exec-io-contract": {
-          "display_name": "実行の入出力を定める",
-          "purpose": "コマンド実行の入力、出力、失敗時の扱いを定めます。"
-        },
-        "codex-execution-mode-routing": {
-          "display_name": "実行方法を選ぶ",
-          "purpose": "依頼に合う対話・非対話の実行方法を選びます。"
-        },
-        "codex-mcp-control-plane": {
-          "display_name": "MCP接続を管理する",
-          "purpose": "利用するMCP接続と許可範囲を管理します。"
-        },
-        "codex-sandbox-approval-boundary": {
-          "display_name": "サンドボックスと承認を定める",
-          "purpose": "サンドボックス外の操作と承認が必要な境界を定めます。"
-        }
-      },
-      "skills": [
-        "codex-auth-boundary-selection",
-        "codex-bounded-subagents",
-        "codex-ci-patch-handoff",
-        "codex-context-entry-routing",
-        "codex-egress-surface-governance",
-        "codex-exec-io-contract",
-        "codex-execution-mode-routing",
-        "codex-mcp-control-plane",
-        "codex-sandbox-approval-boundary"
-      ]
-    },
-    {
       "id": "codex-cli",
       "menu_label": "Codex CLI Official Documentation",
       "selection_kind": "package",
@@ -72,7 +13,7 @@
       "expected_commit": "66de8f309ca27825435b2d72b45432edc79c4a7b",
       "purpose": "Imported skill pack: Codex CLI Official Documentation",
       "approved_by": "Skill Library Manager",
-      "approved_at": "2026-09-02T23:28:47.315981+00:00",
+      "approved_at": "2026-09-03T00:48:33.500712+00:00",
       "skill_metadata": {
         "codex-execution-mode-routing": {
           "display_name": "対話・自動化・cloudの実行形態選択",
@@ -131,7 +72,7 @@
       "expected_commit": "66de8f309ca27825435b2d72b45432edc79c4a7b",
       "purpose": "悩み、葛藤、自己矛盾、価値判断、継続、対話、境界線を扱う11個の実行skillを、相互リンクを保った一つのライブラリとして使う。ユーザーが$conflict-clarity、このライブラリ、またはリンク済みskillの使用を明示したときに使用する。危機時は通常実行を停止し、該当skillがなければ無理に適用しない。子skill名の羅列で終えず、確認できる情報の範囲で実行手順を具体化する。",
       "approved_by": "Skill Library Manager",
-      "approved_at": "2026-09-02T23:28:47.315981+00:00",
+      "approved_at": "2026-09-03T00:48:33.500712+00:00",
       "skill_metadata": {
         "conflict-clarity": {
           "display_name": "conflict-clarity",

@@ -75,7 +75,7 @@ from skill_magnet.platforms import _windows_modern_paths
 from skill_magnet.platforms import windows_menu_leaves
 config_path = _default_config_path()
 config = Config.load(config_path)
-pack = config.packs["codex-delivery-assurance"]
+pack = config.packs["codex-cli"]
 commit, hashes = Engine(config)._validate_pack(pack)
 native, _, package_script = _windows_modern_paths(Path.cwd() / "external")
 leaves = windows_menu_leaves(config_path, "%1")
@@ -105,12 +105,12 @@ print(json.dumps({
             )
             self.assertEqual(probed.returncode, 0, probed.stderr or probed.stdout)
             result = json.loads(probed.stdout)
-            self.assertEqual(result["commit"], "8f12af5ddfdd3b985f26d33dad09d6061d675342")
+            self.assertEqual(result["commit"], "66de8f309ca27825435b2d72b45432edc79c4a7b")
             self.assertEqual(result["skills"], 9)
             self.assertTrue(result["config"])
             self.assertTrue(result["native"])
             self.assertTrue(result["package_script"])
-            self.assertEqual(result["leaves"], 3)
+            self.assertEqual(result["leaves"], 2)
             self.assertTrue(result["command_uses_installed_package"], result)
 
     def test_python_and_msix_versions_are_synchronized(self) -> None:

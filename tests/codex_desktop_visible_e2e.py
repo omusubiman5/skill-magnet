@@ -35,7 +35,7 @@ def main() -> int:
     plan = engine.plan(
         platform="windows",
         project=args.project,
-        pack_id="codex-delivery-assurance",
+        pack_id="codex-cli",
         runtime="codex",
         purpose=ACTUAL_REQUEST,
     )
