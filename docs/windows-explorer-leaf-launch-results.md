@@ -18,8 +18,8 @@
   "register_folder_entry_count": 1,
   "selection_kinds": ["package"],
   "pack_skill_counts": [9, 12],
-  "release_code_sha": "3be279210f724ec3270fe3c8e06e528dcdb9e808",
-  "wheel_payload_sha256": "fbfe1f67087ef4c5544b691ee7bcddf91d21ee6a7b6db2e40f68affbc78c8b32",
+  "release_code_sha": "8ffd77c649a9cd87d0a326661243284485ce5c01",
+  "wheel_payload_sha256": "3edb1a62bb6af10ec3d2906c6c6983dbc1afaa88bc0c1489f3820209d098507b",
   "automated_status": "LOCAL_RELEASE_GATE_PASS_173",
   "windows_explorer_field_status": "PASS_REAL_RIGHT_CLICK_MENU_AND_CONFIRMATION_UI_0_5_1",
   "macos_finder_field_status": "CI_SEMANTIC_ONLY_REAL_UI_NOT_CLAIMED_FOR_0_5_2",
@@ -56,7 +56,7 @@ explorer-results-ledger:end -->
 - 0.5.4ではLibrary Managerへpack→skill一覧とCRUDを追加し、管理対象ファイルだけの削除公開、依存削除防止、隔離候補rollback、同一repository旧packの有効設定除去、GitHub差分0件時の再同期を実装した。CI検証済みwheelの論理payload SHA-256は`ce651401d6c84ad174633f31f98d249bad89b13cfce0bc79893d71e034749f1e`である。release codeは`f54b865dbbcae2625756c814c641942db18cb70d`である。
 - 0.5.5では選択フォルダー登録を独立した右クリックactionにし、選択パスをCLI／GUI／登録処理まで保持する。通常の`Library Manager`を開いただけでは登録しない。CI検証済みwheelの論理payload SHA-256は`22a78075ff5208939e601ebea241cd06760046191fa08163171365a8c2d7b187`、release codeは`7c4b60a878e1e008ddef89fa2bf97f69c1f96103`である。
 - 0.5.6では固定英単語だけだった契約判定を修正し、日本語の「時に使う」「制約」「行わない」等を意味区分として受理する。実`cma-004`をユーザーlibraryの隔離コピーへ登録し、22 skillsの全体validationがPASSした。登録中の強制終了に備えて隔離候補と検証済みbackupからの次回起動復旧を実装した。release candidate wheelの論理payload SHA-256は`fbfe1f67087ef4c5544b691ee7bcddf91d21ee6a7b6db2e40f68affbc78c8b32`、release codeは`3be279210f724ec3270fe3c8e06e528dcdb9e808`である。
-- 0.5.7では修正前に保存されたlaunch contractも、handoff、actual-request SHA-256、output schema、完了検証、利用者向け結果の全境界で同じcanonical実依頼を使う。これにより旧contractの`&#x20;`再露出を防ぎ、contract digestによる完全性検証は維持する。
+- 0.5.7では修正前に保存されたlaunch contractも、handoff、actual-request SHA-256、output schema、完了検証、利用者向け結果の全境界で同じcanonical実依頼を使う。これにより旧contractの`&#x20;`再露出を防ぎ、contract digestによる完全性検証は維持する。独立した2 buildの論理payload SHA-256はともに`3edb1a62bb6af10ec3d2906c6c6983dbc1afaa88bc0c1489f3820209d098507b`、release codeは`8ffd77c649a9cd87d0a326661243284485ce5c01`である。
 - Library Manager transaction `8dc76704a259400e9b0a2259612155ce`を完走し、skill保管庫PR #3をmerge、merge commitのmanifestを再検証して`codex-cli`と`conflict-clarity`を有効化した。当時のmenuは3 package leavesとLibrary Managerの計4 actionで、`menu_contract_matches_config: true`、`usable_installed_state: true`であった。
 - 3 pack有効化後の0.5.3 wheelは、独立した2 buildで論理payload SHA-256 `f300d219367c1deda0e7d6b9281bfc04e04eafbaa0c8f930133abc6b1bdd8651`が一致した。release codeは`3000d3c89284992faadd3f053631530c4f29b1c4`である。
 - 実機証拠: 0.5.1 wheelをWindowsへinstallし、modern context menuのstatusが`usable_installed_state: true`、`menu_contract_matches_config: true`、`menu_leaf_count: 1`を返した。File Explorerの`C:\Projects\skill-magnet`背景を実際に右クリックし、`Skill Magnet`→`Delivery Assurance`から`Skill Magnet — 実行確認`画面が起動すること、画面上のproject、pack、用途、実行AI、依頼内容、実行/取消UIを確認した。外部AIへのテスト依頼送信はフィールドUI受入の対象外とし、確認画面を取消で閉じた。実際のTSVはpack ID `codex-delivery-assurance`、表示名`Delivery Assurance`、固定commit `8f12af5ddfdd3b985f26d33dad09d6061d675342`を記録した。

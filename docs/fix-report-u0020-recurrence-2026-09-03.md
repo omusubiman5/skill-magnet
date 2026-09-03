@@ -46,5 +46,10 @@ WindowsのANSI code pageにテスト結果が依存しないよう、Python製ru
 
 ## 検証結果
 
-最終結果は、本報告のrelease commit、全テスト数、release gate、CI、artifact hashを確定後に追記する。
-
+- 対象回帰テスト: 3件PASS
+- 全テスト: 173件PASS、環境依存1件skip
+- 独立wheel build: 2回成功
+- 両wheelの論理payload SHA-256: `3edb1a62bb6af10ec3d2906c6c6983dbc1afaa88bc0c1489f3820209d098507b`
+- release code: `8ffd77c649a9cd87d0a326661243284485ce5c01`
+- local release gate: PASS
+- GitHub Actions: branch pushとPRに対するWindows／macOS検証後に最終記録する
