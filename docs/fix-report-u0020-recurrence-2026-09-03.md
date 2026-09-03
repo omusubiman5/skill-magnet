@@ -52,4 +52,6 @@ WindowsのANSI code pageにテスト結果が依存しないよう、Python製ru
 - 両wheelの論理payload SHA-256: `3edb1a62bb6af10ec3d2906c6c6983dbc1afaa88bc0c1489f3820209d098507b`
 - release code: `8ffd77c649a9cd87d0a326661243284485ce5c01`
 - local release gate: PASS
-- GitHub Actions: branch pushとPRに対するWindows／macOS検証後に最終記録する
+- GitHub Actions: branch push／PRのWindows・macOS計4 checks PASS
+- CI runs: `33711172011`、`33711175264`
+- pull request: `#27`
