@@ -54,21 +54,27 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 
 ## Skill Library Manager
 
-Skill Library Managerは、スキルを追加してGitHubへ公開し、Skill Magnetで使える状態にするための案内画面です。作業途中のファイルはアプリ専用領域へ自動保存されます。利用者が作業用フォルダーやrepository名を決める必要はありません。
+Skill Library Managerは、登録済みのパックとスキルを一覧し、新規登録・更新・削除してGitHubへ公開し、Skill Magnetで使える状態にするための管理画面です。作業途中のファイルはアプリ専用領域へ自動保存されます。利用者が作業用フォルダーやrepository名、内部IDを入力する必要はありません。
 
 Windows Explorerでは登録元フォルダーを右クリックして`Skill Magnet` → `Library Manager`、macOS Finderではクイックアクション`Skill Magnet`を開いて`Library Manager`を選びます。単一スキル、1パック、複数パックを含む親フォルダーのどれでも指定できます。標準構成を検出できればアプリが全件を自動で取り込み、登録欄を隠します。手動登録する場合だけ、同じ画面の上部にフォルダー選択欄を表示します。
 
 ### 操作ガイド（1画面）
 
-#### 1. 必要な場合だけ、作成済みスキルを登録する
+#### 1. 登録済みのパックとスキルを確認する
 
-この画面は、すでに作ったスキルまたはパックを登録する時だけ使います。指定するのはフォルダー1つだけです。スキルフォルダーなら1スキル、直下に複数のスキルフォルダーがあれば1パック、直下に複数のパックフォルダーがあれば全パックを検出します。Skill ID、Pack ID、表示名、目的はフォルダー名、`SKILL.md`、`INDEX.md`から自動取得します。元の`INDEX.md`はパック別の説明と関係を保って統合し、ルート`SKILL.md`があるパックでは入口スキルとして含めます。
+画面上部にはパックを親、スキルを子として登録内容を表示します。表示名、種類、内部ID、説明を確認できます。内部IDは照合用の表示であり、入力する項目ではありません。同じスキル集合を持つ別名パックは新規登録時に重複として停止します。
+
+#### 2. 新規登録・更新・削除する
+
+`新規登録`では作成済みのフォルダーを1つ選びます。スキルフォルダーなら1スキル、直下に複数のスキルフォルダーがあれば1パック、直下に複数のパックフォルダーがあれば全パックを検出します。Skill ID、Pack ID、表示名、目的はフォルダー名、`SKILL.md`、`INDEX.md`から自動取得します。
+
+`選択項目を更新`では一覧でパックまたはスキルを選び、同じIDの更新元フォルダーを選びます。IDが異なるフォルダーは別物への誤更新として拒否します。`選択項目を削除`では一覧の対象を削除します。依存されているスキルと最後のパック／スキルは削除できません。いずれもローカル管理領域で検証してから反映し、失敗時は変更前へ戻します。GitHubへは直ちに送らず、下段の送信確認へ進みます。
 
 登録元で必須なのは各スキルの`SKILL.md`です。`acceptance.json`がない場合は、Library Managerが公開用の内部互換メタデータを生成します。同じフォルダーに`test-prompts.json`があれば、そのSHA-256も記録します。同じ内容の登録済みスキル／パックをもう一度選んだ場合は正常な再選択として扱い、上書きせず`登録済み`と表示します。空フォルダー、INDEXが参照するスキルの欠落、重複ID、壊れた関係、登録情報と保存ファイルの不一致は登録前にエラーで停止し、一部だけを登録しません。
 
 例: `C:\Projects\cangjie-skill-clean\books`を指定すると、直下の`codex-cli`、`conflict-clarity`、`harness-bootstrap-prompt-v2-1`を3パックとして一括登録します。確認済みの構成では合計33スキルです。
 
-#### 2. 同じ画面でGitHubへ送る
+#### 3. 同じ画面でGitHubへ送る
 
 現在使っているスキル保管庫が1つなら、そのGitHub URLを既存設定から自動表示します。初回または別の保管庫へ変える時だけURLを入力します。操作ボタンは常に1個だけです。最初は`送信内容を確認する`と表示され、検査が終わると同じ場所のボタンが`GitHubへ送る`、`GitHubでPRを開く`、`GitHubのマージを確認する`、`Skill Magnetへ反映`の順に切り替わります。PRがOPENなら正常なマージ待ちとして保持し、エラーや復旧画面にはしません。今の段階で押せない操作は表示されません。不足や不正があればエラーダイアログで止まり、GitHubへは送りません。差分が0件ならPRを作らず完了します。OSはアプリが自動判定し、反映失敗時は直前の正常な状態へ戻します。
 
@@ -91,6 +97,15 @@ python -m skill_magnet library add --repository C:\path\to\skill-magnet-skills -
 
 # 3. fail-closed検証
 python -m skill_magnet library validate --repository C:\path\to\skill-magnet-skills
+
+# 登録済みpack／skillを一覧する
+python -m skill_magnet library list --repository C:\path\to\skill-magnet-skills
+
+# 選択IDと同じフォルダー内容で更新する
+python -m skill_magnet library update --repository C:\path\to\skill-magnet-skills --kind skill --id my-skill --source C:\path\to\my-skill
+
+# 明示確認して削除する（--kind packも指定可能）
+python -m skill_magnet library delete --repository C:\path\to\skill-magnet-skills --kind skill --id my-skill --confirm
 
 # 4. 隔離workspaceで差分previewを作る。出力されたtransaction_idを以後使う
 python -m skill_magnet library prepare --library C:\path\to\skill-magnet-skills --remote https://github.com/OWNER/skill-magnet-skills.git
@@ -119,6 +134,11 @@ python -m skill_magnet library abandon --transaction-id TRANSACTION_ID --confirm
 関連文書:
 
 - [Skill Library Manager要件定義](docs/skill-library-management-requirements.md)
+- [Skill CRUDユーザーニーズ](docs/skill-crud-user-needs.md)
+- [Skill CRUD修正方針](docs/skill-crud-remediation-policy.md)
+- [Skill CRUD実行方針](docs/skill-crud-execution-plan.md)
+- [Skill CRUD実装報告](docs/skill-crud-implementation-report-2026-09-03.md)
+- [0.5.4リリース報告](docs/release-0.5.4.md)
 - [実装計画](docs/skill-library-manager-implementation-plan-2026-09-02.md)
 - [実装報告](docs/skill-library-manager-implementation-report-2026-09-02.md)
 - [スモークテスト結果](docs/skill-library-manager-smoke-test-2026-09-02.md)
@@ -142,7 +162,7 @@ python -m skill_magnet library abandon --transaction-id TRANSACTION_ID --confirm
 
    ```powershell
    python -m pip wheel . --no-deps --wheel-dir .\dist
-   python -m pip install --force-reinstall .\dist\skill_magnet-0.5.3-py3-none-any.whl
+   python -m pip install --force-reinstall .\dist\skill_magnet-0.5.4-py3-none-any.whl
    ```
 
 3. Windowsの右クリックメニューを登録します。このcommandはrepository rootで、そのままcopy/pasteできます。

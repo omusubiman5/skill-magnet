@@ -12,11 +12,16 @@ from .library_manager import (
     CATALOG_FILENAME,
     DEFAULT_REPOSITORY_NAME,
     LibraryTransaction,
+    delete_pack,
+    delete_skill,
     discover_skill_sources,
     import_skill_source,
     initialize_library,
     find_resumable_transaction,
     list_transactions,
+    library_inventory,
+    update_pack_source,
+    update_skill_source,
     validate_library,
 )
 
@@ -171,7 +176,7 @@ def show_library_manager(
     page = ttk.Frame(root, padding=12)
     page.pack(fill="both", expand=True)
     page.columnconfigure(0, weight=1)
-    page.rowconfigure(1, weight=1)
+    page.rowconfigure(2, weight=1)
 
     repository_path = managed_repository_path(state_dir)
     catalog_path = repository_path / CATALOG_FILENAME
@@ -290,8 +295,86 @@ def show_library_manager(
         selected_skill_imported = False
         show_error(exc)
 
+    inventory_frame = ttk.LabelFrame(page, text="登録済みのスキル", padding=10)
+    inventory_frame.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
+    inventory_frame.columnconfigure(0, weight=1)
+    inventory_frame.rowconfigure(0, weight=1)
+    inventory_tree = ttk.Treeview(
+        inventory_frame,
+        columns=("kind", "identifier", "purpose"),
+        show="tree headings",
+        height=8,
+        selectmode="browse",
+    )
+    inventory_tree.heading("#0", text="名前")
+    inventory_tree.heading("kind", text="種類")
+    inventory_tree.heading("identifier", text="内部ID")
+    inventory_tree.heading("purpose", text="説明")
+    inventory_tree.column("#0", width=220)
+    inventory_tree.column("kind", width=75, anchor="center")
+    inventory_tree.column("identifier", width=180)
+    inventory_tree.column("purpose", width=330)
+    inventory_tree.grid(row=0, column=0, columnspan=4, sticky="nsew")
+    inventory_scroll = ttk.Scrollbar(
+        inventory_frame, orient="vertical", command=inventory_tree.yview
+    )
+    inventory_scroll.grid(row=0, column=4, sticky="ns")
+    inventory_tree.configure(yscrollcommand=inventory_scroll.set)
+    inventory_summary = tk.StringVar()
+    ttk.Label(inventory_frame, textvariable=inventory_summary).grid(
+        row=1, column=0, columnspan=4, sticky="w", pady=(6, 0)
+    )
+
+    def selected_inventory_item() -> tuple[str, str]:
+        selected = inventory_tree.selection()
+        if not selected:
+            raise SkillMagnetError("更新または削除するパック／スキルを一覧から選択してください")
+        parts = selected[0].split(":", 2)
+        return parts[0], parts[-1]
+
+    def refresh_inventory() -> None:
+        inventory_tree.delete(*inventory_tree.get_children())
+        inventory = library_inventory(repository_path)
+        for pack in inventory["packs"]:
+            pack_node = f"pack:{pack['id']}"
+            inventory_tree.insert(
+                "",
+                "end",
+                iid=pack_node,
+                text=pack["display_name"],
+                values=("パック", pack["id"], pack["purpose"]),
+                open=True,
+            )
+            for skill in pack["skills"]:
+                inventory_tree.insert(
+                    pack_node,
+                    "end",
+                    iid=f"skill:{pack['id']}:{skill['id']}",
+                    text=skill["display_name"],
+                    values=("スキル", skill["id"], skill["purpose"]),
+                )
+        inventory_summary.set(
+            f"{inventory['pack_count']}パック／{inventory['skill_count']}スキルを登録済み"
+        )
+
+    def ensure_editable_library() -> None:
+        if not transaction_id.get().strip():
+            return
+        current = transaction()
+        journal = current._journal()
+        status = str(journal.get("status", "draft"))
+        if status in {"draft", "prepared", "no_changes", "abandoned", "active"}:
+            if status in {"draft", "prepared"}:
+                current.abandon(confirmed=True)
+            transaction_id.set("")
+            set_stage("prepare")
+            return
+        raise SkillMagnetError(
+            "GitHub送信中またはマージ待ちの作業があります。先にその作業を完了してください"
+        )
+
     registration = ttk.LabelFrame(page, text="作成済みスキルを登録", padding=10)
-    registration.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+    registration.grid(row=1, column=0, sticky="ew", pady=(0, 10))
     ttk.Label(registration, text="スキル、スキルパック、または複数パックを含むフォルダーを登録します。").grid(
         row=0, column=0, columnspan=3, sticky="w", pady=(0, 12)
     )
@@ -299,6 +382,7 @@ def show_library_manager(
 
     def add() -> None:
         try:
+            ensure_editable_library()
             source = require_registration_source(import_source.get())
             repository_root = require_repository()
             imported = register_skill_source(repository_root, source)
@@ -309,6 +393,7 @@ def show_library_manager(
                     parent=root,
                 )
                 registration.grid_remove()
+                refresh_inventory()
                 return
             messagebox.showinfo(
                 "Skill",
@@ -317,6 +402,7 @@ def show_library_manager(
                 parent=root,
             )
             registration.grid_remove()
+            refresh_inventory()
         except Exception as exc:
             show_error(exc)
 
@@ -327,6 +413,57 @@ def show_library_manager(
     if selected_skill_imported:
         registration.grid_remove()
 
+    def create_selected() -> None:
+        value = filedialog.askdirectory(title="登録するスキルまたはパックを選択")
+        if not value:
+            return
+        import_source.set(value)
+        add()
+
+    def update_selected() -> None:
+        try:
+            kind, identifier = selected_inventory_item()
+            value = filedialog.askdirectory(title=f"{identifier}の更新元フォルダーを選択")
+            if not value:
+                return
+            ensure_editable_library()
+            if kind == "pack":
+                updated = update_pack_source(repository_path, identifier, Path(value))
+            else:
+                updated = update_skill_source(repository_path, identifier, Path(value))
+            set_text(preview_output, updated)
+            refresh_inventory()
+            messagebox.showinfo("更新完了", "ローカル管理領域を更新しました。GitHubへ送る内容を確認してください。", parent=root)
+        except Exception as exc:
+            show_error(exc)
+
+    def delete_selected_item() -> None:
+        try:
+            kind, identifier = selected_inventory_item()
+            label = "パック" if kind == "pack" else "スキル"
+            if not messagebox.askyesno(
+                f"{label}を削除",
+                f"{identifier}をライブラリから削除しますか？\nGitHubへは確認後にPRとして送ります。",
+                parent=root,
+            ):
+                return
+            ensure_editable_library()
+            if kind == "pack":
+                deleted = delete_pack(repository_path, identifier, confirmed=True)
+            else:
+                deleted = delete_skill(repository_path, identifier, confirmed=True)
+            set_text(preview_output, deleted)
+            refresh_inventory()
+        except Exception as exc:
+            show_error(exc)
+
+    inventory_buttons = ttk.Frame(inventory_frame)
+    inventory_buttons.grid(row=2, column=0, columnspan=4, sticky="e", pady=(8, 0))
+    ttk.Button(inventory_buttons, text="新規登録", command=create_selected).pack(side="left", padx=3)
+    ttk.Button(inventory_buttons, text="選択項目を更新", command=update_selected).pack(side="left", padx=3)
+    ttk.Button(inventory_buttons, text="選択項目を削除", command=delete_selected_item).pack(side="left", padx=3)
+    ttk.Button(inventory_buttons, text="再読込", command=refresh_inventory).pack(side="left", padx=3)
+
     def set_text(widget: Any, value: Any) -> None:
         widget.configure(state="normal")
         widget.delete("1.0", "end")
@@ -334,7 +471,7 @@ def show_library_manager(
         widget.configure(state="disabled")
 
     publish_frame = ttk.LabelFrame(page, text="GitHubへ送る", padding=10)
-    publish_frame.grid(row=1, column=0, sticky="nsew")
+    publish_frame.grid(row=2, column=0, sticky="nsew")
     ttk.Label(
         publish_frame,
         text=(
@@ -517,6 +654,8 @@ def show_library_manager(
         command=run_current_action,
     )
     action_button.grid(row=4, column=0, columnspan=3, sticky="e", pady=(8, 0))
+
+    refresh_inventory()
 
     def offer_interrupted_transaction() -> None:
         try:

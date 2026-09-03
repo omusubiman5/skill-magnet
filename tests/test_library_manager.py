@@ -17,11 +17,16 @@ from skill_magnet.library_manager import (
     DEFAULT_REPOSITORY_NAME,
     LibraryTransaction,
     add_skill,
+    delete_pack,
+    delete_skill,
     discover_skill_sources,
     find_resumable_transaction,
     import_skill_source,
     initialize_library,
+    library_inventory,
     render_index,
+    update_pack_source,
+    update_skill_source,
     validate_library,
 )
 from skill_magnet.library_ui import (
@@ -38,6 +43,116 @@ from skill_magnet.library_ui import (
 
 
 class LibraryManagerTests(unittest.TestCase):
+    def make_source_skill(self, parent: Path, skill_id: str, description: str = "Updated purpose") -> Path:
+        source = parent / skill_id
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text(
+            "---\n"
+            f"name: {skill_id}\n"
+            f"description: {description}\n"
+            "---\n\n"
+            f"# {skill_id} updated\n\n"
+            "## Trigger\n\nUse when requested.\n\n"
+            "## Boundary\n\nDo not modify unrelated files.\n",
+            encoding="utf-8",
+        )
+        return source
+
+    def make_crud_library(self) -> Path:
+        repository = self.root / "crud-library"
+        initialize_library(repository)
+        add_skill(
+            repository,
+            skill_id="first-skill",
+            display_name="First skill",
+            purpose="First purpose",
+            pack_id="first-pack",
+            pack_display_name="First pack",
+        )
+        add_skill(
+            repository,
+            skill_id="second-skill",
+            display_name="Second skill",
+            purpose="Second purpose",
+            pack_id="second-pack",
+            pack_display_name="Second pack",
+        )
+        return repository
+
+    def test_crud_inventory_update_and_delete(self) -> None:
+        repository = self.make_crud_library()
+        inventory = library_inventory(repository)
+        self.assertEqual(inventory["pack_count"], 2)
+        self.assertEqual(inventory["skill_count"], 2)
+        self.assertEqual(inventory["packs"][0]["skills"][0]["id"], "first-skill")
+
+        source = self.make_source_skill(self.root / "updates", "first-skill")
+        updated = update_skill_source(repository, "first-skill", source)
+        self.assertEqual(updated["operation"], "update_skill")
+        self.assertIn(
+            "first-skill updated",
+            (repository / "first-skill" / "SKILL.md").read_text(encoding="utf-8"),
+        )
+        catalog = json.loads((repository / CATALOG_FILENAME).read_text(encoding="utf-8"))
+        self.assertEqual(
+            catalog["packs"][0]["skill_metadata"]["first-skill"]["purpose"],
+            "Updated purpose",
+        )
+
+        deleted = delete_skill(repository, "first-skill", confirmed=True)
+        self.assertEqual(deleted["operation"], "delete_skill")
+        self.assertFalse((repository / "first-skill").exists())
+        self.assertEqual(library_inventory(repository)["pack_count"], 1)
+        with self.assertRaisesRegex(SkillMagnetError, "最後のパック"):
+            delete_pack(repository, "second-pack", confirmed=True)
+
+    def test_update_rejects_wrong_id_and_rolls_back_invalid_content(self) -> None:
+        repository = self.make_crud_library()
+        before = (repository / "first-skill" / "SKILL.md").read_bytes()
+        wrong = self.make_source_skill(self.root / "wrong", "different-skill")
+        with self.assertRaisesRegex(SkillMagnetError, "更新対象のスキルID"):
+            update_skill_source(repository, "first-skill", wrong)
+        invalid = self.make_source_skill(self.root / "invalid", "first-skill")
+        (invalid / "SKILL.md").write_text(
+            "---\nname: first-skill\ndescription: invalid\n---\n\n# Invalid\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(SkillMagnetError, "trigger and boundary"):
+            update_skill_source(repository, "first-skill", invalid)
+        self.assertEqual((repository / "first-skill" / "SKILL.md").read_bytes(), before)
+        validate_library(repository)
+
+    def test_delete_rejects_dependency_and_pack_update_changes_members(self) -> None:
+        repository = self.make_crud_library()
+        catalog_path = repository / CATALOG_FILENAME
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        catalog["packs"][1]["skills"].append("first-skill")
+        catalog["packs"][1]["skill_metadata"]["first-skill"] = {
+            "display_name": "First skill",
+            "purpose": "First purpose",
+        }
+        catalog["packs"][1]["relations"]["depends-on"] = [["second-skill", "first-skill"]]
+        catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+        (repository / "INDEX.md").write_text(render_index(catalog), encoding="utf-8")
+        with self.assertRaisesRegex(SkillMagnetError, "second-skill"):
+            delete_skill(repository, "first-skill", confirmed=True)
+
+        pack_source = self.root / "sources" / "first-pack"
+        self.make_source_skill(pack_source, "replacement-skill")
+        result = update_pack_source(repository, "first-pack", pack_source)
+        self.assertEqual(result["operation"], "update_pack")
+        inventory = library_inventory(repository)
+        first_pack = next(pack for pack in inventory["packs"] if pack["id"] == "first-pack")
+        self.assertEqual([skill["id"] for skill in first_pack["skills"]], ["replacement-skill"])
+        self.assertTrue((repository / "first-skill").is_dir())
+
+    def test_create_rejects_same_skill_set_under_another_pack_id(self) -> None:
+        repository = self.make_crud_library()
+        source = self.root / "duplicate-pack"
+        self.make_source_skill(source, "first-skill")
+        with self.assertRaisesRegex(SkillMagnetError, "already exists|登録済み"):
+            import_skill_source(repository, source)
+
     def test_managed_repository_path_is_inside_app_state(self) -> None:
         self.assertEqual(
             managed_repository_path(self.root),
@@ -395,7 +510,24 @@ class LibraryManagerTests(unittest.TestCase):
                                 }
                             },
                             "skills": ["first-skill"],
-                        }
+                        },
+                        {
+                            "id": "stale-pack-from-same-library",
+                            "menu_label": "Stale pack",
+                            "selection_kind": "package",
+                            "repo_url": str(remote),
+                            "expected_commit": old_commit,
+                            "purpose": "Must be removed after catalog deletion",
+                            "approved_by": "test",
+                            "approved_at": "2026-09-02T00:00:00+00:00",
+                            "skill_metadata": {
+                                "stale-skill": {
+                                    "display_name": "Stale skill",
+                                    "purpose": "Stale",
+                                }
+                            },
+                            "skills": ["stale-skill"],
+                        },
                     ],
                 }
             ),
@@ -415,6 +547,7 @@ class LibraryManagerTests(unittest.TestCase):
         self.assertEqual(len(menu_calls), 1)
         activated = json.loads(config_path.read_text(encoding="utf-8"))
         self.assertEqual(activated["packs"][0]["expected_commit"], commit)
+        self.assertEqual([pack["id"] for pack in activated["packs"]], ["starter-pack"])
         self.assertEqual(
             activated["packs"][0]["skills"], ["first-skill", "second-skill"]
         )
@@ -500,6 +633,42 @@ class LibraryManagerTests(unittest.TestCase):
         with mock.patch.object(manager_module, "_copy_library", side_effect=unsafe_copy):
             with self.assertRaisesRegex(SkillMagnetError, "既存GitHubファイルを削除"):
                 transaction.prepare(draft=draft, remote=str(remote), branch="main")
+
+    def test_delete_publishes_only_previously_cataloged_files(self) -> None:
+        seed, remote = self.make_remote()
+        add_skill(
+            seed,
+            skill_id="second-skill",
+            display_name="Second skill",
+            purpose="Keep the library non-empty",
+            pack_id="second-pack",
+        )
+        self.git(seed, "add", "--all")
+        self.git(
+            seed,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "add second pack",
+        )
+        self.git(seed, "push", str(remote), "main")
+        draft = self.root / "delete-managed-draft"
+        shutil.copytree(seed, draft, ignore=shutil.ignore_patterns(".git"))
+        delete_pack(draft, "starter-pack", confirmed=True)
+        transaction = LibraryTransaction(self.root / "state", "transaction-managed-delete")
+        preview = transaction.prepare(draft=draft, remote=str(remote), branch="main")
+        self.assertEqual(
+            preview["deleted_managed_files"],
+            ["first-skill/SKILL.md", "first-skill/acceptance.json"],
+        )
+        transaction.publish(confirmed=True, direct=True, create_pr=False)
+        checkout = self.root / "deleted-checkout"
+        subprocess.run(["git", "clone", str(remote), str(checkout)], check=True, capture_output=True)
+        self.assertFalse((checkout / "first-skill").exists())
+        self.assertTrue((checkout / "second-skill" / "SKILL.md").is_file())
 
     def test_recover_and_abandon_keep_user_control_after_interruption(self) -> None:
         _, remote = self.make_remote()
