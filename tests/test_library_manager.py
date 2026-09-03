@@ -1003,6 +1003,99 @@ class LibraryManagerTests(unittest.TestCase):
         self.assertIn("--auto", commands[0])
         self.assertNotIn("--auto", commands[1])
 
+    def test_custom_skill_collection_activates_as_individual_skill_actions(self) -> None:
+        generated = LibraryTransaction._config_pack(
+            {
+                "id": "custom-skills",
+                "display_name": "Custom skills",
+                "purpose": "Loose skills",
+                "skills": ["cma-004"],
+                "skill_metadata": {
+                    "cma-004": {
+                        "display_name": "CMA004 — AI NEWS Podcast Audio",
+                        "purpose": "Create the requested podcast",
+                    }
+                },
+            },
+            "https://github.com/example/skills.git",
+            "a" * 40,
+        )
+        self.assertEqual(generated["selection_kind"], "skill")
+        self.assertEqual(generated["skills"], ["cma-004"])
+
+    def test_activation_updates_menu_when_only_selection_kind_changes(self) -> None:
+        transaction = LibraryTransaction(self.root / "state", "transaction-menu-shape")
+        remote = "https://github.com/example/skills.git"
+        commit = "a" * 40
+        manifest = {"INDEX.md": "digest"}
+        catalog = {
+            "packs": [
+                {
+                    "id": "custom-skills",
+                    "display_name": "Custom skills",
+                    "purpose": "Loose skills",
+                    "skills": ["cma-004"],
+                    "skill_metadata": {
+                        "cma-004": {
+                            "display_name": "CMA004 — AI NEWS Podcast Audio",
+                            "purpose": "Create the requested podcast",
+                        }
+                    },
+                }
+            ]
+        }
+        transaction.root.mkdir(parents=True, exist_ok=True)
+        transaction.verifier.mkdir(parents=True, exist_ok=True)
+        (transaction.verifier / CATALOG_FILENAME).write_text(
+            json.dumps(catalog), encoding="utf-8"
+        )
+        transaction._write_journal(
+            {
+                "schema_version": 1,
+                "transaction_id": transaction.transaction_id,
+                "status": "verified",
+                "remote": remote,
+                "commit": commit,
+                "preview": {
+                    "changed_files": [],
+                    "pack_ids": ["custom-skills"],
+                    "skill_ids": ["cma-004"],
+                },
+                "remote_manifest": manifest,
+            }
+        )
+        config = self.root / "config-menu-shape.json"
+        old_pack = LibraryTransaction._config_pack(catalog["packs"][0], remote, commit)
+        old_pack["selection_kind"] = "package"
+        config.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "allowed_github_owners": ["example"],
+                    "state_dir": str(self.root / "runtime"),
+                    "packs": [old_pack],
+                }
+            ),
+            encoding="utf-8",
+        )
+        menu_updates: list[Path] = []
+        verified = SimpleNamespace(manifest=manifest, menu_shape="catalog-shape")
+        with (
+            mock.patch.object(transaction, "_remote_manifest", return_value=verified),
+            mock.patch.object(transaction, "cleanup", return_value=[]),
+        ):
+            result = transaction.activate(
+                config_path=config,
+                confirmed=True,
+                menu_update=menu_updates.append,
+            )
+        self.assertTrue(result["menu_changed"])
+        self.assertEqual(menu_updates, [config.resolve()])
+        self.assertEqual(
+            json.loads(config.read_text(encoding="utf-8"))["packs"][0]["selection_kind"],
+            "skill",
+        )
+
     def test_find_resumable_transaction_reuses_latest_matching_work(self) -> None:
         state = self.root / "state"
         draft = self.root / "draft"

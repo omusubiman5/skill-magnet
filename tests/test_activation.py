@@ -1836,9 +1836,14 @@ class ActivationEndToEndTest(unittest.TestCase):
         )
         self.assertEqual(sorted(len(leaf.skill_ids) for leaf in leaves), [1, 9, 12])
         for leaf in leaves:
-            self.assertIsNone(leaf.skill_id)
-            self.assertTrue(leaf.skill_label.startswith("Skill Pack: "))
-            self.assertNotIn("--skill", leaf.command)
+            if leaf.pack_id == "custom-skills":
+                self.assertEqual(leaf.skill_id, "cma-004")
+                self.assertEqual(leaf.skill_label, "Skill: CMA004 — AI NEWS Podcast Audio")
+                self.assertIn("--skill", leaf.command)
+            else:
+                self.assertIsNone(leaf.skill_id)
+                self.assertTrue(leaf.skill_label.startswith("Skill Pack: "))
+                self.assertNotIn("--skill", leaf.command)
             self.assertNotIn("--runtime", leaf.command)
             self.assertIn("--menu-instruction-digest", leaf.command)
             self.assertIn("--menu-acceptance-digest", leaf.command)

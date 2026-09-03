@@ -26,12 +26,12 @@ class ExplorerResultsGateTest(unittest.TestCase):
         return validate_consistency(
             text, observed_test_count=self.count if count is None else count,
             observed_leaf_count=3,
-            observed_selection_kinds=["package", "package", "package"],
+            observed_selection_kinds=["package", "skill"],
             observed_pack_skill_counts=[9, 12, 1], observed_version="0.5.8")
 
     def test_canonical_results_are_consistent(self) -> None:
         self.assertEqual(self.validate(self.text), [])
-        self.assertEqual(parse_ledger(self.text)["release_scope"], "package-leaves")
+        self.assertEqual(parse_ledger(self.text)["release_scope"], "configured-selection-leaves")
 
     def test_gate_rejects_counts_menu_shape_and_stale_claims(self) -> None:
         self.assertTrue(self.validate(self.text, self.count + 1))

@@ -1613,10 +1613,13 @@ class LibraryTransaction:
     def _config_pack(pack: dict[str, Any], remote: str, commit: str) -> dict[str, Any]:
         skills = list(map(str, pack["skills"]))
         metadata = pack.get("skill_metadata", {})
+        # A loose collection created by repeated single-skill registrations is
+        # not one executable pack.  Expose every member as its own menu action.
+        selection_kind = "skill" if str(pack["id"]) == "custom-skills" else "package"
         return {
             "id": str(pack["id"]),
             "menu_label": str(pack.get("display_name", pack["id"])),
-            "selection_kind": "package",
+            "selection_kind": selection_kind,
             "repo_url": remote,
             "expected_commit": commit,
             "purpose": str(pack.get("purpose", "Skill library pack")),
@@ -1668,24 +1671,31 @@ class LibraryTransaction:
             for pack in _pack_map(catalog).values()
         ]
         candidate = {**config, "packs": retained + generated}
-        previous_shape = _sha256(
-            _canonical(
-                [
-                    {
-                        "id": pack.get("id"),
-                        "label": pack.get("menu_label"),
-                        "skills": pack.get("skills", []),
-                    }
-                    for pack in replaced_previous
-                ]
+        def config_menu_shape(packs: list[dict[str, Any]]) -> str:
+            return _sha256(
+                _canonical(
+                    [
+                        {
+                            "id": pack.get("id"),
+                            "label": pack.get("menu_label"),
+                            "selection_kind": pack.get("selection_kind", "package"),
+                            "purpose": pack.get("purpose", ""),
+                            "skills": pack.get("skills", []),
+                            "skill_metadata": pack.get("skill_metadata", {}),
+                        }
+                        for pack in packs
+                    ]
+                )
             )
-        )
+
+        previous_shape = config_menu_shape(replaced_previous)
+        generated_shape = config_menu_shape(generated)
         temporary = config_path.with_name(f".{config_path.name}.{self.transaction_id}.candidate")
         _atomic_json(temporary, candidate)
         try:
             Config.load(temporary)
             os.replace(temporary, config_path)
-            menu_changed = previous_shape != remote_validation.menu_shape
+            menu_changed = previous_shape != generated_shape
             menu_result: Any = {"updated": False, "reason": "menu_shape_unchanged"}
             if menu_changed and menu_update is not None:
                 menu_result = menu_update(config_path)

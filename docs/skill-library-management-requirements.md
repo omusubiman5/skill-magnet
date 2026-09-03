@@ -154,7 +154,7 @@ Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデ�
 2. 既存GitHub URLを自動取得し、validation後に専用branch、PR、自動マージ、merge後remote照合、OS自動判定、activation、menu再登録を一つのtransactionで完了し、active versionとreceiptを表示する。
 
 OSは利用者へ選択させず実行環境から自動判定する。URL未入力、標準構成不備、validation失敗はその操作時のエラーとして表示し、外部書込みまたはactivationを行わない。PRのOPENはエラーではなく正常なマージ待ちとして表示する。
-手動登録画面で利用者が指定するのはfolderだけとする。単一skillでは`Custom skills`へ登録し、pack folderではfolder名をPack IDにして直下の全skillを登録し、collection folderでは直下の全packを一括登録する。`SKILL.md`が一件もない、INDEX参照先がない、IDが衝突するなど完全性を証明できない場合は、全体をrollbackしてエラー停止する。
+手動登録画面で利用者が指定するのはfolderだけとする。単一skillでは内部の`Custom skills`へ登録するが、右クリックにはpack名ではなく`Skill: <skill表示名>`として各skillを表示する。pack folderではfolder名をPack IDにして直下の全skillを登録し、collection folderでは直下の全packを一括登録する。`SKILL.md`が一件もない、INDEX参照先がない、IDが衝突するなど完全性を証明できない場合は、全体をrollbackしてエラー停止する。
 現在の有効設定にGitHub repository URLが一意に存在する場合はPublish画面へ自動表示する。候補が複数あり一意に決められない場合だけ空欄とし、誤ったrepositoryを自動選択しない。
 
 画面ではrepository、pack、skillを別の概念として表示する。repository名をskill名として表示したり、pack名をrepository名として補完したりしない。
