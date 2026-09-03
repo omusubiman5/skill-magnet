@@ -28,5 +28,8 @@
 
 - release code: `3631483db0505293c34e7372f0dc76f14fb748fb`。
 - 独立2 buildのwheel論理payload SHA-256: 両方`a75bd3c26b7842c6a8aea47be80384399bc68bd4fc2b403356eb60b92809ec46`。
-
-実機再導入結果は導入後に追記する。
+- PR #31: Windows 2件／macOS 2件のCIがすべてPASSし、mainのmerge commit `87a298fbb666b07aa4d1c8109b7ae31f61c08852`へ反映済み。
+- 実機: 旧コードを読み込んでいたLibrary Manager processを対象command line照合後に終了し、0.5.8 wheelを再導入。
+- インストール済みmodule: 旧`must define trigger and boundary`判定が存在せず、新しい必須description検査が存在することを確認。
+- インストール済みmoduleによる実`android-cli`隔離登録: 3 pack／23 skill、validation PASS、再登録no-op PASS。利用中3 pack／22 skill libraryは不変。
+- Windows context menuを現設定へ再登録し、`menu_contract_matches_config=true`、`usable_installed_state=true`を確認。
