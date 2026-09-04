@@ -49,6 +49,18 @@
       "cleanup_after_completion": true
     }
   },
+  "task_workspace": {
+    "source": "explicit_operating_system_context_selection",
+    "purpose": "requested_work_and_output_context_only",
+    "must_exist": true,
+    "prohibited_runtime_skill_roots": [
+      "~/.codex/skills",
+      "~/.agents/skills",
+      "~/.claude/skills"
+    ],
+    "skill_install_or_storage": false,
+    "temporary_storage": false
+  },
   "provenance": {
     "required": true,
     "required_fields": ["repository_url", "commit_sha", "approved_by", "approved_at"]

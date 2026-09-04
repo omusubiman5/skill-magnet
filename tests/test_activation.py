@@ -29,6 +29,7 @@ from skill_magnet.activation import (
     _RuntimeFailed,
     _runtime_failure_diagnostic,
     codex_process_config_args,
+    validate_task_workspace,
 )
 from skill_magnet.cli import exit_process, main as cli_main
 from skill_magnet.core import Config, Pack, SafetyError, SkillMagnetError
@@ -564,6 +565,75 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertIn(f"{raw_root}/bounded-answer/SKILL.md", prompt)
         self.assertNotIn("desktop-materializations", prompt)
         self.assertNotIn("SKILL.md`", prompt)
+        self.assertIn("作業対象フォルダー:", prompt)
+        self.assertNotIn("対象プロジェクト:", prompt)
+
+    def test_runtime_skill_directories_are_rejected_before_contract_creation(self) -> None:
+        home = self.root / "user-home"
+        reserved = home / ".codex" / "skills"
+        selected = reserved / "cma-004"
+        selected.mkdir(parents=True)
+        self.assertEqual(
+            validate_task_workspace(self.project, home=home),
+            self.project.resolve(),
+        )
+        for candidate in (reserved, selected):
+            with self.subTest(candidate=candidate):
+                with (
+                    mock.patch(
+                        "skill_magnet.activation.reserved_skill_content_roots",
+                        return_value=(reserved.resolve(),),
+                    ),
+                    self.assertRaisesRegex(
+                        SkillMagnetError,
+                        "runtime-managed skill directory",
+                    ),
+                ):
+                    ActivationEngine(self.config, self.state).plan(
+                        platform="windows",
+                        project=candidate,
+                        pack_id="bounded-pack",
+                        runtime="codex",
+                        purpose="Do not install or work inside the skill store",
+                    )
+        self.assertFalse((self.state / "launch-contracts").exists())
+        self.assertFalse((self.state / "evidence").exists())
+
+    def test_context_selection_rejects_runtime_skill_directory_before_confirmation(self) -> None:
+        reserved = self.root / "runtime-home" / ".codex" / "skills"
+        reserved.mkdir(parents=True)
+        engine = ActivationEngine(self.config, self.state)
+        with (
+            mock.patch(
+                "skill_magnet.activation.reserved_skill_content_roots",
+                return_value=(reserved.resolve(),),
+            ),
+            self.assertRaisesRegex(
+                SkillMagnetError,
+                "runtime-managed skill directory",
+            ),
+        ):
+            context_selection_details(
+                engine,
+                project=reserved,
+                pack_id="bounded-pack",
+                runtime="codex",
+            )
+        self.assertFalse((self.state / "launch-contracts").exists())
+        self.assertFalse((self.state / "evidence").exists())
+
+    def test_runtime_skill_directory_error_explains_recovery_without_install(self) -> None:
+        internal = (
+            "Task workspace cannot be a runtime-managed skill directory: "
+            "C:/Users/example/.codex/skills"
+        )
+        japanese = context_error_message(internal, language="ja")
+        english = context_error_message(internal, language="en")
+        self.assertIn("作業場所には使用できません", japanese)
+        self.assertIn("右クリック", japanese)
+        self.assertIn("インストールやコピーは行っていません", japanese)
+        self.assertIn("cannot be used as this task's workspace", english)
+        self.assertIn("No skill was installed or copied", english)
 
     def test_desktop_and_claude_prompts_accept_a_pack_without_index(self) -> None:
         (self.repo / "INDEX.md").unlink()
@@ -2141,6 +2211,8 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertEqual(context_ui_text("unknown", "language"), "言語")
         self.assertEqual(context_ui_text("ja", "target_ai"), "実行先AI")
         self.assertEqual(context_ui_text("en", "target_ai"), "Target AI")
+        self.assertIn("作業対象フォルダー", context_ui_text("ja", "project", project="X"))
+        self.assertIn("Task workspace", context_ui_text("en", "project", project="X"))
         self.assertIn("空欄", context_ui_request_error("ja", "  "))
         self.assertIn("empty", context_ui_request_error("en", "\t"))
         self.assertIsNone(context_ui_request_error("ja", "同じ依頼"))

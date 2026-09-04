@@ -83,6 +83,22 @@ class ProductPolicyTest(unittest.TestCase):
         )
         self.assertFalse(self.policy["legacy_persistent_sync"]["cli_override"])
 
+    def test_task_workspace_is_not_a_skill_store_or_temporary_area(self) -> None:
+        workspace = self.policy["task_workspace"]
+        self.assertEqual(
+            workspace["source"], "explicit_operating_system_context_selection"
+        )
+        self.assertEqual(
+            workspace["purpose"], "requested_work_and_output_context_only"
+        )
+        self.assertTrue(workspace["must_exist"])
+        self.assertEqual(
+            set(workspace["prohibited_runtime_skill_roots"]),
+            {"~/.codex/skills", "~/.agents/skills", "~/.claude/skills"},
+        )
+        self.assertFalse(workspace["skill_install_or_storage"])
+        self.assertFalse(workspace["temporary_storage"])
+
     def test_version_provenance_and_approval_are_required(self) -> None:
         provenance = self.policy["provenance"]
         self.assertTrue(provenance["required"])

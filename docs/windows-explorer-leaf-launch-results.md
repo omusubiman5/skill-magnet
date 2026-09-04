@@ -11,16 +11,16 @@
   "release_scope": "configured-selection-leaves",
   "release_version": "0.5.8",
   "distribution_scope": "local-self-signed",
-  "full_test_count": 181,
+  "full_test_count": 185,
   "menu_leaf_count": 3,
   "menu_action_count": 5,
   "library_manager_entry_count": 1,
   "register_folder_entry_count": 1,
   "selection_kinds": ["package", "skill"],
   "pack_skill_counts": [1, 9, 12],
-  "release_code_sha": "20050a4eccdbd7215e3dfbf31be90c275452c561",
-  "wheel_payload_sha256": "c7afd078594a48b2f4fbcdeab2f4b3717bb4f7b6485b2ae059072438867fc71d",
-  "automated_status": "LOCAL_RELEASE_GATE_PASS_181",
+  "release_code_sha": "12b4250c25c7c7bb44d5f639faafbc653685f1eb",
+  "wheel_payload_sha256": "8eefa9641c1fb9a631f4da7fc41219bd91977f3b12de39ae04b641e5e19ea0bf",
+  "automated_status": "LOCAL_RELEASE_GATE_PASS_185",
   "windows_explorer_field_status": "PASS_REAL_RIGHT_CLICK_MENU_AND_CONFIRMATION_UI_0_5_1",
   "macos_finder_field_status": "CI_SEMANTIC_ONLY_REAL_UI_NOT_CLAIMED_FOR_0_5_2",
   "public_distribution_status": "NOT_CLAIMED_REQUIRES_EXTERNAL_PUBLISHER",
@@ -28,7 +28,8 @@
 }
 explorer-results-ledger:end -->
 
-- 統合テスト: `python -m unittest discover -s tests -v` — 181 tests PASS、環境依存1件skip
+- 統合テスト: `python -m unittest discover -s tests -v` — 185 tests PASS、環境依存1件skip
+- task workspaceをruntime skill rootから分離した。`~/.codex/skills`、`~/.agents/skills`、`~/.claude/skills`と配下はcontract作成前に拒否し、UI／promptでは`対象プロジェクト`ではなく`作業対象フォルダー`と表示する。独立した2 buildの論理payload SHA-256はともに`8eefa9641c1fb9a631f4da7fc41219bd91977f3b12de39ae04b641e5e19ea0bf`、release codeは`12b4250c25c7c7bb44d5f639faafbc653685f1eb`である。
 - Library Managerは右クリック受付後にwindowと処理名を先に表示し、同一stateの多重processをOS file lockで排他する。同一folderの二重投入、別folderの並行投入、holder強制終了後の再取得を回帰試験で確認した。独立した2 buildの論理payload SHA-256はともに`f046efc06554f6ca15fce18d8ec924c308f628c7988e6ca09fe6aeee0b1ae05d`、release codeは`03088d6bd96ecf6a10de19db616bc8d5dcd38452`である。
 - 実Windows再導入スモークで、PowerShellがBOM付きで保存した正常な`certificate-state.json`をPythonが破損扱いする再登録阻害を検出した。現在stateとrollback履歴を`utf-8-sig`で読み、BOM付きfixtureで所有権復旧を回帰化した。独立した2 buildの論理payload SHA-256はともに`c7afd078594a48b2f4fbcdeab2f4b3717bb4f7b6485b2ae059072438867fc71d`、release codeは`20050a4eccdbd7215e3dfbf31be90c275452c561`である。
 - 標準Skill登録validationから`trigger`／`boundary`固定語検査を撤去し、必須frontmatter `name`／`description`の構造検査へ訂正した。実`android-cli`を既存libraryの隔離コピーへ登録・再登録し、ユーザーSkill直下132候補／内部155 skillの独立登録を全件PASSで確認した。0.5.8候補wheelの論理payload SHA-256は`a75bd3c26b7842c6a8aea47be80384399bc68bd4fc2b403356eb60b92809ec46`、release codeは`3631483db0505293c34e7372f0dc76f14fb748fb`である。

@@ -16,6 +16,7 @@ from .activation import (
     _LaunchFailed,
     _OutputFailed,
     _RuntimeFailed,
+    validate_task_workspace,
 )
 from .core import SkillMagnetError, normalize_display_text
 
@@ -24,7 +25,7 @@ _CONTEXT_UI_TEXT = {
     "ja": {
         "window_title": "Skill Magnet — 実行確認",
         "language": "言語",
-        "project": "プロジェクト: {project}",
+        "project": "作業対象フォルダー: {project}",
         "selection": "選択したスキルパック",
         "selection_skill": "{skill_name}",
         "selection_pack": "{skill_name}",
@@ -54,7 +55,7 @@ _CONTEXT_UI_TEXT = {
         "confirmation_repository": "リポジトリ: {repository}",
         "confirmation_commit": "コミット: {commit}",
         "confirmation_ai": "対象AI: {runtime}",
-        "confirmation_project": "プロジェクト: {project}",
+        "confirmation_project": "作業対象フォルダー: {project}",
         "confirmation_request": "実際の依頼: {purpose}",
         "confirmation_question": "この内容で依頼を実行しますか？",
         "operation_failed": "処理を開始できませんでした。",
@@ -62,7 +63,7 @@ _CONTEXT_UI_TEXT = {
     "en": {
         "window_title": "Skill Magnet — Launch confirmation",
         "language": "Language",
-        "project": "Project: {project}",
+        "project": "Task workspace: {project}",
         "selection": "Selected skill pack",
         "selection_skill": "{skill_name}",
         "selection_pack": "{skill_name}",
@@ -92,7 +93,7 @@ _CONTEXT_UI_TEXT = {
         "confirmation_repository": "Repository: {repository}",
         "confirmation_commit": "Commit: {commit}",
         "confirmation_ai": "Target AI: {runtime}",
-        "confirmation_project": "Project: {project}",
+        "confirmation_project": "Task workspace: {project}",
         "confirmation_request": "Actual request: {purpose}",
         "confirmation_question": "Run this request?",
         "operation_failed": "The operation could not be started.",
@@ -135,7 +136,24 @@ def context_ui_request_error(language: str, purpose: str) -> str | None:
 def context_error_message(error: Exception | str, language: str | None = None) -> str:
     language = language or _context_ui_language
     message = str(error)
-    if "Pack HEAD is not the pinned expected_commit" in message:
+    if "Task workspace cannot be a runtime-managed skill directory" in message:
+        if language == "en":
+            message = (
+                "The selected folder is a Codex or Claude runtime-managed skill area, "
+                "so it cannot be used as this task's workspace.\n\n"
+                "Right-click the folder where the requested work and outputs belong, "
+                "then run Skill Magnet again. No skill was installed or copied by this "
+                "rejected launch."
+            )
+        else:
+            message = (
+                "選択したフォルダーはCodexまたはClaudeがスキルを管理する領域のため、"
+                "依頼の作業場所には使用できません。\n\n"
+                "依頼を実行し、成果物を置くフォルダーを右クリックして、Skill Magnetを"
+                "もう一度実行してください。この拒否された起動では、スキルのインストールや"
+                "コピーは行っていません。"
+            )
+    elif "Pack HEAD is not the pinned expected_commit" in message:
         if language == "en":
             message += (
                 "\n\nUpdate safely: review and approve the new source commit; update the "
@@ -475,6 +493,7 @@ def context_selection_details(
     menu_instruction_digest: str | None = None,
     menu_acceptance_digest: str | None = None,
 ) -> dict[str, object]:
+    project = validate_task_workspace(project)
     if pack_id not in engine.config.packs:
         engine.record_rejection(
             pack_id=pack_id, runtime=runtime, reason="unknown_pack"
@@ -540,7 +559,7 @@ def context_selection_details(
     return {
         "selection_kind": "skill" if skill_id is not None else "pack",
         "selected_skill_id": skill_id,
-        "project": str(project.resolve()),
+        "project": str(project),
         "pack_id": pack.pack_id,
         "skill_count": len(selected_skills),
         "skill_ids": selected_skills,

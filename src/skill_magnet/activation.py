@@ -33,6 +33,34 @@ CODEX_PROCESS_CONFIG_OVERRIDES = (
 )
 
 
+def reserved_skill_content_roots(home: Path | None = None) -> tuple[Path, ...]:
+    """Return runtime-managed skill locations that are never task workspaces."""
+    user_home = (home or Path.home()).resolve()
+    return tuple(
+        (user_home / product / "skills").resolve()
+        for product in (".codex", ".agents", ".claude")
+    )
+
+
+def validate_task_workspace(project: Path, home: Path | None = None) -> Path:
+    """Resolve one task workspace and reject runtime skill-content locations."""
+    resolved = project.resolve()
+    if not resolved.is_dir():
+        raise SkillMagnetError(f"Project directory does not exist: {resolved}")
+    for reserved in reserved_skill_content_roots(home):
+        try:
+            resolved.relative_to(reserved)
+        except ValueError:
+            continue
+        raise SkillMagnetError(
+            "Task workspace cannot be a runtime-managed skill directory: "
+            f"{resolved}. Right-click the folder where the requested work and "
+            "outputs belong. Skill Magnet reads verified skill content from GitHub "
+            "and does not use this directory as a workspace."
+        )
+    return resolved
+
+
 def codex_process_config_args() -> list[str]:
     """Return official per-process Codex config overrides for verification runs."""
     return [
@@ -438,9 +466,7 @@ class ActivationEngine:
             raise SkillMagnetError("Purpose is required")
         if not 1 <= ttl_minutes <= 120:
             raise SkillMagnetError("ttl_minutes must be between 1 and 120")
-        project = project.resolve()
-        if not project.is_dir():
-            raise SkillMagnetError(f"Project directory does not exist: {project}")
+        project = validate_task_workspace(project)
         pack, commit, hashes, index_digest = self._validated_pack(pack_id)
         if skill_id is not None and skill_id not in pack.skills:
             raise SkillMagnetError(f"Unknown skill for pack {pack_id}: {skill_id}")
@@ -704,7 +730,7 @@ class ActivationEngine:
             "Skill Magnet verified task envelope.\n"
             f"PROVENANCE={json.dumps(provenance, ensure_ascii=False, sort_keys=True)}\n"
             f"PURPOSE={actual_request}\n"
-            f"TARGET_PROJECT={contract.project}\n"
+            f"TASK_WORKSPACE={contract.project}\n"
             "The PURPOSE field is the user's actual request. Complete that request, "
             "not a demonstration or readiness exercise. Read every supplied skill "
             f"instruction{index_instruction}, then select the smallest applicable skill "
@@ -807,7 +833,7 @@ class ActivationEngine:
             "各スキルを個別の回答生成依頼として扱わず、一つの実行方法へ統合してください。"
             "OpenAIまたはAnthropicのAPI key、従量課金API、追加支払いを要求せず、この"
             f"{runtime_name}の既存利用枠だけで実行してください。\n\n"
-            f"対象プロジェクト: `{Path(contract.project).resolve().as_posix()}`\n"
+            f"作業対象フォルダー: `{Path(contract.project).resolve().as_posix()}`\n"
             f"選択パックID: {contract.pack_id}\n"
             f"{skill_label}"
             f"Skill Magnet contract ID: {contract.contract_id}\n"
