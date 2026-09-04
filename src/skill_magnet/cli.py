@@ -395,10 +395,10 @@ def main(argv: list[str] | None = None) -> int:
                     purpose=purpose,
                 )
                 contract = activation.confirm(plan, confirmed=True)
-                delivered: dict[str, str] = {}
+                delivered: dict[str, str | None] = {}
 
                 def capture_delivery(
-                    prompt: str, project: str, destination: str
+                    prompt: str, project: str | None, destination: str
                 ) -> None:
                     delivered.update(
                         prompt=prompt,
@@ -422,7 +422,11 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     capture_delivery(
                         str(handoff["prompt"]),
-                        str(handoff["project"]),
+                        (
+                            str(handoff["project"])
+                            if handoff["project"] is not None
+                            else None
+                        ),
                         str(handoff["destination"]),
                     )
                     result_verification = "not_claimed_by_design"

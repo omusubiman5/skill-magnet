@@ -1,5 +1,11 @@
 # ランタイムskill領域を対象プロジェクトとして渡した原因調査
 
+## 再調査による訂正
+
+初回方針の「runtime skill領域ならエラーで停止し、別フォルダーからやり直してもらう」は撤回する。右クリック対象がskillフォルダーであること自体は、利用者がそのskillを選んだ正当な入力である。誤りは、そのpathをtask workspaceとして渡したことであり、入力操作ではない。したがって必要な結果は拒否ではなく、task workspaceを`None`へ正規化し、デスクトップアプリのprojectless新規タスクへ自動handoffすることである。
+
+初回修正は「危険なworkspaceを使わない」ことだけを完了条件にし、「利用者の依頼が操作追加なしで継続する」ことを完了条件に含めていなかった。このため、原因を説明するエラーへ改善しても、利用者が復旧操作を負担する欠陥が残った。
+
 ## 対象
 
 - 事象: Skill Magnetが`C:/Users/HOMEA/.codex/skills`を`対象プロジェクト`としてCodex Desktopへ渡した。
@@ -48,23 +54,23 @@
 | 入力・状態 | 修正前の結果 | 必要な結果 |
 |---|---|---|
 | 通常の作業folder | workspaceとして受理 | 受理 |
-| `~/.codex/skills` | workspaceとして受理 | handoff前に拒否 |
-| `~/.codex/skills/<skill-id>` | workspaceとして受理 | handoff前に拒否 |
-| `~/.agents/skills`配下 | workspaceとして受理 | handoff前に拒否 |
-| `~/.claude/skills`配下 | workspaceとして受理 | handoff前に拒否 |
-| 禁止pathを拒否した後 | 復旧案なし | 成果物を置くfolderから再実行する案内 |
+| `~/.codex/skills` | workspaceとして受理 | projectlessへ自動変換してhandoff |
+| `~/.codex/skills/<skill-id>` | workspaceとして受理 | projectlessへ自動変換してhandoff |
+| `~/.agents/skills`配下 | workspaceとして受理 | projectlessへ自動変換してhandoff |
+| `~/.claude/skills`配下 | workspaceとして受理 | projectlessへ自動変換してhandoff |
+| reserved path検出後 | 復旧案なし | 利用者の追加操作なしで継続 |
 | prompt表示 | `対象プロジェクト` | `作業対象フォルダー` |
-| 拒否時の副作用 | 未規定 | contract、handoff、skill copyを作らない |
-| CLIの拒否表示 | 原因を捨てた汎用エラー | 選択path、拒否理由、未実行範囲、復旧操作を表示 |
+| 自動変換時の副作用 | 未規定 | skill copyなし、選択pathへの書込みなし、projectless contractとhandoffだけ作成 |
+| 利用者の復旧操作 | 必須 | 不要 |
 
 ## 修正方針
 
-1. activationの最初のplan gateで3種類のruntime skill rootと配下を拒否する。
+1. activationの最初のplan gateで3種類のruntime skill rootと配下をtask workspaceから外し、`None`へ正規化する。
 2. UI、確認画面、Desktop prompt、runtime envelopeの外部名称をtask workspaceへ統一する。
-3. 拒否メッセージに、正しい再実行場所と「拒否された起動ではinstall/copyしていない」ことを表示する。
+3. Desktop deep linkから`path`／`folder`を省き、projectless新規タスクとして自動継続する。
 4. product policyへworkspaceの目的、禁止root、非install、非temporaryを機械可読に追加する。
-5. 通常folder、root直下、skill子folder、日本語／英語表示、副作用なしを回帰試験する。
-6. 内部message helperだけでなく、Windows右クリックと同じCLI引数から最終dialog本文まで検査する。
+5. 通常folder、root直下、skill子folder、Codex／Claude、deep link、skill領域への書込みなしを回帰試験する。
+6. エラー文ではなく、contract作成からDesktop handoff完了までの実経路を検査する。
 
 ## 境界
 

@@ -27,7 +27,6 @@ from skill_magnet.activation import (
     _LaunchFailed,
     _OutputFailed,
     _RuntimeFailed,
-    _WorkspaceFailed,
     _runtime_failure_diagnostic,
     codex_process_config_args,
     validate_task_workspace,
@@ -569,7 +568,7 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertIn("作業対象フォルダー:", prompt)
         self.assertNotIn("対象プロジェクト:", prompt)
 
-    def test_runtime_skill_directories_are_rejected_before_contract_creation(self) -> None:
+    def test_runtime_skill_directories_select_projectless_mode(self) -> None:
         home = self.root / "user-home"
         reserved = home / ".codex" / "skills"
         selected = reserved / "cma-004"
@@ -580,128 +579,79 @@ class ActivationEndToEndTest(unittest.TestCase):
         )
         for candidate in (reserved, selected):
             with self.subTest(candidate=candidate):
-                with (
-                    mock.patch(
-                        "skill_magnet.activation.reserved_skill_content_roots",
-                        return_value=(reserved.resolve(),),
-                    ),
-                    self.assertRaisesRegex(
-                        SkillMagnetError,
-                        "runtime-managed skill directory",
-                    ),
+                with mock.patch(
+                    "skill_magnet.activation.reserved_skill_content_roots",
+                    return_value=(reserved.resolve(),),
                 ):
-                    ActivationEngine(self.config, self.state).plan(
+                    plan = ActivationEngine(self.config, self.state).plan(
                         platform="windows",
                         project=candidate,
                         pack_id="bounded-pack",
                         runtime="codex",
                         purpose="Do not install or work inside the skill store",
                     )
+                self.assertIsNone(plan["project"])
         self.assertFalse((self.state / "launch-contracts").exists())
         self.assertFalse((self.state / "evidence").exists())
 
-    def test_context_selection_rejects_runtime_skill_directory_before_confirmation(self) -> None:
+    def test_context_selection_converts_runtime_skill_directory_to_projectless(self) -> None:
         reserved = self.root / "runtime-home" / ".codex" / "skills"
         reserved.mkdir(parents=True)
         engine = ActivationEngine(self.config, self.state)
-        with (
-            mock.patch(
-                "skill_magnet.activation.reserved_skill_content_roots",
-                return_value=(reserved.resolve(),),
-            ),
-            self.assertRaisesRegex(
-                SkillMagnetError,
-                "runtime-managed skill directory",
-            ),
+        with mock.patch(
+            "skill_magnet.activation.reserved_skill_content_roots",
+            return_value=(reserved.resolve(),),
         ):
-            context_selection_details(
+            details = context_selection_details(
                 engine,
                 project=reserved,
                 pack_id="bounded-pack",
                 runtime="codex",
             )
-        self.assertFalse((self.state / "launch-contracts").exists())
-        self.assertFalse((self.state / "evidence").exists())
-
-    def test_runtime_skill_directory_error_explains_recovery_without_install(self) -> None:
-        internal = (
-            "Task workspace cannot be a runtime-managed skill directory: "
-            "C:/Users/example/.codex/skills"
+        self.assertIsNone(details["project"])
+        contract = confirm_context_selection(
+            engine,
+            platform="windows",
+            details=details,
+            purpose="Continue without treating the skill store as the workspace",
+            confirmed=True,
         )
-        japanese = context_error_message(internal, language="ja")
-        english = context_error_message(internal, language="en")
-        self.assertIn("作業場所には使用できません", japanese)
-        self.assertIn("右クリック", japanese)
-        self.assertIn("インストールやコピーは行っていません", japanese)
-        self.assertIn("cannot be used as this task's workspace", english)
-        self.assertIn("No skill was installed or copied", english)
+        self.assertIsNone(contract.project)
 
-    def test_runtime_skill_directory_uses_actionable_cli_failure_surface(self) -> None:
-        selected = self.root / "runtime-home" / ".codex" / "skills"
-        selected.mkdir(parents=True)
-        error = _WorkspaceFailed(
-            selected,
-            f"Task workspace cannot be a runtime-managed skill directory: {selected}",
-        )
-        message = context_failure_message(error)
-        self.assertIn("このフォルダーでは実行できません", message)
-        self.assertIn(str(selected), message)
-        self.assertIn("スキルを管理する領域", message)
-        self.assertIn("launch contract", message)
-        self.assertIn("インストールまたはコピーは実行していません", message)
-        self.assertIn("成果物を保存したいフォルダーを右クリック", message)
-        self.assertNotIn("安全確認または起動前検証", message)
-
-    def test_windows_cli_shows_actionable_runtime_skill_directory_error(self) -> None:
-        selected = self.root / "runtime-home" / ".codex" / "skills"
+    def test_runtime_skill_directory_handoff_recovers_without_user_action(self) -> None:
+        reserved = self.root / "runtime-home" / ".codex" / "skills"
+        selected = reserved / "bounded-answer"
         selected.mkdir(parents=True)
         leaf = next(
             item
             for item in windows_menu_leaves(self.config_path, "%V")
             if item.pack_id == "bounded-pack" and item.skill_id == "bounded-answer"
         )
-        with (
-            mock.patch(
-                "skill_magnet.activation.reserved_skill_content_roots",
-                return_value=(selected.resolve(),),
-            ),
-            mock.patch("skill_magnet.cli.show_context_error") as error_ui,
+        delivered: dict[str, object] = {}
+        with mock.patch(
+            "skill_magnet.activation.reserved_skill_content_roots",
+            return_value=(reserved.resolve(),),
         ):
-            exit_code = cli_main(
-                [
-                    "--config",
-                    str(self.config_path),
-                    "--state-dir",
-                    str(self.state),
-                    "context",
-                    "--platform",
-                    "windows",
-                    "--project",
-                    str(selected),
-                    "--pack",
-                    leaf.pack_id,
-                    "--skill",
-                    leaf.skill_id,
-                    "--runtime",
-                    "codex",
-                    "--menu-commit",
-                    self.commit,
-                    "--menu-skill-digest",
-                    leaf.skill_ids_digest,
-                    "--menu-instruction-digest",
-                    leaf.instruction_digest,
-                    "--menu-acceptance-digest",
-                    leaf.acceptance_digest,
-                ]
+            result = launch_context_leaf(
+                ActivationEngine(self.config, self.state),
+                platform="windows",
+                project=selected,
+                pack_id=leaf.pack_id,
+                skill_id=leaf.skill_id,
+                runtime="codex",
+                menu_commit=self.commit,
+                menu_skill_digest=leaf.skill_ids_digest,
+                menu_instruction_digest=leaf.instruction_digest,
+                menu_acceptance_digest=leaf.acceptance_digest,
+                desktop_delivery=lambda prompt, project, destination: delivered.update(
+                    prompt=prompt, project=project, destination=destination
+                ),
             )
-        self.assertEqual(exit_code, 2)
-        error_ui.assert_called_once()
-        displayed = error_ui.call_args.args[0]
-        self.assertIn("このフォルダーでは実行できません", displayed)
-        self.assertIn(str(selected.resolve()), displayed)
-        self.assertIn("成果物を保存したいフォルダー", displayed)
-        self.assertNotIn("安全確認または起動前検証", displayed)
-        self.assertFalse((self.state / "launch-contracts").exists())
+        self.assertEqual(result["status"], "desktop_handoff_ready")
+        self.assertIsNone(delivered["project"])
+        self.assertNotIn(str(selected.resolve()), str(delivered["prompt"]))
+        self.assertIn("作業対象フォルダー: なし", str(delivered["prompt"]))
+        self.assertEqual(list(selected.iterdir()), [])
 
     def test_desktop_and_claude_prompts_accept_a_pack_without_index(self) -> None:
         (self.repo / "INDEX.md").unlink()
@@ -1118,6 +1068,26 @@ class ActivationEndToEndTest(unittest.TestCase):
         decoded = parse_qs(urlsplit(url).query)
         self.assertEqual(decoded["path"], [project])
         self.assertEqual(decoded["prompt"], [prompt])
+
+    def test_codex_desktop_projectless_link_omits_path(self) -> None:
+        from urllib.parse import parse_qs, urlsplit
+
+        url = codex_desktop_deep_link(
+            "プロジェクトなしで続行", None, "codex://threads/new"
+        )
+        decoded = parse_qs(urlsplit(url).query)
+        self.assertNotIn("path", decoded)
+        self.assertEqual(decoded["prompt"], ["プロジェクトなしで続行"])
+
+    def test_claude_desktop_projectless_link_omits_folder(self) -> None:
+        from urllib.parse import parse_qs, urlsplit
+
+        url = claude_desktop_deep_link(
+            "Continue without a folder", None, "claude://code/new"
+        )
+        decoded = parse_qs(urlsplit(url).query)
+        self.assertNotIn("folder", decoded)
+        self.assertEqual(decoded["q"], ["Continue without a folder"])
 
     def test_codex_desktop_delivery_uses_windows_protocol_handler(self) -> None:
         with (
