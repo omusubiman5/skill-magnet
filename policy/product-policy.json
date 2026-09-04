@@ -50,14 +50,16 @@
     }
   },
   "task_workspace": {
-    "source": "explicit_operating_system_context_selection",
+    "source": "explicit_operating_system_context_selection_or_desktop_projectless_mode",
     "purpose": "requested_work_and_output_context_only",
-    "must_exist": true,
+    "must_exist_when_attached": true,
     "prohibited_runtime_skill_roots": [
       "~/.codex/skills",
       "~/.agents/skills",
       "~/.claude/skills"
     ],
+    "reserved_root_behavior": "automatic_desktop_projectless_handoff",
+    "user_recovery_action_required": false,
     "skill_install_or_storage": false,
     "temporary_storage": false
   },

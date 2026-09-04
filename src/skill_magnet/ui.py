@@ -16,7 +16,6 @@ from .activation import (
     _LaunchFailed,
     _OutputFailed,
     _RuntimeFailed,
-    _WorkspaceFailed,
     validate_task_workspace,
 )
 from .core import SkillMagnetError, normalize_display_text
@@ -27,6 +26,7 @@ _CONTEXT_UI_TEXT = {
         "window_title": "Skill Magnet — 実行確認",
         "language": "言語",
         "project": "作業対象フォルダー: {project}",
+        "projectless": "指定なし（デスクトップアプリが新規タスク用領域を自動作成）",
         "selection": "選択したスキルパック",
         "selection_skill": "{skill_name}",
         "selection_pack": "{skill_name}",
@@ -65,6 +65,7 @@ _CONTEXT_UI_TEXT = {
         "window_title": "Skill Magnet — Launch confirmation",
         "language": "Language",
         "project": "Task workspace: {project}",
+        "projectless": "None (the Desktop app creates a new task workspace)",
         "selection": "Selected skill pack",
         "selection_skill": "{skill_name}",
         "selection_pack": "{skill_name}",
@@ -118,12 +119,18 @@ def context_ui_confirmation(
         "selection_skill" if details["selection_kind"] == "skill" else "selection_pack",
         skill_name=details.get("skill_display_name", details.get("selected_skill_id", "")),
     )
+    project = details["project"]
+    project_display = (
+        project
+        if isinstance(project, str)
+        else context_ui_text(language, "projectless")
+    )
     lines = (
         context_ui_text(language, "confirmation_selection", selection=selection),
         context_ui_text(
             language, "confirmation_ai", runtime=str(details["runtime"]).title()
         ),
-        context_ui_text(language, "confirmation_project", project=details["project"]),
+        context_ui_text(language, "confirmation_project", project=project_display),
         context_ui_text(language, "confirmation_request", purpose=purpose),
     )
     return "\n".join((*lines, "", context_ui_text(language, "confirmation_question")))
@@ -137,26 +144,7 @@ def context_ui_request_error(language: str, purpose: str) -> str | None:
 def context_error_message(error: Exception | str, language: str | None = None) -> str:
     language = language or _context_ui_language
     message = str(error)
-    if isinstance(error, _WorkspaceFailed) or (
-        "Task workspace cannot be a runtime-managed skill directory" in message
-    ):
-        if language == "en":
-            message = (
-                "The selected folder is a Codex or Claude runtime-managed skill area, "
-                "so it cannot be used as this task's workspace.\n\n"
-                "Right-click the folder where the requested work and outputs belong, "
-                "then run Skill Magnet again. No skill was installed or copied by this "
-                "rejected launch."
-            )
-        else:
-            message = (
-                "選択したフォルダーはCodexまたはClaudeがスキルを管理する領域のため、"
-                "依頼の作業場所には使用できません。\n\n"
-                "依頼を実行し、成果物を置くフォルダーを右クリックして、Skill Magnetを"
-                "もう一度実行してください。この拒否された起動では、スキルのインストールや"
-                "コピーは行っていません。"
-            )
-    elif "Pack HEAD is not the pinned expected_commit" in message:
+    if "Pack HEAD is not the pinned expected_commit" in message:
         if language == "en":
             message += (
                 "\n\nUpdate safely: review and approve the new source commit; update the "
@@ -207,23 +195,6 @@ def context_result_surface(result: dict[str, object]) -> dict[str, str]:
 
 def context_failure_surface(error: Exception) -> dict[str, str]:
     """Map typed failures to a Japanese fail-closed result surface."""
-    if isinstance(error, _WorkspaceFailed):
-        return {
-            "state": "blocked",
-            "title": "このフォルダーでは実行できません",
-            "cause": (
-                f"選択したフォルダー `{error.path}` は、CodexまたはClaudeが"
-                "スキルを管理する領域です。依頼の作業場所には使用しません。"
-            ),
-            "not_completed": (
-                "確認画面、launch contract、デスクトップアプリへのhandoff、"
-                "スキルのインストールまたはコピーは実行していません。"
-            ),
-            "next_action": (
-                "依頼の成果物を保存したいフォルダーを右クリックし、"
-                "同じSkill Magnetメニューを選び直してください。"
-            ),
-        }
     if isinstance(error, _LaunchFailed):
         return {
             "state": "failed",
@@ -398,24 +369,31 @@ _CODEX_DESKTOP_MAX_PROMPT_CHARS = 12_000
 _CODEX_DESKTOP_MAX_URL_CHARS = 32_767
 
 
-def codex_desktop_deep_link(prompt: str, project: str, destination: str) -> str:
+def codex_desktop_deep_link(
+    prompt: str, project: str | None, destination: str
+) -> str:
     """Build the canonical new-task deep link with lossless URL encoding."""
     if destination != _CODEX_DESKTOP_DESTINATION:
         raise SkillMagnetError("Unexpected Codex Desktop destination")
     if not prompt:
         raise SkillMagnetError("Codex Desktop prompt is empty")
-    if not project:
-        raise SkillMagnetError("Codex Desktop project is empty")
     if len(prompt) > _CODEX_DESKTOP_MAX_PROMPT_CHARS:
         raise SkillMagnetError("Codex Desktop prompt exceeds the safe handoff limit")
-    query = urlencode({"path": project, "prompt": prompt}, quote_via=quote)
+    values = (
+        {"path": project, "prompt": prompt}
+        if project is not None
+        else {"prompt": prompt}
+    )
+    query = urlencode(values, quote_via=quote)
     url = f"{destination}?{query}"
     if len(url) > _CODEX_DESKTOP_MAX_URL_CHARS:
         raise SkillMagnetError("Codex Desktop deep link exceeds the safe URL limit")
     return url
 
 
-def deliver_codex_desktop_prompt(prompt: str, project: str, destination: str) -> None:
+def deliver_codex_desktop_prompt(
+    prompt: str, project: str | None, destination: str
+) -> None:
     """Ask Windows to open a brand-new Codex Desktop task without a console."""
     if os.name != "nt":
         raise SkillMagnetError("Codex Desktop Explorer handoff is only implemented on Windows")
@@ -430,7 +408,7 @@ def deliver_prepared_codex_handoff(
     engine: ActivationEngine,
     contract_id: str,
     *,
-    delivery: Callable[[str, str, str], None] | None = None,
+    delivery: Callable[[str, str | None, str], None] | None = None,
 ) -> dict[str, object]:
     """Deliver one prepared prompt and record only handoff readiness."""
     prepared = engine.prepare_codex_desktop_handoff(contract_id)
@@ -438,7 +416,7 @@ def deliver_prepared_codex_handoff(
     try:
         opener(
             str(prepared["prompt"]),
-            str(prepared["project"]),
+            prepared["project"] if isinstance(prepared["project"], str) else None,
             str(prepared["destination"]),
         )
     except Exception:
@@ -447,17 +425,20 @@ def deliver_prepared_codex_handoff(
     return engine.record_desktop_handoff(prepared)
 
 
-def claude_desktop_deep_link(prompt: str, project: str, destination: str) -> str:
+def claude_desktop_deep_link(
+    prompt: str, project: str | None, destination: str
+) -> str:
     """Build a new Claude Code Desktop session deep link."""
     if destination != _CLAUDE_DESKTOP_DESTINATION:
         raise SkillMagnetError("Unexpected Claude Desktop destination")
     if not prompt:
         raise SkillMagnetError("Claude Desktop prompt is empty")
-    if not project:
-        raise SkillMagnetError("Claude Desktop project is empty")
     if len(prompt) > _CLAUDE_DESKTOP_MAX_PROMPT_CHARS:
         raise SkillMagnetError("Claude Desktop prompt exceeds the safe handoff limit")
-    query = urlencode({"q": prompt, "folder": project}, quote_via=quote)
+    values = {"q": prompt}
+    if project is not None:
+        values["folder"] = project
+    query = urlencode(values, quote_via=quote)
     url = f"{destination}?{query}"
     if len(url) > _CLAUDE_DESKTOP_MAX_URL_CHARS:
         raise SkillMagnetError("Claude Desktop deep link exceeds the safe URL limit")
@@ -465,7 +446,7 @@ def claude_desktop_deep_link(prompt: str, project: str, destination: str) -> str
 
 
 def deliver_claude_desktop_prompt(
-    prompt: str, project: str, destination: str
+    prompt: str, project: str | None, destination: str
 ) -> None:
     """Open Claude Code in Claude Desktop with the prompt and project prefilled."""
     url = claude_desktop_deep_link(prompt, project, destination)
@@ -484,7 +465,7 @@ def deliver_prepared_claude_handoff(
     engine: ActivationEngine,
     contract_id: str,
     *,
-    delivery: Callable[[str, str, str], None] | None = None,
+    delivery: Callable[[str, str | None, str], None] | None = None,
 ) -> dict[str, object]:
     """Deliver one Claude Code Desktop prompt and record handoff readiness."""
     prepared = engine.prepare_claude_desktop_handoff(contract_id)
@@ -492,7 +473,7 @@ def deliver_prepared_claude_handoff(
     try:
         opener(
             str(prepared["prompt"]),
-            str(prepared["project"]),
+            prepared["project"] if isinstance(prepared["project"], str) else None,
             str(prepared["destination"]),
         )
     except Exception:
@@ -579,7 +560,7 @@ def context_selection_details(
     return {
         "selection_kind": "skill" if skill_id is not None else "pack",
         "selected_skill_id": skill_id,
-        "project": str(project),
+        "project": str(project) if project is not None else None,
         "pack_id": pack.pack_id,
         "skill_count": len(selected_skills),
         "skill_ids": selected_skills,
@@ -626,7 +607,11 @@ def confirm_context_selection(
     try:
         plan = engine.plan(
             platform=platform,
-            project=Path(str(details["project"])),
+            project=(
+                Path(str(details["project"]))
+                if details["project"] is not None
+                else None
+            ),
             pack_id=str(details["pack_id"]),
             runtime=str(details["runtime"]),
             purpose=purpose,
@@ -668,8 +653,8 @@ def launch_context_leaf(
     codex_executable: str | tuple[str, ...] = "codex",
     interactive_handoff: bool = False,
     destination: str = "verified_runtime",
-    claude_desktop_delivery: Callable[[str, str, str], None] | None = None,
-    desktop_delivery: Callable[[str, str, str], None] | None = None,
+    claude_desktop_delivery: Callable[[str, str | None, str], None] | None = None,
+    desktop_delivery: Callable[[str, str | None, str], None] | None = None,
     error_ui: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
     """Execute one explicit leaf silently; the leaf selection is the consent event."""
@@ -747,6 +732,7 @@ def show_context_selection(
     import tkinter as tk
     from tkinter import messagebox, ttk
 
+    normalized_project = validate_task_workspace(project)
     root = tk.Tk()
     root.resizable(True, True)
     if platform == "windows" and any(
@@ -961,9 +947,12 @@ def show_context_selection(
         _context_ui_language = language
         root.title(context_ui_text(language, "window_title"))
         language_label.set(context_ui_text(language, "language"))
-        project_label.set(
-            context_ui_text(language, "project", project=project.resolve())
+        project_display = (
+            normalized_project
+            if normalized_project is not None
+            else context_ui_text(language, "projectless")
         )
+        project_label.set(context_ui_text(language, "project", project=project_display))
         selection_label.set(context_ui_text(language, "selection"))
         runtime_label.set(context_ui_text(language, "target_ai"))
         request_label.set(context_ui_text(language, "actual_request"))

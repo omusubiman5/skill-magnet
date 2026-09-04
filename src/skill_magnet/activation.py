@@ -42,8 +42,8 @@ def reserved_skill_content_roots(home: Path | None = None) -> tuple[Path, ...]:
     )
 
 
-def validate_task_workspace(project: Path, home: Path | None = None) -> Path:
-    """Resolve one task workspace and reject runtime skill-content locations."""
+def validate_task_workspace(project: Path, home: Path | None = None) -> Path | None:
+    """Resolve a task workspace or select projectless mode for runtime skill areas."""
     resolved = project.resolve()
     if not resolved.is_dir():
         raise SkillMagnetError(f"Project directory does not exist: {resolved}")
@@ -52,13 +52,10 @@ def validate_task_workspace(project: Path, home: Path | None = None) -> Path:
             resolved.relative_to(reserved)
         except ValueError:
             continue
-        raise _WorkspaceFailed(
-            resolved,
-            "Task workspace cannot be a runtime-managed skill directory: "
-            f"{resolved}. Right-click the folder where the requested work and "
-            "outputs belong. Skill Magnet reads verified skill content from GitHub "
-            "and does not use this directory as a workspace."
-        )
+        # A right-click on an installed/runtime-discovered skill is a valid way to
+        # choose that skill.  It is not authorization to treat the skill store as
+        # the task workspace.  Continue as a projectless Desktop task instead.
+        return None
     return resolved
 
 
@@ -107,14 +104,6 @@ class _CleanupFailed(SafetyError):
     def __init__(self, paths: tuple[Path, ...]) -> None:
         self.paths = paths
         super().__init__("Temporary activation artifact cleanup failed")
-
-
-class _WorkspaceFailed(SafetyError):
-    """The selected Explorer/Finder path is a runtime-managed skill area."""
-
-    def __init__(self, path: Path, message: str) -> None:
-        self.path = path
-        super().__init__(message)
 
 
 def _runtime_failure_diagnostic(
@@ -192,7 +181,7 @@ class LaunchContract:
     attempt_id: str
     contract_id: str
     platform: str
-    project: str
+    project: str | None
     pack_id: str
     runtime: str
     repository_url: str
@@ -458,7 +447,7 @@ class ActivationEngine:
         self,
         *,
         platform: str,
-        project: Path,
+        project: Path | None,
         pack_id: str,
         runtime: str,
         purpose: str,
@@ -475,7 +464,7 @@ class ActivationEngine:
             raise SkillMagnetError("Purpose is required")
         if not 1 <= ttl_minutes <= 120:
             raise SkillMagnetError("ttl_minutes must be between 1 and 120")
-        project = validate_task_workspace(project)
+        project = validate_task_workspace(project) if project is not None else None
         pack, commit, hashes, index_digest = self._validated_pack(pack_id)
         if skill_id is not None and skill_id not in pack.skills:
             raise SkillMagnetError(f"Unknown skill for pack {pack_id}: {skill_id}")
@@ -491,7 +480,7 @@ class ActivationEngine:
             "operation": "verified-runtime-launch",
             "writes": False,
             "platform": platform,
-            "project": str(project),
+            "project": str(project) if project is not None else None,
             "pack_id": pack_id,
             "runtime": runtime,
             "repository_url": pack.repo_url,
@@ -629,7 +618,7 @@ class ActivationEngine:
             raise SafetyError("Invalid activation plan")
         refreshed = self.plan(
             platform=str(plan["platform"]),
-            project=Path(str(plan["project"])),
+            project=(Path(str(plan["project"])) if plan["project"] is not None else None),
             pack_id=str(plan["pack_id"]),
             runtime=str(plan["runtime"]),
             purpose=str(plan["purpose"]),
@@ -735,11 +724,14 @@ class ActivationEngine:
             if pack_index
             else ""
         )
+        workspace_line = (
+            f"TASK_WORKSPACE={contract.project}\n" if contract.project is not None else ""
+        )
         return (
             "Skill Magnet verified task envelope.\n"
             f"PROVENANCE={json.dumps(provenance, ensure_ascii=False, sort_keys=True)}\n"
             f"PURPOSE={actual_request}\n"
-            f"TASK_WORKSPACE={contract.project}\n"
+            f"{workspace_line}"
             "The PURPOSE field is the user's actual request. Complete that request, "
             "not a demonstration or readiness exercise. Read every supplied skill "
             f"instruction{index_instruction}, then select the smallest applicable skill "
@@ -830,6 +822,11 @@ class ActivationEngine:
             "全SKILL.mdと、存在するINDEX" if index_available else "全SKILL.md"
         )
         reference_relations = "INDEXの関係と" if index_available else ""
+        workspace_line = (
+            f"作業対象フォルダー: `{Path(contract.project).resolve().as_posix()}`\n"
+            if contract.project is not None
+            else "作業対象フォルダー: なし（デスクトップアプリが新規タスク用領域を自動作成）\n"
+        )
         return (
             "Skill Magnetからの実行依頼です。\n"
             "これはデモ、準備確認、実行可否の説明ではありません。選択したパックの"
@@ -842,7 +839,7 @@ class ActivationEngine:
             "各スキルを個別の回答生成依頼として扱わず、一つの実行方法へ統合してください。"
             "OpenAIまたはAnthropicのAPI key、従量課金API、追加支払いを要求せず、この"
             f"{runtime_name}の既存利用枠だけで実行してください。\n\n"
-            f"作業対象フォルダー: `{Path(contract.project).resolve().as_posix()}`\n"
+            f"{workspace_line}"
             f"選択パックID: {contract.pack_id}\n"
             f"{skill_label}"
             f"Skill Magnet contract ID: {contract.contract_id}\n"
@@ -1368,6 +1365,9 @@ class ActivationEngine:
             else:
                 executable = [resolved]
         if contract.runtime == "codex":
+            workspace_args = (
+                ["--cd", contract.project] if contract.project is not None else []
+            )
             runtime_args = [
                 *codex_process_config_args(),
                 "--ask-for-approval",
@@ -1378,8 +1378,7 @@ class ActivationEngine:
                 "--json",
                 "--sandbox",
                 "read-only",
-                "--cd",
-                contract.project,
+                *workspace_args,
                 "--output-schema",
                 str(schema_path),
                 "--output-last-message",

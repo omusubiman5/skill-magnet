@@ -86,16 +86,22 @@ class ProductPolicyTest(unittest.TestCase):
     def test_task_workspace_is_not_a_skill_store_or_temporary_area(self) -> None:
         workspace = self.policy["task_workspace"]
         self.assertEqual(
-            workspace["source"], "explicit_operating_system_context_selection"
+            workspace["source"],
+            "explicit_operating_system_context_selection_or_desktop_projectless_mode",
         )
         self.assertEqual(
             workspace["purpose"], "requested_work_and_output_context_only"
         )
-        self.assertTrue(workspace["must_exist"])
+        self.assertTrue(workspace["must_exist_when_attached"])
         self.assertEqual(
             set(workspace["prohibited_runtime_skill_roots"]),
             {"~/.codex/skills", "~/.agents/skills", "~/.claude/skills"},
         )
+        self.assertEqual(
+            workspace["reserved_root_behavior"],
+            "automatic_desktop_projectless_handoff",
+        )
+        self.assertFalse(workspace["user_recovery_action_required"])
         self.assertFalse(workspace["skill_install_or_storage"])
         self.assertFalse(workspace["temporary_storage"])
 
