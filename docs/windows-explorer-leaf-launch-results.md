@@ -18,8 +18,8 @@
   "register_folder_entry_count": 1,
   "selection_kinds": ["package", "skill"],
   "pack_skill_counts": [1, 9, 12],
-  "release_code_sha": "f417af1108d58aeffeae7d5bc29b9e79d4523f75",
-  "wheel_payload_sha256": "1e663fafea86464b25be671a3ae3691a12a9412c44805410235d1edf8248bd12",
+  "release_code_sha": "6d1e2b26662f15512ac41181628fba9b954efb2d",
+  "wheel_payload_sha256": "fc59227fcf42ade3af3d10abe0162eef3dbce7e66b36f2f69edc0c43ef15d328",
   "automated_status": "LOCAL_RELEASE_GATE_PASS_187",
   "windows_explorer_field_status": "PASS_REAL_RIGHT_CLICK_MENU_AND_CONFIRMATION_UI_0_5_1",
   "macos_finder_field_status": "CI_SEMANTIC_ONLY_REAL_UI_NOT_CLAIMED_FOR_0_5_2",
@@ -29,8 +29,8 @@
 explorer-results-ledger:end -->
 
 - 統合テスト: `python -m unittest discover -s tests -v` — 187 tests PASS、環境依存1件skip
-- workspace拒否の具体的原因をCLIが汎用エラーへ置換していた経路を型付きfailureへ変更し、実Windows右クリック相当のCLI引数から最終dialog本文まで回帰化した。独立した2 buildの論理payload SHA-256はともに`1e663fafea86464b25be671a3ae3691a12a9412c44805410235d1edf8248bd12`、release codeは`f417af1108d58aeffeae7d5bc29b9e79d4523f75`である。
-- task workspaceをruntime skill rootから分離した。`~/.codex/skills`、`~/.agents/skills`、`~/.claude/skills`と配下はcontract作成前に拒否し、UI／promptでは`対象プロジェクト`ではなく`作業対象フォルダー`と表示する。独立した2 buildの論理payload SHA-256はともに`8eefa9641c1fb9a631f4da7fc41219bd91977f3b12de39ae04b641e5e19ea0bf`、release codeは`12b4250c25c7c7bb44d5f639faafbc653685f1eb`である。
+- runtime skill folderを右クリックした際のworkspaceエラー経路そのものを廃止した。選択は正当なskill指定として保持し、task workspaceだけを`None`へ正規化して、利用者の再選択なしでprojectless新規タスクへ自動handoffする。最新build情報はリリース時のledgerを正とする。
+- task workspaceをruntime skill rootから分離した。`~/.codex/skills`、`~/.agents/skills`、`~/.claude/skills`と配下を右クリックした場合は拒否せず、projectless新規タスクへ自動変換する。通常フォルダーは`作業対象フォルダー`として渡すが、runtime skill rootをcontract、prompt、deep linkの作業場所には入れない。最新build情報はリリース時のledgerを正とする。
 - Library Managerは右クリック受付後にwindowと処理名を先に表示し、同一stateの多重processをOS file lockで排他する。同一folderの二重投入、別folderの並行投入、holder強制終了後の再取得を回帰試験で確認した。独立した2 buildの論理payload SHA-256はともに`f046efc06554f6ca15fce18d8ec924c308f628c7988e6ca09fe6aeee0b1ae05d`、release codeは`03088d6bd96ecf6a10de19db616bc8d5dcd38452`である。
 - 実Windows再導入スモークで、PowerShellがBOM付きで保存した正常な`certificate-state.json`をPythonが破損扱いする再登録阻害を検出した。現在stateとrollback履歴を`utf-8-sig`で読み、BOM付きfixtureで所有権復旧を回帰化した。独立した2 buildの論理payload SHA-256はともに`c7afd078594a48b2f4fbcdeab2f4b3717bb4f7b6485b2ae059072438867fc71d`、release codeは`20050a4eccdbd7215e3dfbf31be90c275452c561`である。
 - 標準Skill登録validationから`trigger`／`boundary`固定語検査を撤去し、必須frontmatter `name`／`description`の構造検査へ訂正した。実`android-cli`を既存libraryの隔離コピーへ登録・再登録し、ユーザーSkill直下132候補／内部155 skillの独立登録を全件PASSで確認した。0.5.8候補wheelの論理payload SHA-256は`a75bd3c26b7842c6a8aea47be80384399bc68bd4fc2b403356eb60b92809ec46`、release codeは`3631483db0505293c34e7372f0dc76f14fb748fb`である。
