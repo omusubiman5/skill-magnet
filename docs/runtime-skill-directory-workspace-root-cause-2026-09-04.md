@@ -35,6 +35,14 @@
 
 説明上の直接原因は、`github_only`という今回のhandoff証跡を「製品の全経路でinstall機能が存在しない」という証明に拡張したことである。規範ポリシーはpersistent installを禁止しているが、その根拠を確認する前に結論だけを回答したため、先行する「インストール先」という誤説明と矛盾した。
 
+## 実導入後に判明したエラー表示の欠陥
+
+初回修正後、2026-09-04 09:42の実右クリックではnative extensionのselectionとchild process作成は成功した。その後、workspace gateが`.codex/skills`を意図どおり拒否したが、CLIは具体的な`SkillMagnetError`をすべて`context_failure_message()`へ渡した。この関数のdefault分岐が例外内容を捨て、「安全確認または起動前検証を満たせませんでした」という汎用文へ置き換えた。
+
+初回スモークは`context_error_message()`を直接検査しており、実右クリックCLIが使用する`context_failure_message()`を通していなかった。このため、内部の境界判定は検証できた一方、利用者が実際に見るsurfaceは未検証のままPASSと誤判定した。
+
+追加の根本原因は、同じ例外に対する2つの表示変換と、実CLI経路を通らないスモークである。文字列一致ではなく型付きworkspace failureを導入し、CLIが表示するsurfaceまで回帰試験する必要がある。
+
 ## 失敗TREE
 
 | 入力・状態 | 修正前の結果 | 必要な結果 |
@@ -47,6 +55,7 @@
 | 禁止pathを拒否した後 | 復旧案なし | 成果物を置くfolderから再実行する案内 |
 | prompt表示 | `対象プロジェクト` | `作業対象フォルダー` |
 | 拒否時の副作用 | 未規定 | contract、handoff、skill copyを作らない |
+| CLIの拒否表示 | 原因を捨てた汎用エラー | 選択path、拒否理由、未実行範囲、復旧操作を表示 |
 
 ## 修正方針
 
@@ -55,6 +64,7 @@
 3. 拒否メッセージに、正しい再実行場所と「拒否された起動ではinstall/copyしていない」ことを表示する。
 4. product policyへworkspaceの目的、禁止root、非install、非temporaryを機械可読に追加する。
 5. 通常folder、root直下、skill子folder、日本語／英語表示、副作用なしを回帰試験する。
+6. 内部message helperだけでなく、Windows右クリックと同じCLI引数から最終dialog本文まで検査する。
 
 ## 境界
 

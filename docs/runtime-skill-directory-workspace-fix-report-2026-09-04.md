@@ -18,6 +18,7 @@
 5. 拒否画面に、成果物を置くfolderを右クリックして再実行する復旧方法と、拒否された起動ではskillのinstall/copyを行っていないことを表示した。
 6. `policy/product-policy.json`へtask workspaceの目的、禁止root、非install、非temporaryを機械可読な不変条件として追加した。
 7. READMEへGitHub source、task workspace、runtime skill rootの違いを追記した。
+8. 初回実導入後に判明した汎用エラー化を修正した。workspace拒否を`_WorkspaceFailed`として型付けし、実CLIの`context_failure_message()`が選択path、拒否理由、未実行範囲、復旧操作を保持するようにした。
 
 ## 回帰試験
 
@@ -31,15 +32,16 @@
 | 拒否後のevidence | PASS: 未作成 |
 | 日本語復旧表示 | PASS |
 | 英語復旧表示 | PASS |
+| Windows右クリック相当CLIの最終dialog本文 | PASS: 汎用文へ置換されない |
 | Desktop promptの旧`対象プロジェクト`表示 | PASS: 残留なし |
-| 全自動suite | PASS: 185 tests、環境依存1 skip |
+| 全自動suite | PASS: 187 tests、環境依存1 skip |
 | release ledger consistency gate | PASS |
 
 ## buildと導入
 
-- release code: `12b4250c25c7c7bb44d5f639faafbc653685f1eb`
-- 独立build A wheel logical payload SHA-256: `8eefa9641c1fb9a631f4da7fc41219bd91977f3b12de39ae04b641e5e19ea0bf`
-- 独立build B wheel logical payload SHA-256: `8eefa9641c1fb9a631f4da7fc41219bd91977f3b12de39ae04b641e5e19ea0bf`
+- release code: `f417af1108d58aeffeae7d5bc29b9e79d4523f75`
+- 独立build A wheel logical payload SHA-256: `1e663fafea86464b25be671a3ae3691a12a9412c44805410235d1edf8248bd12`
+- 独立build B wheel logical payload SHA-256: `1e663fafea86464b25be671a3ae3691a12a9412c44805410235d1edf8248bd12`
 - 同一payload判定: PASS
 - 候補wheelを既存Python環境へ`--force-reinstall --no-deps`で導入: PASS
 - import元: `C:\Users\HOMEA\AppData\Local\Programs\Python\Python312\Lib\site-packages\skill_magnet`
@@ -49,6 +51,8 @@
 導入済みwheelから、実在する`C:\Users\HOMEA\.codex\skills`を`custom-skills/cma-004`の作業対象として事前検証した。
 
 - 結果: `rejected_before_confirmation`
+- 実CLI最終dialog: 選択path、runtime skill領域である理由、未実行範囲、成果物folderからの再実行方法を表示
+- 旧汎用文`安全確認または起動前検証を満たせませんでした`: 非表示
 - launch contract: 未作成
 - evidence: 未作成
 - 通常folder `C:\Projects\skill-magnet`: 受理
@@ -64,3 +68,7 @@
 - 既存の`.codex/skills`内fileは変更・削除していない。
 - skill contentの正本は引き続きユーザー所有GitHub repositoryである。
 - 作業対象フォルダーは依頼と成果物のcontextであり、skill contentの保存・install・一時処理には使わない。
+
+## 初回修正後の再発と是正
+
+初回候補ではworkspace拒否自体は正しかったが、実右クリックのCLI表示が具体的原因を汎用エラーへ置換した。内部helperだけのスモークを実UI合格として扱った判定は撤回した。追加修正では実CLI引数を使い、`show_context_error()`へ渡される最終本文まで検査対象にした。

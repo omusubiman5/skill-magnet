@@ -52,7 +52,8 @@ def validate_task_workspace(project: Path, home: Path | None = None) -> Path:
             resolved.relative_to(reserved)
         except ValueError:
             continue
-        raise SkillMagnetError(
+        raise _WorkspaceFailed(
+            resolved,
             "Task workspace cannot be a runtime-managed skill directory: "
             f"{resolved}. Right-click the folder where the requested work and "
             "outputs belong. Skill Magnet reads verified skill content from GitHub "
@@ -106,6 +107,14 @@ class _CleanupFailed(SafetyError):
     def __init__(self, paths: tuple[Path, ...]) -> None:
         self.paths = paths
         super().__init__("Temporary activation artifact cleanup failed")
+
+
+class _WorkspaceFailed(SafetyError):
+    """The selected Explorer/Finder path is a runtime-managed skill area."""
+
+    def __init__(self, path: Path, message: str) -> None:
+        self.path = path
+        super().__init__(message)
 
 
 def _runtime_failure_diagnostic(
