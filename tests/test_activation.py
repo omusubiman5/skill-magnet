@@ -27,6 +27,7 @@ from skill_magnet.activation import (
     _LaunchFailed,
     _OutputFailed,
     _RuntimeFailed,
+    _WorkspaceFailed,
     _runtime_failure_diagnostic,
     codex_process_config_args,
     validate_task_workspace,
@@ -634,6 +635,73 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertIn("インストールやコピーは行っていません", japanese)
         self.assertIn("cannot be used as this task's workspace", english)
         self.assertIn("No skill was installed or copied", english)
+
+    def test_runtime_skill_directory_uses_actionable_cli_failure_surface(self) -> None:
+        selected = self.root / "runtime-home" / ".codex" / "skills"
+        selected.mkdir(parents=True)
+        error = _WorkspaceFailed(
+            selected,
+            f"Task workspace cannot be a runtime-managed skill directory: {selected}",
+        )
+        message = context_failure_message(error)
+        self.assertIn("このフォルダーでは実行できません", message)
+        self.assertIn(str(selected), message)
+        self.assertIn("スキルを管理する領域", message)
+        self.assertIn("launch contract", message)
+        self.assertIn("インストールまたはコピーは実行していません", message)
+        self.assertIn("成果物を保存したいフォルダーを右クリック", message)
+        self.assertNotIn("安全確認または起動前検証", message)
+
+    def test_windows_cli_shows_actionable_runtime_skill_directory_error(self) -> None:
+        selected = self.root / "runtime-home" / ".codex" / "skills"
+        selected.mkdir(parents=True)
+        leaf = next(
+            item
+            for item in windows_menu_leaves(self.config_path, "%V")
+            if item.pack_id == "bounded-pack" and item.skill_id == "bounded-answer"
+        )
+        with (
+            mock.patch(
+                "skill_magnet.activation.reserved_skill_content_roots",
+                return_value=(selected.resolve(),),
+            ),
+            mock.patch("skill_magnet.cli.show_context_error") as error_ui,
+        ):
+            exit_code = cli_main(
+                [
+                    "--config",
+                    str(self.config_path),
+                    "--state-dir",
+                    str(self.state),
+                    "context",
+                    "--platform",
+                    "windows",
+                    "--project",
+                    str(selected),
+                    "--pack",
+                    leaf.pack_id,
+                    "--skill",
+                    leaf.skill_id,
+                    "--runtime",
+                    "codex",
+                    "--menu-commit",
+                    self.commit,
+                    "--menu-skill-digest",
+                    leaf.skill_ids_digest,
+                    "--menu-instruction-digest",
+                    leaf.instruction_digest,
+                    "--menu-acceptance-digest",
+                    leaf.acceptance_digest,
+                ]
+            )
+        self.assertEqual(exit_code, 2)
+        error_ui.assert_called_once()
+        displayed = error_ui.call_args.args[0]
+        self.assertIn("このフォルダーでは実行できません", displayed)
+        self.assertIn(str(selected.resolve()), displayed)
+        self.assertIn("成果物を保存したいフォルダー", displayed)
+        self.assertNotIn("安全確認または起動前検証", displayed)
+        self.assertFalse((self.state / "launch-contracts").exists())
 
     def test_desktop_and_claude_prompts_accept_a_pack_without_index(self) -> None:
         (self.repo / "INDEX.md").unlink()

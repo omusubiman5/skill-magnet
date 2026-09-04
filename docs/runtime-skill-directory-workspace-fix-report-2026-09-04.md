@@ -18,6 +18,7 @@
 5. 拒否画面に、成果物を置くfolderを右クリックして再実行する復旧方法と、拒否された起動ではskillのinstall/copyを行っていないことを表示した。
 6. `policy/product-policy.json`へtask workspaceの目的、禁止root、非install、非temporaryを機械可読な不変条件として追加した。
 7. READMEへGitHub source、task workspace、runtime skill rootの違いを追記した。
+8. 初回実導入後に判明した汎用エラー化を修正した。workspace拒否を`_WorkspaceFailed`として型付けし、実CLIの`context_failure_message()`が選択path、拒否理由、未実行範囲、復旧操作を保持するようにした。
 
 ## 回帰試験
 
@@ -31,6 +32,7 @@
 | 拒否後のevidence | PASS: 未作成 |
 | 日本語復旧表示 | PASS |
 | 英語復旧表示 | PASS |
+| Windows右クリック相当CLIの最終dialog本文 | PASS: 汎用文へ置換されない |
 | Desktop promptの旧`対象プロジェクト`表示 | PASS: 残留なし |
 | 全自動suite | PASS: 185 tests、環境依存1 skip |
 | release ledger consistency gate | PASS |
@@ -64,3 +66,7 @@
 - 既存の`.codex/skills`内fileは変更・削除していない。
 - skill contentの正本は引き続きユーザー所有GitHub repositoryである。
 - 作業対象フォルダーは依頼と成果物のcontextであり、skill contentの保存・install・一時処理には使わない。
+
+## 初回修正後の再発と是正
+
+初回候補ではworkspace拒否自体は正しかったが、実右クリックのCLI表示が具体的原因を汎用エラーへ置換した。内部helperだけのスモークを実UI合格として扱った判定は撤回した。追加修正では実CLI引数を使い、`show_context_error()`へ渡される最終本文まで検査対象にした。

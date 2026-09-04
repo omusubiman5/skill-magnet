@@ -16,6 +16,7 @@ from .activation import (
     _LaunchFailed,
     _OutputFailed,
     _RuntimeFailed,
+    _WorkspaceFailed,
     validate_task_workspace,
 )
 from .core import SkillMagnetError, normalize_display_text
@@ -136,7 +137,9 @@ def context_ui_request_error(language: str, purpose: str) -> str | None:
 def context_error_message(error: Exception | str, language: str | None = None) -> str:
     language = language or _context_ui_language
     message = str(error)
-    if "Task workspace cannot be a runtime-managed skill directory" in message:
+    if isinstance(error, _WorkspaceFailed) or (
+        "Task workspace cannot be a runtime-managed skill directory" in message
+    ):
         if language == "en":
             message = (
                 "The selected folder is a Codex or Claude runtime-managed skill area, "
@@ -204,6 +207,23 @@ def context_result_surface(result: dict[str, object]) -> dict[str, str]:
 
 def context_failure_surface(error: Exception) -> dict[str, str]:
     """Map typed failures to a Japanese fail-closed result surface."""
+    if isinstance(error, _WorkspaceFailed):
+        return {
+            "state": "blocked",
+            "title": "このフォルダーでは実行できません",
+            "cause": (
+                f"選択したフォルダー `{error.path}` は、CodexまたはClaudeが"
+                "スキルを管理する領域です。依頼の作業場所には使用しません。"
+            ),
+            "not_completed": (
+                "確認画面、launch contract、デスクトップアプリへのhandoff、"
+                "スキルのインストールまたはコピーは実行していません。"
+            ),
+            "next_action": (
+                "依頼の成果物を保存したいフォルダーを右クリックし、"
+                "同じSkill Magnetメニューを選び直してください。"
+            ),
+        }
     if isinstance(error, _LaunchFailed):
         return {
             "state": "failed",
