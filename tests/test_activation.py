@@ -71,6 +71,7 @@ from skill_magnet.ui import (
     _initial_context_selection,
     _atomic_write_ui_owner_record,
     _owner_json_loads,
+    _publish_tk_surface_after_mapping,
     _read_ui_owner_record,
     acquire_context_ui_lease,
     build_tk_ui_surface,
@@ -3594,6 +3595,119 @@ class ActivationEndToEndTest(unittest.TestCase):
         final = acquire_context_ui_lease(lease_dir, self.project)
         self.assertTrue(final.acquired)
         final.release()
+
+    def test_ui_surface_republishes_same_generation_after_tk_is_mapped(self) -> None:
+        selected = self.root / "mapped-selected"
+        selected.mkdir()
+        lease_dir = self.root / "mapped-owner"
+        lease = acquire_context_ui_lease(lease_dir, selected)
+
+        class EventLoopRoot:
+            def __init__(self) -> None:
+                self.handle = 919191
+                self.viewable = False
+                self.raise_on_update = False
+                self.idle: list[object] = []
+                self.timers: list[object] = []
+
+            def update_idletasks(self) -> None:
+                if self.raise_on_update:
+                    raise RuntimeError("Tk root was closed")
+                return None
+
+            def winfo_viewable(self) -> bool:
+                return self.viewable
+
+            def winfo_id(self) -> int:
+                return self.handle
+
+            def winfo_rootx(self) -> int:
+                return 100
+
+            def winfo_rooty(self) -> int:
+                return 200
+
+            def winfo_width(self) -> int:
+                return 320
+
+            def winfo_height(self) -> int:
+                return 180
+
+            def title(self) -> str:
+                return "Skill Magnet — 実行確認"
+
+            def cget(self, key: str) -> str:
+                if key != "state":
+                    raise KeyError(key)
+                return "readonly"
+
+            def instate(self, states: tuple[str, ...]) -> bool:
+                return "!disabled" in states
+
+            def after_idle(self, callback: object) -> None:
+                self.idle.append(callback)
+
+            def after(self, _milliseconds: int, callback: object) -> None:
+                self.timers.append(callback)
+
+        root = EventLoopRoot()
+        try:
+            lease.publish_window(phase="context_selection", window_handle=root.handle)
+            owner_path = lease_dir / "context-launcher.owner.json"
+            identity = ui_surface_owner_identity(
+                owner_path,
+                phase="context_selection",
+                window_handle=root.handle,
+            )
+            widget = UiWidgetSpec(
+                "selection_choice",
+                root,
+                "combobox",
+                value="choice",
+                values=("choice",),
+            )
+
+            def publish() -> None:
+                publish_tk_ui_surface(
+                    identity,
+                    root,
+                    widgets=(widget,),
+                    state={"processing": False, "selection_mode": "dynamic"},
+                )
+
+            publish()
+            pre_map = json.loads(owner_path.read_text(encoding="utf-8"))
+            pre_map_revision = pre_map["revision"]
+            self.assertGreater(pre_map_revision, 0)
+            self.assertFalse(pre_map["ui_surface"]["widgets"][0]["viewable"])
+
+            _publish_tk_surface_after_mapping(root, publish)
+            self.assertEqual(len(root.idle), 1)
+            root.idle.pop()()  # type: ignore[operator]
+            still_pre_map = json.loads(owner_path.read_text(encoding="utf-8"))
+            self.assertEqual(still_pre_map["revision"], pre_map_revision)
+            self.assertEqual(still_pre_map["generation"], identity.generation)
+            self.assertEqual(len(root.timers), 1)
+
+            root.timers.pop()()  # type: ignore[operator]
+            repeated_pre_map = json.loads(owner_path.read_text(encoding="utf-8"))
+            self.assertEqual(repeated_pre_map["revision"], pre_map_revision)
+            self.assertEqual(len(root.timers), 1)
+
+            root.viewable = True
+            root.timers.pop()()  # type: ignore[operator]
+            post_map = json.loads(owner_path.read_text(encoding="utf-8"))
+            self.assertEqual(post_map["revision"], pre_map_revision + 1)
+            self.assertEqual(post_map["generation"], identity.generation)
+            self.assertTrue(post_map["ui_surface"]["widgets"][0]["viewable"])
+
+            _publish_tk_surface_after_mapping(root, publish)
+            root.raise_on_update = True
+            root.idle.pop()()  # type: ignore[operator]
+            after_close = json.loads(owner_path.read_text(encoding="utf-8"))
+            self.assertEqual(after_close["revision"], pre_map_revision + 1)
+        finally:
+            lease.release()
 
     def test_ui_surface_receipt_is_atomic_generation_bound_and_secret_free(self) -> None:
         secret = "SECRET-request-token-123"

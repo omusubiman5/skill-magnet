@@ -1359,7 +1359,8 @@ function Inspect-UnifiedGui(
     [bool]$ExpectProjectless = $false
 ) {
     $gui = Wait-VisibleWindowByPrefix "Skill Magnet — 実行確認" $ExpectedProcessId
-    $receipt = Wait-FieldUiSurface $ExpectedProcessId "context_selection" $gui
+    $receipt = Wait-FieldUiSurface `
+        $ExpectedProcessId "context_selection" $gui 12 "selection_choice" "combobox" 0
     $surface = $receipt.surface
     $projectWidget = Get-FieldUiSurfaceWidget $surface "project" "label"
     $projectBound = [string]$receipt.owner.target_sha256 -ceq `
@@ -1767,13 +1768,47 @@ function Get-UiaScreenRectangle($Element) {
     }
 }
 
+function Test-RequiredFieldWidgetRevision(
+    $Surface,
+    [string]$RequiredWidgetId,
+    [string]$RequiredWidgetRole,
+    [int64]$AfterRevision,
+    [string]$Generation,
+    [hashtable]$RejectedWidgetRevision
+) {
+    if (-not $RequiredWidgetId) { return $true }
+    if ([int64]$Surface.revision -le $AfterRevision) { return $false }
+    $requiredWidgets = @($Surface.widgets | Where-Object {
+        [string]$_.id -ceq $RequiredWidgetId
+    })
+    Assert-Field (
+        $requiredWidgets.Count -eq 1 -and
+        [string]$requiredWidgets[0].role -ceq $RequiredWidgetRole
+    ) "Context UI receipt has no exact required widget '$RequiredWidgetId'."
+    if (-not [bool]$requiredWidgets[0].viewable) {
+        $previous = if ($RejectedWidgetRevision.ContainsKey($Generation)) {
+            [int64]$RejectedWidgetRevision[$Generation]
+        } else { [int64]0 }
+        $RejectedWidgetRevision[$Generation] = [Math]::Max(
+            $previous, [int64]$Surface.revision
+        )
+        return $false
+    }
+    -not $RejectedWidgetRevision.ContainsKey($Generation) -or
+        [int64]$Surface.revision -gt [int64]$RejectedWidgetRevision[$Generation]
+}
+
 function Wait-FieldUiSurface(
     [int]$ExpectedProcessId,
     [string]$ExpectedPhase,
     $TopLevelWindow,
-    [int]$Seconds = 12
+    [int]$Seconds = 12,
+    [string]$RequiredWidgetId = "",
+    [string]$RequiredWidgetRole = "",
+    [int64]$AfterRevision = 0
 ) {
     $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+    $rejectedWidgetRevision = @{}
     do {
         $validatedOwner = Read-ValidatedFieldContextOwner
         if ($null -eq $validatedOwner) {
@@ -1805,6 +1840,12 @@ function Wait-FieldUiSurface(
             continue
         }
         $surface = $owner.ui_surface
+        if (-not (Test-RequiredFieldWidgetRevision `
+            $surface $RequiredWidgetId $RequiredWidgetRole $AfterRevision `
+            $generation $rejectedWidgetRevision)) {
+            Start-Sleep -Milliseconds 100
+            continue
+        }
         Assert-Field (
             [int]$owner.schema_version -eq 2 -and
             [string]$owner.owner_kind -ceq "context_launcher" -and
@@ -2341,7 +2382,8 @@ function Inspect-LibraryManager(
     [int]$ExpectedProcessId
 ) {
     $manager = Wait-VisibleWindowByPrefix "Library Manager" $ExpectedProcessId
-    $receipt = Wait-FieldUiSurface $ExpectedProcessId "library_manager" $manager
+    $receipt = Wait-FieldUiSurface `
+        $ExpectedProcessId "library_manager" $manager 12 "configured_remote" "entry" 0
     $surface = $receipt.surface
     $remoteWidget = Get-FieldUiSurfaceWidget $surface "configured_remote" "entry"
     $expectedRemoteSha256 = Get-Utf8Sha256 $ExpectedRemote

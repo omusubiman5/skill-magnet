@@ -1963,6 +1963,70 @@ if (@($uiReceipts | Where-Object { $_.project_sha256 -ceq $_.target_sha256 }).Co
             r"Assert-BusyMessageAndClose \$differentSequence\.process_id",
         )
 
+    @unittest.skipUnless(os.name == "nt", "requires Windows PowerShell")
+    def test_field_widget_gate_waits_for_later_viewable_revision(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        assert_source = collector[
+            collector.index("function Assert-Field") :
+            collector.index("function Get-BytesSha256")
+        ]
+        gate_source = collector[
+            collector.index("function Test-RequiredFieldWidgetRevision") :
+            collector.index("function Wait-FieldUiSurface")
+        ]
+        encoded = base64.b64encode(
+            (assert_source + "\n" + gate_source).encode("utf-8")
+        ).decode("ascii")
+        probe = rf'''
+$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("{encoded}"))
+. ([ScriptBlock]::Create($source))
+function Surface([int64]$Revision, [bool]$Viewable, [string]$Role = "combobox") {{
+    [pscustomobject]@{{
+        revision = $Revision
+        widgets = @([pscustomobject]@{{
+            id = "selection_choice"; role = $Role; viewable = $Viewable
+        }})
+    }}
+}}
+$rejected = @{{}}
+$first = Test-RequiredFieldWidgetRevision (Surface 7 $false) `
+    "selection_choice" "combobox" 0 "generation-a" $rejected
+$rollback = Test-RequiredFieldWidgetRevision (Surface 5 $false) `
+    "selection_choice" "combobox" 0 "generation-a" $rejected
+$forgedEarlier = Test-RequiredFieldWidgetRevision (Surface 6 $true) `
+    "selection_choice" "combobox" 0 "generation-a" $rejected
+$later = Test-RequiredFieldWidgetRevision (Surface 8 $true) `
+    "selection_choice" "combobox" 0 "generation-a" $rejected
+$wrongRoleRejected = $false
+try {{
+    Test-RequiredFieldWidgetRevision (Surface 9 $true "label") `
+        "selection_choice" "combobox" 0 "generation-a" $rejected | Out-Null
+}} catch {{ $wrongRoleRejected = $true }}
+[pscustomobject]@{{
+    first_false = -not $first
+    rollback_false = -not $rollback
+    max_preserved = [int64]$rejected["generation-a"] -eq 7
+    forged_earlier_false = -not $forgedEarlier
+    later_true = $later
+    wrong_role_rejected = $wrongRoleRejected
+}} | ConvertTo-Json -Compress
+'''
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", probe],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        observation = json.loads(completed.stdout.strip())
+        self.assertTrue(all(observation.values()), observation)
+
     def test_field_collector_rejects_untrusted_ui_receipts_before_mouse_input(self) -> None:
         collector = (
             ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
@@ -1972,7 +2036,7 @@ if (@($uiReceipts | Where-Object { $_.project_sha256 -ceq $_.target_sha256 }).Co
             collector.index("function Get-FieldUiSurfaceWidget")
         ]
         surface = collector[
-            collector.index("function Wait-FieldUiSurface") :
+            collector.index("function Test-RequiredFieldWidgetRevision") :
             collector.index("function Invoke-FieldUiSurfaceWidget")
         ]
         click = collector[
@@ -2009,6 +2073,9 @@ if (@($uiReceipts | Where-Object { $_.project_sha256 -ceq $_.target_sha256 }).Co
             "GetSystemMetrics(76)",
             "Test-FieldRectangleWithin",
             "$expectedTitle = switch ($ExpectedPhase)",
+            "$RequiredWidgetId",
+            "$requiredWidgets[0].viewable",
+            "$RejectedWidgetRevision[$Generation]",
             "canonical UTC Z format",
             'ClassName -ceq "TkChild"',
             "IsOffscreen",

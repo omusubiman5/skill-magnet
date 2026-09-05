@@ -538,6 +538,27 @@ def publish_tk_ui_surface(
     return surface
 
 
+def _publish_tk_surface_after_mapping(root: Any, publish: Callable[[], None]) -> None:
+    """Republish the same lease after Tk has mapped its widgets."""
+
+    def publish_when_viewable() -> None:
+        try:
+            root.update_idletasks()
+            if not bool(root.winfo_viewable()):
+                root.after(10, publish_when_viewable)
+                return
+            publish()
+        except RuntimeError:
+            # Closing before the idle callback is a normal, recoverable exit.
+            return
+        except Exception as exc:
+            if type(exc).__module__ == "_tkinter" and type(exc).__name__ == "TclError":
+                return
+            raise
+
+    root.after_idle(publish_when_viewable)
+
+
 def _try_lock_context_ui_file(handle: Any) -> bool:
     handle.seek(0)
     if os.name == "nt":
@@ -2257,6 +2278,7 @@ def show_context_selection(
                 window_handle=window_handle,
             )
             publish_surface()
+            _publish_tk_surface_after_mapping(root, publish_surface)
         except Exception:
             root.destroy()
             raise
