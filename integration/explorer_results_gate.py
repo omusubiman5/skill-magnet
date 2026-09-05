@@ -896,15 +896,17 @@ def _native_sequence_bytes(records: list[dict[str, object]]) -> bytes:
 
 def _parse_field_evidence(
     ledger: dict[str, object], invoke_log: Path
-) -> tuple[list[str], dict[str, dict[str, object]]]:
+) -> tuple[
+    list[str], dict[str, dict[str, object]], dict[str, dict[str, object]]
+]:
     errors: list[str] = []
     if not invoke_log.is_file():
-        return [f"Windows Explorer field evidence is missing: {invoke_log}"], {}
+        return [f"Windows Explorer field evidence is missing: {invoke_log}"], {}, {}
     if _is_reparse_or_link(invoke_log):
-        return ["Windows Explorer field evidence must not be a link or reparse point"], {}
+        return ["Windows Explorer field evidence must not be a link or reparse point"], {}, {}
     payload = invoke_log.read_bytes()
     if not payload or len(payload) > _FIELD_INVOKE_LOG_MAX_BYTES:
-        return ["Windows Explorer field evidence size is outside the accepted range"], {}
+        return ["Windows Explorer field evidence size is outside the accepted range"], {}, {}
     actual_hash = hashlib.sha256(payload).hexdigest()
     if actual_hash != ledger.get("windows_explorer_field_invoke_log_sha256"):
         errors.append(
@@ -915,18 +917,25 @@ def _parse_field_evidence(
     if payload.startswith((b"\xff\xfe", b"\xfe\xff")):
         errors.append("field evidence must be the BOM-free native UTF-16LE record slice")
     if len(payload) % 2:
-        return errors + ["Windows Explorer field evidence is not valid UTF-16LE: odd byte count"], {}
+        return errors + ["Windows Explorer field evidence is not valid UTF-16LE: odd byte count"], {}, {}
     try:
         text = payload.decode("utf-16-le")
     except UnicodeError as error:
-        return errors + [f"Windows Explorer field evidence is not valid UTF-16LE: {error}"], {}
+        return errors + [f"Windows Explorer field evidence is not valid UTF-16LE: {error}"], {}, {}
     if not text.endswith("\r\n") or re.search(r"(?<!\r)\n|\r(?!\n)", text):
         errors.append("field evidence must preserve native CRLF record boundaries")
     lines = text[:-2].split("\r\n") if text.endswith("\r\n") else text.splitlines()
-    expected_record_count = len(_NATIVE_SEQUENCE_ROLES) * len(_NATIVE_EVENTS)
+    native_record_count = len(_NATIVE_SEQUENCE_ROLES) * len(_NATIVE_EVENTS)
+    identity_roles = (
+        "selected_item",
+        "background_site",
+        "missing_skill_registration",
+        "runtime_skill_projectless",
+    )
+    expected_record_count = native_record_count + len(identity_roles)
     if len(lines) != expected_record_count:
         errors.append(
-            f"field evidence requires exactly {expected_record_count} native records; "
+            f"field evidence requires exactly {expected_record_count} native/identity records; "
             f"observed {len(lines)}"
         )
     record_pattern = re.compile(
@@ -939,7 +948,7 @@ def _parse_field_evidence(
         r"\tinvocation_id=(?P<invocation>[0-9a-f]{32})"
     )
     records: list[dict[str, object]] = []
-    for line_number, line in enumerate(lines, 1):
+    for line_number, line in enumerate(lines[:native_record_count], 1):
         match = record_pattern.fullmatch(line)
         if match is None:
             errors.append(f"field evidence line {line_number} is not a native record")
@@ -951,8 +960,8 @@ def _parse_field_evidence(
         record["_timestamp"] = timestamp
         record["_line"] = line
         records.append(record)
-    if len(records) != expected_record_count:
-        return errors, {}
+    if len(records) != native_record_count:
+        return errors, {}, {}
     timestamps = [record["_timestamp"] for record in records]
     if any(
         earlier is None or later is None or earlier > later
@@ -1024,6 +1033,63 @@ def _parse_field_evidence(
         errors.append(
             f"field evidence requires {len(_NATIVE_SEQUENCE_ROLES)} distinct invocation ids"
         )
+    identity_pattern = re.compile(
+        r"(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)"
+        r"\tevent=ui_identity_bound"
+        r"\tnative_role=(?P<role>selected_item|background_site|missing_skill_registration|runtime_skill_projectless)"
+        r"\tproject_sha256=(?P<project>[0-9a-f]{64})"
+        r"\ttarget_sha256=(?P<target>[0-9a-f]{64})"
+        r"\tregistration_source_sha256=(?P<registration_source>[0-9a-f]{64}|unavailable)"
+        r"\tinvocation_id=(?P<invocation>[0-9a-f]{32})"
+    )
+    identity_anchors: dict[str, dict[str, object]] = {}
+    last_observed_time = timestamps[-1] if timestamps else None
+    anchor_lines = lines[native_record_count:]
+    for line_number, (expected_role, line) in enumerate(
+        zip(identity_roles, anchor_lines), native_record_count + 1
+    ):
+        match = identity_pattern.fullmatch(line)
+        if match is None:
+            errors.append(f"field evidence line {line_number} is not a UI identity anchor")
+            continue
+        anchor: dict[str, object] = match.groupdict()
+        anchor_time = _parse_utc(anchor["timestamp"], milliseconds_only=True)
+        native = sequences.get(expected_role)
+        valid = True
+        if anchor.get("role") != expected_role:
+            errors.append(f"field evidence UI identity anchor {expected_role} is out of order")
+            valid = False
+        if (
+            native is None
+            or anchor.get("project") != native.get("project")
+            or anchor.get("invocation") != native.get("invocation")
+        ):
+            errors.append(
+                f"field evidence UI identity anchor {expected_role} does not bind its native sequence"
+            )
+            valid = False
+        if expected_role == "missing_skill_registration":
+            if not re.fullmatch(r"[0-9a-f]{64}", str(anchor.get("registration_source", ""))):
+                errors.append("field evidence registration source identity anchor is invalid")
+                valid = False
+        elif anchor.get("registration_source") != "unavailable":
+            errors.append(
+                f"field evidence UI identity anchor {expected_role} has an unexpected registration source"
+            )
+            valid = False
+        if (
+            not isinstance(anchor_time, dt.datetime)
+            or not isinstance(last_observed_time, dt.datetime)
+            or anchor_time < last_observed_time
+        ):
+            errors.append(f"field evidence UI identity anchor {expected_role} is not contemporaneous")
+            valid = False
+        if valid:
+            anchor["_timestamp"] = anchor_time
+            identity_anchors[expected_role] = anchor
+            last_observed_time = anchor_time
+    if len(anchor_lines) != len(identity_roles) or set(identity_anchors) != set(identity_roles):
+        errors.append("field evidence requires four exact UI identity anchors")
     selected = sequences.get("selected_item", {})
     manager_same = sequences.get("manager_same_folder", {})
     manager_different = sequences.get("manager_different_folder", {})
@@ -1082,7 +1148,7 @@ def _parse_field_evidence(
         errors.append("field evidence recovery launch-command lineage is invalid")
     if re.search(r"(?:[A-Za-z]:\\|/Users/|/home/)", text):
         errors.append("field evidence contains a plaintext local path")
-    return errors, sequences
+    return errors, sequences, identity_anchors
 
 
 def validate_field_evidence(ledger: dict[str, object], invoke_log: Path) -> list[str]:
@@ -2934,7 +3000,7 @@ def validate_field_bundle(
             "field bundle selector contract does not exactly match configured labels/internal IDs"
         )
 
-    log_errors, sequences = _parse_field_evidence(ledger, invoke_log)
+    log_errors, sequences, identity_anchors = _parse_field_evidence(ledger, invoke_log)
     errors.extend(log_errors)
     transcript_errors, derived_observations, workflow_observations, transcript_session_id = (
         _validate_uia_transcript(
@@ -2946,6 +3012,17 @@ def validate_field_bundle(
         )
     )
     errors.extend(transcript_errors)
+    registration_workflow = workflow_observations.get("registration_recovery_observation")
+    registration_anchor = identity_anchors.get("missing_skill_registration")
+    if (
+        not isinstance(registration_workflow, dict)
+        or not isinstance(registration_anchor, dict)
+        or registration_workflow.get("registration_source_sha256")
+        != registration_anchor.get("registration_source")
+    ):
+        errors.append(
+            "field bundle registration source digest does not bind the supplied invoke evidence log"
+        )
 
     ui_receipts = bundle.get("ui_receipts")
     receipt_entry_keys = {
@@ -2975,12 +3052,8 @@ def validate_field_bundle(
         "registration_source": (
             "missing_skill_registration", "library_manager", "registration_source", "value_sha256",
             (
-                workflow_observations.get("registration_recovery_observation", {}).get(
-                    "registration_source_sha256"
-                )
-                if isinstance(
-                    workflow_observations.get("registration_recovery_observation"), dict
-                )
+                registration_anchor.get("registration_source")
+                if isinstance(registration_anchor, dict)
                 else None
             ),
         ),
@@ -3021,6 +3094,7 @@ def validate_field_bundle(
         seen_roles.add(role)
         native_role, expected_phase, widget_id, claim_field, expected_claim = role_contract[role]
         native = sequences.get(native_role)
+        identity_anchor = identity_anchors.get(native_role)
         if entry.get("native_role") != native_role:
             errors.append(f"{label} native_role does not match role {role}")
         if (
@@ -3028,13 +3102,13 @@ def validate_field_bundle(
             or entry.get("transcript_session_id") != transcript_session_id
         ):
             errors.append(f"{label} does not bind the verified UI transcript session")
-        if native is None:
-            errors.append(f"{label} has no verified native workflow sequence")
+        if native is None or identity_anchor is None:
+            errors.append(f"{label} has no verified native workflow/identity sequence")
         else:
             expected_native_binding = {
                 "invocation_id": native.get("invocation"),
                 "project_sha256": native.get("project"),
-                "target_sha256": native.get("project"),
+                "target_sha256": identity_anchor.get("target"),
                 "process_id": native.get("process_id"),
                 "native_sequence_sha256": native.get("sequence_sha256"),
             }

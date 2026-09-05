@@ -42,6 +42,35 @@ function Get-FieldTargetSha256([string]$Path) {
     Get-Utf8Sha256 $normalized
 }
 
+function New-FieldUiIdentityAnchor(
+    [string]$NativeRole,
+    [string]$ActualPath,
+    $NativeSequence,
+    [string]$RegistrationSourcePath = ""
+) {
+    # These are intentionally different identity contracts.  The native DLL
+    # hashes the exact Explorer path as UTF-16LE; the Python owner receipt
+    # hashes a resolved/normcase path as UTF-8.  Never substitute one for the
+    # other merely because both identify the same folder.
+    $projectSha256 = Get-Utf16Sha256 $ActualPath
+    $targetSha256 = Get-FieldTargetSha256 $ActualPath
+    Assert-Field (
+        [string]$NativeSequence.project_sha256 -ceq $projectSha256
+    ) "Native project identity does not match the actual path for '$NativeRole'."
+    $registrationSourceSha256 = "unavailable"
+    if ($RegistrationSourcePath) {
+        $registrationSourceSha256 = Get-Utf8Sha256 $RegistrationSourcePath
+    }
+    $timestamp = [DateTime]::UtcNow.ToString(
+        "yyyy-MM-ddTHH:mm:ss.fffZ",
+        [Globalization.CultureInfo]::InvariantCulture
+    )
+    "$timestamp`tevent=ui_identity_bound`tnative_role=$NativeRole" +
+        "`tproject_sha256=$projectSha256`ttarget_sha256=$targetSha256" +
+        "`tregistration_source_sha256=$registrationSourceSha256" +
+        "`tinvocation_id=$([string]$NativeSequence.invocation_id)"
+}
+
 function Assert-FieldRegularPathBoundary(
     [string]$Path,
     [bool]$AllowMissingLeaf = $false
@@ -1950,6 +1979,7 @@ function New-UiReceiptEvidence(
     [string]$ClaimField,
     [string]$NativeRole,
     $NativeSequence,
+    [string]$ExpectedProjectSha256,
     [string]$ExpectedTargetSha256
 ) {
     Assert-Field ($ClaimField -in @("text_sha256", "value_sha256", "values_sha256")) `
@@ -1967,7 +1997,7 @@ function New-UiReceiptEvidence(
     Assert-Field (
         [int]$receipt.pid -eq [int]$NativeSequence.process_id -and
         [string]$receipt.target_sha256 -ceq $ExpectedTargetSha256 -and
-        [string]$NativeSequence.project_sha256 -ceq $ExpectedTargetSha256 -and
+        [string]$NativeSequence.project_sha256 -ceq $ExpectedProjectSha256 -and
         [string]$NativeSequence.invocation_id -match '^[0-9a-f]{32}$' -and
         [string]$script:FieldSessionId -match '^[0-9a-f]{32}$'
     ) "Receipt identity does not bind native workflow role '$NativeRole'."
@@ -3038,7 +3068,16 @@ try {
         $differentSequence.lines +
         $relaunchSequence.lines +
         $registrationSequence.lines +
-        $runtimeSequence.lines
+        $runtimeSequence.lines +
+        (New-FieldUiIdentityAnchor `
+            "selected_item" $selectedFolder $selectedSequence) +
+        (New-FieldUiIdentityAnchor `
+            "background_site" $backgroundFolder $backgroundSequence) +
+        (New-FieldUiIdentityAnchor `
+            "missing_skill_registration" $selectedFolder $registrationSequence `
+            $selectedPath) +
+        (New-FieldUiIdentityAnchor `
+            "runtime_skill_projectless" $runtimeSkillFolder $runtimeSequence)
     )
     $invokeBytes = [Text.Encoding]::Unicode.GetBytes(
         (($evidenceLines -join "`r`n") + "`r`n")
@@ -3289,24 +3328,27 @@ print(json.dumps(result, separators=(",", ":")))
     $uiReceipts = @(
         New-UiReceiptEvidence `
             "selected_manager_click" $selectedManagerClick "library_manager" "text_sha256" `
-            "selected_item" $selectedSequence (Get-FieldTargetSha256 $selectedFolder)
+            "selected_item" $selectedSequence (Get-Utf16Sha256 $selectedFolder) `
+            (Get-FieldTargetSha256 $selectedFolder)
         New-UiReceiptEvidence `
             "manager_remote" $managerGui "configured_remote" "value_sha256" `
-            "selected_item" $selectedSequence (Get-FieldTargetSha256 $selectedFolder)
+            "selected_item" $selectedSequence (Get-Utf16Sha256 $selectedFolder) `
+            (Get-FieldTargetSha256 $selectedFolder)
         New-UiReceiptEvidence `
             "background_selection" $backgroundGui "selection_choice" "values_sha256" `
-            "background_site" $backgroundSequence (Get-FieldTargetSha256 $backgroundFolder)
+            "background_site" $backgroundSequence (Get-Utf16Sha256 $backgroundFolder) `
+            (Get-FieldTargetSha256 $backgroundFolder)
         New-UiReceiptEvidence `
             "registration_click" $registrationClick "register_selected" "text_sha256" `
-            "missing_skill_registration" $registrationSequence `
+            "missing_skill_registration" $registrationSequence (Get-Utf16Sha256 $selectedFolder) `
             (Get-FieldTargetSha256 $selectedFolder)
         New-UiReceiptEvidence `
             "registration_source" $registrationManager "registration_source" "value_sha256" `
-            "missing_skill_registration" $registrationSequence `
+            "missing_skill_registration" $registrationSequence (Get-Utf16Sha256 $selectedFolder) `
             (Get-FieldTargetSha256 $selectedFolder)
         New-UiReceiptEvidence `
             "runtime_projectless" $runtimeGui "project" "text_sha256" `
-            "runtime_skill_projectless" $runtimeSequence `
+            "runtime_skill_projectless" $runtimeSequence (Get-Utf16Sha256 $runtimeSkillFolder) `
             (Get-FieldTargetSha256 $runtimeSkillFolder)
     )
     Assert-Field ($uiReceipts.Count -eq 6) `

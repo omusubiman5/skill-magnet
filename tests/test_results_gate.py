@@ -174,6 +174,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
             ordinal: int,
             invocation_id: str,
             project_sha256: str,
+            target_sha256: str,
             process_id: int,
             native_sequence_sha256: str,
         ) -> dict[str, object]:
@@ -221,7 +222,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
                 "pid": process_id,
                 "process_instance_id": f"{ordinal + 16:032x}",
                 "process_started_at_unix_ns": ordinal,
-                "target_sha256": project_sha256,
+                "target_sha256": target_sha256,
                 "generation": generation,
                 "phase": phase,
                 "window_handle": 400 + ordinal,
@@ -237,7 +238,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
                 "native_role": native_role,
                 "invocation_id": invocation_id,
                 "project_sha256": project_sha256,
-                "target_sha256": project_sha256,
+                "target_sha256": target_sha256,
                 "process_id": process_id,
                 "native_sequence_sha256": native_sequence_sha256,
                 "transcript_session_id": "f" * 32,
@@ -301,8 +302,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
                 "selected_item", "e" * 64, "9" * 32, template, "c" * 64, 9, 4848
             ),
         }
-        invoke_payload = (
-            "\r\n".join(
+        native_lines = [
                 row
                 for role in (
                     "selected_item",
@@ -316,11 +316,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
                     "runtime_skill_projectless",
                 )
                 for row in native_by_role[role]
-            )
-            + "\r\n"
-        ).encode("utf-16-le")
-        invoke_log = root / "invoke.log"
-        invoke_log.write_bytes(invoke_payload)
+        ]
 
         def native_digest(role: str) -> str:
             return hashlib.sha256(
@@ -328,19 +324,46 @@ class ExplorerResultsGateTest(unittest.TestCase):
             ).hexdigest()
 
         receipt_native = {
-            "selected_manager_click": ("selected_item", "1" * 32, "a" * 64, 4242),
-            "manager_remote": ("selected_item", "1" * 32, "a" * 64, 4242),
-            "background_selection": ("background_site", "4" * 32, "b" * 64, 4343),
+            "selected_manager_click": ("selected_item", "1" * 32, "a" * 64, "1" * 64, 4242),
+            "manager_remote": ("selected_item", "1" * 32, "a" * 64, "1" * 64, 4242),
+            "background_selection": ("background_site", "4" * 32, "b" * 64, "2" * 64, 4343),
             "registration_click": (
-                "missing_skill_registration", "8" * 32, "a" * 64, 4747
+                "missing_skill_registration", "8" * 32, "a" * 64, "1" * 64, 4747
             ),
             "registration_source": (
-                "missing_skill_registration", "8" * 32, "a" * 64, 4747
+                "missing_skill_registration", "8" * 32, "a" * 64, "1" * 64, 4747
             ),
             "runtime_projectless": (
-                "runtime_skill_projectless", "9" * 32, "e" * 64, 4848
+                "runtime_skill_projectless", "9" * 32, "e" * 64, "3" * 64, 4848
             ),
         }
+
+        identity_anchors = (
+            ("selected_item", "a" * 64, "1" * 64, "unavailable", "1" * 32),
+            ("background_site", "b" * 64, "2" * 64, "unavailable", "4" * 32),
+            (
+                "missing_skill_registration", "a" * 64, "1" * 64,
+                "5" * 64, "8" * 32,
+            ),
+            (
+                "runtime_skill_projectless", "e" * 64, "3" * 64,
+                "unavailable", "9" * 32,
+            ),
+        )
+        identity_lines = [
+            f"2026-09-05T00:00:10.{index:03d}Z\tevent=ui_identity_bound"
+            f"\tnative_role={role}\tproject_sha256={project}"
+            f"\ttarget_sha256={target}"
+            f"\tregistration_source_sha256={registration_source}"
+            f"\tinvocation_id={invocation}"
+            for index, (role, project, target, registration_source, invocation)
+            in enumerate(identity_anchors, 1)
+        ]
+        invoke_payload = ("\r\n".join(native_lines + identity_lines) + "\r\n").encode(
+            "utf-16-le"
+        )
+        invoke_log = root / "invoke.log"
+        invoke_log.write_bytes(invoke_payload)
 
         def bound_receipt(
             role: str,
@@ -350,7 +373,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
             claim_sha256: str,
             ordinal: int,
         ) -> dict[str, object]:
-            native_role, invocation, project, process_id = receipt_native[role]
+            native_role, invocation, project, target, process_id = receipt_native[role]
             return ui_receipt_evidence(
                 role,
                 native_role,
@@ -361,6 +384,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
                 ordinal,
                 invocation,
                 project,
+                target,
                 process_id,
                 native_digest(native_role),
             )
@@ -1396,6 +1420,18 @@ class ExplorerResultsGateTest(unittest.TestCase):
                 + native_sequence(
                     "selected_item", "e" * 64, "9" * 32, 9, "b" * 64, 4848
                 )
+                + "2026-09-05T00:00:10.001Z\tevent=ui_identity_bound\tnative_role=selected_item"
+                + f"\tproject_sha256={'a' * 64}\ttarget_sha256={'1' * 64}"
+                + f"\tregistration_source_sha256=unavailable\tinvocation_id={'1' * 32}\r\n"
+                + "2026-09-05T00:00:10.002Z\tevent=ui_identity_bound\tnative_role=background_site"
+                + f"\tproject_sha256={'b' * 64}\ttarget_sha256={'2' * 64}"
+                + f"\tregistration_source_sha256=unavailable\tinvocation_id={'4' * 32}\r\n"
+                + "2026-09-05T00:00:10.003Z\tevent=ui_identity_bound\tnative_role=missing_skill_registration"
+                + f"\tproject_sha256={'a' * 64}\ttarget_sha256={'1' * 64}"
+                + f"\tregistration_source_sha256={'5' * 64}\tinvocation_id={'8' * 32}\r\n"
+                + "2026-09-05T00:00:10.004Z\tevent=ui_identity_bound\tnative_role=runtime_skill_projectless"
+                + f"\tproject_sha256={'e' * 64}\ttarget_sha256={'3' * 64}"
+                + f"\tregistration_source_sha256=unavailable\tinvocation_id={'9' * 32}\r\n"
             )
             evidence.write_bytes(evidence_text.encode("utf-16-le"))
             ledger = {
@@ -1731,13 +1767,15 @@ $roles = @(
 $uiReceipts = @()
 for ($index = 0; $index -lt $roles.Count; $index++) {
     $item = $roles[$index]
-    $target = ([string]$item[5]) * 64
+    $project = ([string]$item[5]) * 64
+    $target = "7" * 64
     $nativeRole = @("selected_item", "selected_item", "background_site", "missing_skill_registration", "missing_skill_registration", "runtime_skill_projectless")[$index]
-    $native = [pscustomobject]@{ process_id=[int]$item[4]; project_sha256=$target; invocation_id=("{0:x32}" -f (1+$index)) }
+    $native = [pscustomobject]@{ process_id=[int]$item[4]; project_sha256=$project; invocation_id=("{0:x32}" -f (1+$index)) }
     $observation = New-ProbeObservation (1+$index) ([string]$item[1]) ([string]$item[2]) ([string]$item[3]) ("9"*64) ([int]$item[4]) $target
-    $uiReceipts += New-UiReceiptEvidence ([string]$item[0]) $observation ([string]$item[2]) ([string]$item[3]) $nativeRole $native $target
+    $uiReceipts += New-UiReceiptEvidence ([string]$item[0]) $observation ([string]$item[2]) ([string]$item[3]) $nativeRole $native $project $target
 }
 if ($uiReceipts.Count -ne 6 -or @($uiReceipts | Where-Object { $null -eq $_ }).Count -ne 0) { throw "receipt materialization failed" }
+if (@($uiReceipts | Where-Object { $_.project_sha256 -ceq $_.target_sha256 }).Count -ne 0) { throw "project and target identities were conflated" }
 [ordered]@{ ui_receipts=$uiReceipts } | ConvertTo-Json -Compress -Depth 30
 '''
         with tempfile.TemporaryDirectory() as temporary:
@@ -2570,7 +2608,7 @@ finally {{
                     errors = validate_field_bundle(ledger, bundle_path, invoke_log, ROOT)
                 self.assertTrue(any(expected in error for error in errors), errors)
 
-    def test_field_bundle_accepts_any_receipt_bound_registration_source_digest(self) -> None:
+    def test_field_bundle_rejects_registration_source_digest_not_anchored_in_invoke_log(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             ledger, bundle_path, invoke_log, bundle, _ = self._field_fixture(Path(temporary))
             replacement = "6" * 64
@@ -2603,9 +2641,39 @@ finally {{
                 "integration.explorer_results_gate._verify_windows_field_attestation",
                 return_value=[],
             ):
-                self.assertEqual(
-                    validate_field_bundle(ledger, bundle_path, invoke_log, ROOT), []
-                )
+                errors = validate_field_bundle(ledger, bundle_path, invoke_log, ROOT)
+            self.assertTrue(
+                any("registration source digest does not bind" in error for error in errors),
+                errors,
+            )
+
+    def test_field_bundle_rejects_native_project_digest_used_as_receipt_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            ledger, bundle_path, invoke_log, bundle, _ = self._field_fixture(Path(temporary))
+            entry = next(
+                item
+                for item in bundle["ui_receipts"]
+                if item["role"] == "selected_manager_click"
+            )
+            self.assertNotEqual(entry["project_sha256"], entry["target_sha256"])
+            entry["target_sha256"] = entry["project_sha256"]
+            entry["receipt"]["target_sha256"] = entry["project_sha256"]
+            canonical = lambda value: json.dumps(
+                value, ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")
+            entry["receipt_sha256"] = hashlib.sha256(
+                canonical(entry["receipt"])
+            ).hexdigest()
+            self._rewrite_bundle(bundle_path, bundle, ledger)
+            with mock.patch(
+                "integration.explorer_results_gate._verify_windows_field_attestation",
+                return_value=[],
+            ):
+                errors = validate_field_bundle(ledger, bundle_path, invoke_log, ROOT)
+            self.assertTrue(
+                any("does not bind verified native workflow" in error for error in errors),
+                errors,
+            )
 
     def test_field_bundle_rejects_cross_role_binding_swap_and_receipt_reuse(self) -> None:
         for case in ("native-binding-swap", "receipt-reuse"):
@@ -2983,7 +3051,10 @@ finally {{
                 return_value=[],
             ):
                 errors = validate_field_bundle(ledger, bundle_path, invoke_log, ROOT)
-            self.assertTrue(any("exactly 36 native records" in error for error in errors), errors)
+            self.assertTrue(
+                any("exactly 40 native/identity records" in error for error in errors),
+                errors,
+            )
 
     def test_field_evidence_rejects_invalid_utf16_without_crashing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
