@@ -36,7 +36,10 @@ from skill_magnet.activation import (
 )
 from skill_magnet.cli import exit_process, main as cli_main
 from skill_magnet.core import Config, Pack, SafetyError, SkillMagnetError
-from skill_magnet.diagnostics import record_ui_publication_event
+from skill_magnet.diagnostics import (
+    close_ui_publication_diagnostics,
+    record_ui_publication_event,
+)
 from skill_magnet.platforms import (
     _capture_windows_context_backup,
     _recover_windows_rollback_rotation,
@@ -3764,10 +3767,11 @@ class ActivationEndToEndTest(unittest.TestCase):
             lambda: self.fail("dropped first callback must not publish"),
             stopped=lambda: False,
             terminal=watchdog_errors.append,
+            retry_seconds=0.01,
         )
         watchdog.request()
-        watchdog_root.timers.pop(0)  # simulate a lost first-dispatch callback
-        watchdog_root.timers.pop()()  # type: ignore[operator]
+        time.sleep(0.03)  # non-Tk timer marks the request expired
+        watchdog_root.timers.pop(0)()  # next Tk callback performs terminal path
         self.assertEqual(len(watchdog_errors), 1)
         self.assertIsInstance(watchdog_errors[0], TimeoutError)
         self.assertFalse(watchdog.pending)
@@ -3841,12 +3845,16 @@ class ActivationEndToEndTest(unittest.TestCase):
             record_ui_publication_event(
                 "retry_error", identity, attempt=1, winerror=5
             )
-            path = (
+            close_ui_publication_diagnostics(identity, timeout=2.0)
+            diagnostic_root = (
                 Path(temporary)
                 / "SkillMagnet"
                 / "ContextMenu"
-                / "ui-diagnostic.jsonl"
+                / "diagnostics"
             )
+            paths = list(diagnostic_root.glob("ui-*.jsonl"))
+            self.assertEqual(len(paths), 1)
+            path = paths[0]
             raw = path.read_text(encoding="utf-8")
             records = [json.loads(line) for line in raw.splitlines()]
             self.assertEqual([record["event"] for record in records], [
@@ -3863,6 +3871,138 @@ class ActivationEndToEndTest(unittest.TestCase):
                     "process_instance_id", "generation", "owner_path_sha256",
                     "phase", "revision", "attempt", "winerror",
                 },
+            )
+
+    def test_ui_publication_diagnostics_are_per_identity_and_nonblocking(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
+            os.environ, {"LOCALAPPDATA": temporary}
+        ):
+            identities = [
+                SimpleNamespace(
+                    owner_path=Path(temporary) / f"owner-{index}.json",
+                    process_instance_id=f"{index + 1:032x}",
+                    generation=f"{index + 11:032x}",
+                    phase="context_selection",
+                )
+                for index in range(2)
+            ]
+            def slow_write(_fd: int, raw: bytes) -> int:
+                time.sleep(0.25)
+                return len(raw)
+
+            with mock.patch("os.write", side_effect=slow_write) as write:
+                started = time.monotonic()
+                for identity in identities:
+                    self.assertTrue(record_ui_publication_event("retry_request", identity))
+                elapsed = time.monotonic() - started
+                self.assertLess(elapsed, 0.1)
+                for identity in identities:
+                    close_ui_publication_diagnostics(identity, timeout=2.0)
+            self.assertGreaterEqual(write.call_count, 2)
+
+            # An old/full unrelated diagnostic cannot suppress this run because
+            # each identity uses O_EXCL with a fresh unique file.
+            root = Path(temporary) / "SkillMagnet" / "ContextMenu" / "diagnostics"
+            (root / "ui-old-full.jsonl").write_bytes(b"x" * (256 * 1024))
+            fresh = SimpleNamespace(
+                owner_path=Path(temporary) / "fresh-owner.json",
+                process_instance_id="f" * 32,
+                generation="e" * 32,
+                phase="library_manager",
+            )
+            self.assertTrue(record_ui_publication_event("retry_request", fresh))
+            close_ui_publication_diagnostics(fresh, timeout=2.0)
+            self.assertEqual(len(list(root.glob("ui-*.jsonl"))), 4)
+
+    @unittest.skipUnless(os.name == "nt", "Windows reparse semantics")
+    def test_ui_publication_diagnostic_refuses_reparse_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory() as outside:
+            local = Path(temporary)
+            try:
+                os.symlink(outside, local / "SkillMagnet", target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"directory symlink unavailable: {exc}")
+            identity = SimpleNamespace(
+                owner_path=local / "owner.json",
+                process_instance_id="a" * 32,
+                generation="b" * 32,
+                phase="context_selection",
+            )
+            with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local)}):
+                record_ui_publication_event("retry_request", identity)
+                close_ui_publication_diagnostics(identity, timeout=2.0)
+            self.assertEqual(list(Path(outside).iterdir()), [])
+
+    def test_ui_publication_diagnostic_concurrent_processes_have_distinct_sequences(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            code = "\n".join(
+                (
+                    "import os,sys",
+                    "from pathlib import Path",
+                    "from types import SimpleNamespace",
+                    f"sys.path.insert(0, {str((Path(__file__).resolve().parents[1] / 'src'))!r})",
+                    "from skill_magnet.diagnostics import record_ui_publication_event,close_ui_publication_diagnostics",
+                    "os.environ['LOCALAPPDATA']=sys.argv[1]",
+                    "i=sys.argv[2]",
+                    "x=SimpleNamespace(owner_path=Path(sys.argv[1])/('owner-'+i+'.json'),process_instance_id=i*32,generation=('f' if i=='1' else 'e')*32,phase='context_selection')",
+                    "record_ui_publication_event('retry_request',x)",
+                    "close_ui_publication_diagnostics(x,2.0)",
+                )
+            )
+            processes = [
+                subprocess.Popen([sys.executable, "-c", code, temporary, str(index)])
+                for index in (1, 2)
+            ]
+            self.assertEqual([process.wait(timeout=10) for process in processes], [0, 0])
+            paths = list(
+                (Path(temporary) / "SkillMagnet" / "ContextMenu" / "diagnostics").glob(
+                    "ui-*.jsonl"
+                )
+            )
+            self.assertEqual(len(paths), 2)
+            records = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+            self.assertEqual([record["seq"] for record in records], [1, 1])
+            self.assertEqual(len({record["process_instance_id"] for record in records}), 2)
+
+    @unittest.skipUnless(os.name == "nt", "actual Windows Tk close lifecycle")
+    def test_context_window_close_during_startup_exits_cleanly_in_fresh_processes(self) -> None:
+        source_root = Path(__file__).resolve().parents[1]
+        code = "\n".join(
+            (
+                "import ctypes,sys,tempfile,threading,time",
+                "from pathlib import Path",
+                f"sys.path.insert(0, {str(source_root / 'src')!r})",
+                "from skill_magnet.activation import ActivationEngine",
+                "from skill_magnet.core import Config",
+                "from skill_magnet.ui import acquire_context_ui_lease,show_context_selection",
+                f"config=Config.load(Path({str(source_root / 'skill-magnet.json')!r}))",
+                "root=Path(tempfile.mkdtemp(prefix='skill-magnet-close-'))",
+                "project=root/'project'; project.mkdir()",
+                "engine=ActivationEngine(config,root/'state')",
+                "lease=acquire_context_ui_lease(engine.state_dir,project)",
+                "delay=float(sys.argv[1])",
+                "def ready(hwnd):",
+                " def close():",
+                "  time.sleep(delay); ctypes.windll.user32.PostMessageW(hwnd,0x0010,0,0)",
+                " threading.Thread(target=close,daemon=True).start()",
+                "show_context_selection(engine,platform='windows',project=project,allow_dynamic_selection=True,window_ready=lambda hwnd:(lease.publish_window(window_handle=hwnd,phase='context_selection'),ready(hwnd)))",
+                "lease.release()",
+                "assert not (engine.state_dir/'context-launcher.owner.json').exists()",
+                "again=acquire_context_ui_lease(engine.state_dir,project)",
+                "assert again.acquired; again.release()",
+            )
+        )
+        for delay in (0.0, 0.01, 0.05, 0.1, 0.25) * 2:
+            completed = subprocess.run(
+                [sys.executable, "-c", code, str(delay)],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            self.assertEqual(
+                completed.returncode,
+                0,
+                f"delay={delay} stdout={completed.stdout} stderr={completed.stderr}",
             )
 
     def test_ui_surface_republishes_same_generation_after_tk_is_mapped(self) -> None:

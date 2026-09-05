@@ -1195,10 +1195,24 @@ def show_library_manager(
         notice.destroy()
         return {"status": "already_running", "same_request": lease.same_request}
 
-    root = tk.Tk()
-    root.title("Library Manager")
-    root.geometry("920x680")
-    root.minsize(760, 560)
+    try:
+        root = tk.Tk()
+        root.title("Library Manager")
+        root.geometry("920x680")
+        root.minsize(760, 560)
+    except Exception:
+        lease.release()
+        raise
+    startup_close_requested = False
+
+    def request_startup_close() -> None:
+        nonlocal startup_close_requested
+        startup_close_requested = True
+
+    # Install a non-destructive WM_CLOSE handler before any update/idletask
+    # call can dispatch a queued close message.  The full shutdown state
+    # machine replaces it after every worker/publication owner is initialized.
+    root.protocol("WM_DELETE_WINDOW", request_startup_close)
     surface_identities: list[UiSurfaceOwnerIdentity] = []
     try:
         root.update_idletasks()
@@ -2773,7 +2787,7 @@ def show_library_manager(
             elif choice is False:
                 abandon_current()
             else:
-                root.destroy()
+                close_manager(force=True)
         except Exception as exc:
             show_error(exc)
 
@@ -3044,7 +3058,7 @@ def show_library_manager(
 
     def close_manager(*, force: bool = False) -> None:
         nonlocal closing, result
-        if busy and active_worker is not None and active_worker.is_alive() and not force:
+        if busy and active_worker is not None and active_worker.is_alive():
             # Do not destroy Tk while a worker may still report a result.  Ask
             # the bounded subprocess runner to terminate its child; its
             # cancellation error checkpoints the exact transaction for reopen.
@@ -3057,6 +3071,8 @@ def show_library_manager(
                 active_cancel_event.set()
             return
         closing = True
+        for publication in tuple(manager_surface_publications.values()):
+            publication.close()
         cleanup_problem = ""
         try:
             if not managed_repository_has_unfinished_transaction(
@@ -3098,6 +3114,8 @@ def show_library_manager(
             lease.release()
 
     root.protocol("WM_DELETE_WINDOW", close_manager)
+    if startup_close_requested:
+        root.after(0, close_manager)
     try:
         root.mainloop()
     finally:

@@ -66,6 +66,8 @@ class ExplorerResultsGateTest(unittest.TestCase):
             "invoke_call_error",
         ):
             self.assertIn(f'Write-FieldActionDiagnostic "{event}"', menu)
+        self.assertIn("Invoke-CheckedContextMenuRootPhysicalClick", menu)
+        self.assertNotIn("$invoke.Invoke()", menu)
         helper = collector[
             collector.index("function Write-FieldActionDiagnostic") :
             collector.index("function New-FieldUiIdentityAnchor")
@@ -74,6 +76,13 @@ class ExplorerResultsGateTest(unittest.TestCase):
         self.assertIn("[IO.FileMode]::Append", helper)
         self.assertNotIn("SelectedName", helper)
         self.assertNotIn("request", helper.casefold())
+        initialization = collector[
+            collector.index("$script:FieldActionDiagnostic =") :
+            collector.index("$repositoryRoot =")
+        ]
+        self.assertIn("[IO.FileMode]::CreateNew", initialization)
+        self.assertIn("FileAttributes]::ReparsePoint", initialization)
+        self.assertNotIn("WriteAllBytes", initialization)
 
     @staticmethod
     def _write_runtime_repository(root: Path) -> tuple[Path, Path]:

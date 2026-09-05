@@ -60,6 +60,40 @@ from skill_magnet.ui import (
 
 
 class LibraryManagerTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "actual Windows Tk close lifecycle")
+    def test_library_manager_close_during_startup_exits_cleanly_in_fresh_processes(self) -> None:
+        source_root = Path(__file__).resolve().parents[1]
+        code = "\n".join(
+            (
+                "import ctypes,sys,tempfile,threading,time",
+                "from pathlib import Path",
+                f"sys.path.insert(0, {str(source_root / 'src')!r})",
+                "from skill_magnet.library_ui import acquire_library_ui_lease,show_library_manager",
+                "root=Path(tempfile.mkdtemp(prefix='skill-magnet-manager-close-'))",
+                "delay=float(sys.argv[1])",
+                "def ready(hwnd):",
+                " def close():",
+                "  time.sleep(delay); ctypes.windll.user32.PostMessageW(hwnd,0x0010,0,0)",
+                " threading.Thread(target=close,daemon=True).start()",
+                f"show_library_manager(config_path=Path({str(source_root / 'skill-magnet.json')!r}),state_dir=root/'state',window_ready=ready)",
+                "assert not (root/'state'/'library-manager.owner.json').exists()",
+                "again=acquire_library_ui_lease(root/'state',None)",
+                "assert again.acquired; again.release()",
+            )
+        )
+        for delay in (0.0, 0.01, 0.05, 0.1, 0.25) * 2:
+            completed = subprocess.run(
+                [sys.executable, "-c", code, str(delay)],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            self.assertEqual(
+                completed.returncode,
+                0,
+                f"delay={delay} stdout={completed.stdout} stderr={completed.stderr}",
+            )
+
     def make_source_skill(self, parent: Path, skill_id: str, description: str = "Updated purpose") -> Path:
         source = parent / skill_id
         source.mkdir(parents=True)

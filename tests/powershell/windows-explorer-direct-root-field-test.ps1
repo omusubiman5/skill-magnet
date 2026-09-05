@@ -53,7 +53,12 @@ function Write-FieldActionDiagnostic(
         "uia_root_bound", "invoke_call_enter", "invoke_call_return", "invoke_call_error"
     )
     Assert-Field ($allowedEvents -contains $Event) "Invalid field action diagnostic event."
-    Assert-Field ($Role -match '^[a-z_]+$') "Invalid field action diagnostic role."
+    $allowedRoles = @(
+        "selected_item", "background_site", "missing_skill_registration",
+        "runtime_skill_projectless"
+    )
+    Assert-Field ($allowedRoles -contains $Role) `
+        "Invalid field action diagnostic role."
     Assert-Field ($RuntimeKeySha256 -match '^[0-9a-f]{64}$') `
         "Invalid field action runtime digest."
     $script:FieldActionDiagnosticSequence++
@@ -606,8 +611,9 @@ public static class SkillMagnetFieldInput {
         catch { return false; }
     }
     public static Action TestAfterInitialValidation;
-    public static bool CheckedClickCurrent(
-        int x, int y, IntPtr widget, IntPtr root, uint expectedProcessId,
+    public static bool CheckedClickCurrentWithForeground(
+        int x, int y, IntPtr widget, IntPtr root, IntPtr expectedForeground,
+        uint expectedProcessId,
         string expectedExecutablePath, long expectedStartTimeUtcTicks,
         bool requireUiaHandle, string expectedUiaNameSha256,
         string receiptPath, string expectedReceiptSha256,
@@ -632,7 +638,7 @@ public static class SkillMagnetFieldInput {
         byte[] initialReceiptBytes = ReadPinnedReceipt(receiptPath, out initialReceipt);
         POINT cursor;
         if (!GetCursorPos(out cursor) || cursor.X != x || cursor.Y != y) return false;
-        if (GetForegroundWindow() != root) return false;
+        if (GetForegroundWindow() != expectedForeground) return false;
         POINT point = new POINT { X = x, Y = y };
         IntPtr hit = WindowFromPoint(point);
         if (hit != widget || GetAncestor(hit, 2) != root) return false;
@@ -691,7 +697,7 @@ public static class SkillMagnetFieldInput {
         // mouse send itself; no sleep, callback, UIA lookup, receipt read, or
         // HWND lookup may occur between this complete identity check and send.
         if (!GetCursorPos(out finalCursor) || finalCursor.X != x || finalCursor.Y != y ||
-            finalForeground != root || finalHit != widget ||
+            finalForeground != expectedForeground || finalHit != widget ||
             GetAncestor(finalHit, 2) != root || finalProcessId != expectedProcessId ||
             !ProcessMatches(expectedProcessId, expectedExecutablePath,
                 expectedStartTimeUtcTicks) || finalUia == null ||
@@ -734,6 +740,34 @@ public static class SkillMagnetFieldInput {
             if (initialReceipt != null) initialReceipt.Dispose();
             if (finalReceipt != null) finalReceipt.Dispose();
         }
+    }
+    public static bool CheckedClickCurrent(
+        int x, int y, IntPtr widget, IntPtr root, uint expectedProcessId,
+        string expectedExecutablePath, long expectedStartTimeUtcTicks,
+        bool requireUiaHandle, string expectedUiaNameSha256,
+        string receiptPath, string expectedReceiptSha256,
+        string expectedProcessInstanceId, string expectedGeneration,
+        long expectedRevision, string expectedSemanticId,
+        string expectedSemanticNameSha256,
+        bool requireImmutableChild, string expectedChildRuntimeKey,
+        int expectedChildControlType, string expectedChildClassName,
+        double expectedChildX, double expectedChildY,
+        double expectedChildWidth, double expectedChildHeight,
+        bool expectedChildEnabled, bool expectedChildOffscreen,
+        string expectedRowRuntimeKey, int expectedRowControlType,
+        string expectedRowNameSha256, double expectedRowX, double expectedRowY,
+        double expectedRowWidth, double expectedRowHeight, bool rightClick) {
+        return CheckedClickCurrentWithForeground(
+            x, y, widget, root, root, expectedProcessId, expectedExecutablePath,
+            expectedStartTimeUtcTicks, requireUiaHandle, expectedUiaNameSha256,
+            receiptPath, expectedReceiptSha256, expectedProcessInstanceId,
+            expectedGeneration, expectedRevision, expectedSemanticId,
+            expectedSemanticNameSha256, requireImmutableChild,
+            expectedChildRuntimeKey, expectedChildControlType, expectedChildClassName,
+            expectedChildX, expectedChildY, expectedChildWidth, expectedChildHeight,
+            expectedChildEnabled, expectedChildOffscreen, expectedRowRuntimeKey,
+            expectedRowControlType, expectedRowNameSha256, expectedRowX, expectedRowY,
+            expectedRowWidth, expectedRowHeight, rightClick);
     }
 }
 public sealed class SkillMagnetLogSnapshot {
@@ -1471,6 +1505,54 @@ function Open-ExplorerContextMenu($Window, [string]$SelectedName = "") {
     }
 }
 
+function Invoke-CheckedContextMenuRootPhysicalClick($Window, $RootElement) {
+    $rectangle = $RootElement.Current.BoundingRectangle
+    $x = [int]($rectangle.X + ($rectangle.Width / 2))
+    $y = [int]($rectangle.Y + ($rectangle.Height / 2))
+    $uiaPoint = [System.Windows.Point]::new([double]$x, [double]$y)
+    $initial = [System.Windows.Automation.AutomationElement]::FromPoint($uiaPoint)
+    $snapshot = New-UiaPointSnapshot $initial
+    Assert-Field (
+        (Get-UiaRuntimeKey $RootElement) -ceq [string]$snapshot.runtime_key -and
+        [int]$RootElement.Current.ControlType.Id -eq [int]$snapshot.control_type -and
+        [string]$RootElement.Current.ClassName -ceq [string]$snapshot.class_name -and
+        (Get-Utf8Sha256 ([string]$RootElement.Current.Name)) -ceq
+            [string]$snapshot.name_sha256 -and
+        [bool]$snapshot.enabled -and -not [bool]$snapshot.offscreen
+    ) "Context-menu root center is not its immutable UIAutomation element."
+    $point = [SkillMagnetFieldInput+POINT]::new()
+    $point.X = $x
+    $point.Y = $y
+    $widgetHandle = [SkillMagnetFieldInput]::WindowFromPoint($point)
+    $menuRootHandle = [SkillMagnetFieldInput]::GetAncestor($widgetHandle, 2)
+    $explorerHandle = [IntPtr]([int64]$Window.HWND)
+    $processId = [uint32]0
+    $null = [SkillMagnetFieldInput]::GetWindowThreadProcessId(
+        $widgetHandle, [ref]$processId
+    )
+    $identity = Get-FieldProcessIdentity ([int]$processId)
+    Assert-Field (
+        $widgetHandle -ne [IntPtr]::Zero -and
+        $menuRootHandle -ne [IntPtr]::Zero -and
+        [int]$snapshot.process_id -eq [int]$processId -and
+        $null -ne $identity -and (Test-FieldProcessIdentity $identity) -and
+        [SkillMagnetFieldInput]::GetForegroundWindow() -eq $explorerHandle
+    ) "Context-menu root is not bound to the foreground Explorer process."
+    Assert-Field ([SkillMagnetFieldInput]::SetCursorPos($x, $y)) `
+        "Could not move the cursor to the verified Skill Magnet root."
+    Assert-Field ([SkillMagnetFieldInput]::CheckedClickCurrentWithForeground(
+        $x, $y, $widgetHandle, $menuRootHandle, $explorerHandle, $processId,
+        [string]$identity.executable_path, [long]$identity.start_time_utc_ticks,
+        $false, [string]$snapshot.name_sha256,
+        "", "", "", "", [long]0, "", "",
+        $true, [string]$snapshot.runtime_key, [int]$snapshot.control_type,
+        [string]$snapshot.class_name, [double]$snapshot.x, [double]$snapshot.y,
+        [double]$snapshot.width, [double]$snapshot.height,
+        [bool]$snapshot.enabled, [bool]$snapshot.offscreen,
+        "", 0, "", [double]0, [double]0, [double]0, [double]0, $false
+    )) "Skill Magnet root changed at the final physical-click boundary."
+}
+
 function Invoke-VisibleSkillMagnetRoot(
     $Window,
     [string]$SelectedName = "",
@@ -1525,7 +1607,7 @@ function Invoke-VisibleSkillMagnetRoot(
     Write-FieldActionDiagnostic "invoke_call_enter" $actionRole `
         ([int]$rootSnapshot.process_id) $runtimeDigest
     try {
-        $invoke.Invoke()
+        Invoke-CheckedContextMenuRootPhysicalClick $Window $roots[0]
         Write-FieldActionDiagnostic "invoke_call_return" $actionRole `
             ([int]$rootSnapshot.process_id) $runtimeDigest
     }
@@ -3094,13 +3176,32 @@ function Assert-BusyMessageAndClose([int]$ExpectedProcessId) {
 $configPath = Assert-FieldRegularPathBoundary $Config
 $InvokeEvidence = [IO.Path]::GetFullPath($InvokeEvidence)
 $FieldBundle = [IO.Path]::GetFullPath($FieldBundle)
-$script:FieldActionDiagnostic = $FieldBundle + ".actions.jsonl"
+$script:FieldSessionId = [guid]::NewGuid().ToString("N")
+$script:FieldActionDiagnostic = (
+    $FieldBundle + ".actions-" + $script:FieldSessionId + ".jsonl"
+)
 $script:FieldActionDiagnosticSequence = 0
-[IO.Directory]::CreateDirectory((Split-Path -Parent $script:FieldActionDiagnostic)) | Out-Null
-[IO.File]::WriteAllBytes($script:FieldActionDiagnostic, [byte[]]@())
+$actionParent = Split-Path -Parent $script:FieldActionDiagnostic
+[IO.Directory]::CreateDirectory($actionParent) | Out-Null
+$ancestor = [IO.Path]::GetFullPath($actionParent)
+while ($ancestor) {
+    $ancestorItem = Get-Item -LiteralPath $ancestor -Force
+    Assert-Field (
+        ($ancestorItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0
+    ) "Field action diagnostic ancestor must not be a reparse point."
+    $nextAncestor = Split-Path -Parent $ancestor
+    if (-not $nextAncestor -or $nextAncestor -eq $ancestor) { break }
+    $ancestor = $nextAncestor
+}
+$createdActionLog = [IO.File]::Open(
+    $script:FieldActionDiagnostic,
+    [IO.FileMode]::CreateNew,
+    [IO.FileAccess]::Write,
+    [IO.FileShare]::Read
+)
+$createdActionLog.Dispose()
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $expectedNativeSource = Get-NativeSourceManifest $repositoryRoot
-$script:FieldSessionId = [guid]::NewGuid().ToString("N")
 $script:UiaTranscriptSequence = 0
 $script:UiaTranscriptLines = [Collections.Generic.List[string]]::new()
 $statusJson = python -I -m skill_magnet --config $configPath context-menu-status `

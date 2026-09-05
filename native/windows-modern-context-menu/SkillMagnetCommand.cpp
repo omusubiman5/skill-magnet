@@ -344,7 +344,6 @@ public:
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE Invoke(IShellItemArray* items, IBindCtx*) override {
-        if (command_.empty()) return E_NOTIMPL;
         const std::wstring template_digest = Sha256Digest(command_);
         const wchar_t* selection_source = items ? L"selected_item" : L"background_site";
         const std::wstring invocation_id = NewInvocationId();
@@ -361,6 +360,16 @@ public:
                 L"2. 元のフォルダーをもう一度右クリックします。\n\n"
                 L"診断ログ: %LOCALAPPDATA%\\SkillMagnet\\ContextMenu\\invoke.log");
             return HRESULT_FROM_WIN32(enter_log_error);
+        }
+        if (command_.empty()) {
+            LogInvokeEvent(L"command_empty", template_digest, 0, selection_source,
+                           L"unavailable", invocation_id.c_str());
+            ShowRecoverableError(
+                L"右クリックメニューの実行commandが空のため、実行を開始できませんでした。\n\n"
+                L"復旧手順:\n1. Skill Magnetの右クリックメニューを再登録します。\n"
+                L"2. usable_installed_state=trueを確認してから再実行します。\n\n"
+                L"診断ログ: %LOCALAPPDATA%\\SkillMagnet\\ContextMenu\\invoke.log");
+            return E_INVALIDARG;
         }
         std::wstring project;
         std::wstring project_digest = L"unavailable";

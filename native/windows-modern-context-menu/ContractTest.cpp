@@ -309,7 +309,7 @@ static bool ManifestCreatesDisabledRoot(
         SUCCEEDED(command->GetState(nullptr, FALSE, &state)) && state == ECS_DISABLED &&
         SUCCEEDED(command->GetFlags(&flags)) && flags == ECF_DEFAULT &&
         command->EnumSubCommands(&children) == E_NOTIMPL && !children &&
-        command->Invoke(nullptr, nullptr) == E_NOTIMPL;
+        command->Invoke(nullptr, nullptr) == E_INVALIDARG;
     if (children) children->Release();
     command->Release();
     return rejected;

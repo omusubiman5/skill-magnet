@@ -25,7 +25,10 @@ from .activation import (
     validate_task_workspace,
 )
 from .core import SkillMagnetError, _is_link, normalize_display_text
-from .diagnostics import record_ui_publication_event
+from .diagnostics import (
+    close_ui_publication_diagnostics,
+    record_ui_publication_event,
+)
 
 
 UI_OWNER_SCHEMA_VERSION = 2
@@ -605,10 +608,15 @@ class TkSurfacePublicationRetry:
         self.delay_index = 0
         self.attempt = 0
         self.token = 0
+        self.expired_token = 0
+        self.watchdog_timer: threading.Timer | None = None
+        self.closed = False
 
     def _record(
         self, event: str, *, revision: int | None = None, winerror: int | None = None
     ) -> None:
+        if self.closed:
+            return
         try:
             identity = self.identity() if self.identity is not None else None
             if identity is not None:
@@ -640,6 +648,8 @@ class TkSurfacePublicationRetry:
             return False
 
     def request(self) -> None:
+        if self.closed:
+            return
         if self.stopped():
             self._record("retry_stopped")
             return
@@ -658,9 +668,40 @@ class TkSurfacePublicationRetry:
         # makes a lost callback terminal instead of leaving a starting receipt.
         if not self._schedule(0, lambda: self._attempt(token)):
             return
-        self._schedule(
+        if not self._schedule(
             max(1, int(self.retry_seconds * 1000)), lambda: self._watchdog(token)
+        ):
+            return
+        self.watchdog_timer = threading.Timer(
+            max(0.001, self.retry_seconds), self._expire_from_watchdog_thread, (token,)
         )
+        self.watchdog_timer.daemon = True
+        self.watchdog_timer.start()
+
+    def _expire_from_watchdog_thread(self, token: int) -> None:
+        # This thread never calls Tk.  It only marks expiry and queues telemetry;
+        # the next Tk callback performs the user-visible terminal transition.
+        if not self.closed and token == self.token and self.pending:
+            self.expired_token = token
+            self._record("retry_expired")
+
+    def _cancel_watchdog(self) -> None:
+        timer = self.watchdog_timer
+        self.watchdog_timer = None
+        if timer is not None:
+            timer.cancel()
+
+    def close(self) -> None:
+        self.closed = True
+        self.pending = False
+        self.token += 1
+        self._cancel_watchdog()
+        try:
+            identity = self.identity() if self.identity is not None else None
+        except Exception:
+            identity = None
+        if identity is not None:
+            close_ui_publication_diagnostics(identity)
 
     def _watchdog(self, token: int) -> None:
         if token != self.token or not self.pending:
@@ -668,10 +709,12 @@ class TkSurfacePublicationRetry:
         if self.stopped():
             self.pending = False
             self.token += 1
+            self._cancel_watchdog()
             self._record("retry_stopped")
             return
         self.pending = False
         self.token += 1
+        self._cancel_watchdog()
         error = TimeoutError("UI receipt publication callback did not complete")
         self._record("retry_terminal")
         self.terminal(error)
@@ -679,9 +722,13 @@ class TkSurfacePublicationRetry:
     def _attempt(self, token: int) -> None:
         if token != self.token or not self.pending:
             return
+        if self.expired_token == token:
+            self._watchdog(token)
+            return
         if self.stopped():
             self.pending = False
             self.token += 1
+            self._cancel_watchdog()
             self._record("retry_stopped")
             return
         self.attempt += 1
@@ -705,11 +752,13 @@ class TkSurfacePublicationRetry:
                 return
             self.pending = False
             self.token += 1
+            self._cancel_watchdog()
             self._record("retry_terminal", winerror=winerror)
             self.terminal(exc)
             return
         self.pending = False
         self.token += 1
+        self._cancel_watchdog()
         revision = result.get("revision") if isinstance(result, dict) else None
         self._record("retry_success", revision=revision)
         if self.succeeded is not None:
@@ -2279,7 +2328,7 @@ def show_context_selection(
                 # flow.  It runs on Tk's main thread, so a close event cannot
                 # interleave between the final cancellation check and write.
                 result["contract"] = engine.persist_confirmation(contract)
-                root.destroy()
+                close_context_window()
 
             run_context_background(
                 "依頼を安全に準備しています…",
@@ -2300,7 +2349,7 @@ def show_context_selection(
         def open_library_manager() -> None:
             set_processing("Library Managerを開いています…")
             result["action"] = ContextUiAction("library_manager")
-            root.destroy()
+            close_context_window()
 
         manager_button.configure(command=open_library_manager)
         manager_button.grid(row=8, column=0, columnspan=2, padx=12, pady=(8, 0))
@@ -2308,7 +2357,7 @@ def show_context_selection(
         def open_registration() -> None:
             set_processing("選択フォルダーを確認しています…")
             result["action"] = ContextUiAction("register_selected")
-            root.destroy()
+            close_context_window()
 
         register_button.configure(command=open_registration)
         register_button.grid(row=8, column=2, columnspan=2, padx=12, pady=(8, 0))
@@ -2441,10 +2490,21 @@ def show_context_selection(
 
     def close_context_window() -> None:
         nonlocal closing
+        if closing:
+            return
         closing = True
         if active_context_cancel is not None:
             active_context_cancel.set()
-        root.destroy()
+
+        def finish_close() -> None:
+            if active_context_worker is not None and active_context_worker.is_alive():
+                root.after(25, finish_close)
+                return
+            if surface_publication is not None:
+                surface_publication.close()
+            root.destroy()
+
+        root.after_idle(finish_close)
 
     def publication_failed(exc: BaseException) -> None:
         if closing:
