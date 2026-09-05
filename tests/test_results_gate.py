@@ -2005,6 +2005,13 @@ try {{
     Test-RequiredFieldWidgetRevision (Surface 9 $true "label") `
         "selection_choice" "combobox" 0 "generation-a" $rejected | Out-Null
 }} catch {{ $wrongRoleRejected = $true }}
+$ownerRevisions = @{{}}
+$generation = "a" * 32
+Update-FieldOwnerRevision $generation 7 $ownerRevisions
+$ownerRollbackRejected = $false
+try {{ Update-FieldOwnerRevision $generation 6 $ownerRevisions }}
+catch {{ $ownerRollbackRejected = $true }}
+Update-FieldOwnerRevision $generation 8 $ownerRevisions
 [pscustomobject]@{{
     first_false = -not $first
     rollback_false = -not $rollback
@@ -2012,6 +2019,8 @@ try {{
     forged_earlier_false = -not $forgedEarlier
     later_true = $later
     wrong_role_rejected = $wrongRoleRejected
+    owner_rollback_rejected = $ownerRollbackRejected
+    owner_later_accepted = [int64]$ownerRevisions[$generation] -eq 8
 }} | ConvertTo-Json -Compress
 '''
         completed = subprocess.run(
@@ -2288,12 +2297,15 @@ try {{
             manager_payload = json.dumps(manager, separators=(",", ":")).encode()
             gate_read(manager_payload)
             field_read(manager_payload)
-        starting = {key: value for key, value in clone().items() if key != "ui_surface"}
-        starting["phase"] = "context_starting"
-        starting["window_handle"] = 0
-        starting_payload = json.dumps(starting, separators=(",", ":")).encode()
-        gate_read(starting_payload)
-        field_read(starting_payload)
+        for starting_phase in ("context_starting", "library_manager_starting"):
+            starting = {
+                key: value for key, value in clone().items() if key != "ui_surface"
+            }
+            starting["phase"] = starting_phase
+            starting["window_handle"] = 0
+            starting_payload = json.dumps(starting, separators=(",", ":")).encode()
+            gate_read(starting_payload)
+            field_read(starting_payload)
 
         invalid: list[dict[str, object]] = []
         owner_extra = clone()
@@ -2329,6 +2341,15 @@ try {{
         missing_selection_surface = clone()
         del missing_selection_surface["ui_surface"]
         invalid.append(missing_selection_surface)
+        missing_manager_surface = {
+            key: value for key, value in manager.items() if key != "ui_surface"
+        }
+        invalid.append(missing_manager_surface)
+        unknown_phase = {
+            key: value for key, value in clone().items() if key != "ui_surface"
+        }
+        unknown_phase["phase"] = "recovery_starting"
+        invalid.append(unknown_phase)
 
         for candidate in invalid:
             payload = json.dumps(candidate, separators=(",", ":")).encode()

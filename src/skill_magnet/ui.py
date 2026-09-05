@@ -33,6 +33,24 @@ UI_OWNER_BIND_MAX_AGE_SECONDS = 300
 _PROCESS_INSTANCE_ID = os.urandom(16).hex()
 _PROCESS_STARTED_AT_UNIX_NS = time.time_ns()
 
+# A completion phase is never published without its matching UI surface.
+# Window discovery happens first under an explicit starting phase; the first
+# surface publication atomically advances the same owner generation to the
+# completion phase.
+UI_SURFACE_PHASE_TABLE = {
+    "context_selection": frozenset(
+        {"context_starting", "context_selection"}
+    ),
+    "library_manager": frozenset(
+        {"library_manager_starting", "library_manager"}
+    ),
+}
+UI_SURFACE_STARTING_PHASE = {
+    "context_selection": "context_starting",
+    "library_manager": "library_manager_starting",
+}
+UI_SURFACE_STARTING_PHASES = frozenset(UI_SURFACE_STARTING_PHASE.values())
+
 
 def _owner_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -132,7 +150,9 @@ def _new_ui_owner_record(
 def _is_current_ui_owner(
     payload: dict[str, Any], expected: dict[str, Any], *, require_window: bool = True
 ) -> bool:
-    keys = ["schema_version", "pid", "process_instance_id", "generation"]
+    keys = [
+        "schema_version", "pid", "process_instance_id", "generation", "target_sha256"
+    ]
     if require_window:
         keys.extend(("phase", "window_handle"))
     return (
@@ -141,11 +161,13 @@ def _is_current_ui_owner(
     )
 
 
-def _remove_owned_ui_owner_record(path: Path, expected: dict[str, Any]) -> None:
+def _remove_owned_ui_owner_record(
+    path: Path, expected: dict[str, Any], *, require_window: bool = True
+) -> None:
     if not os.path.lexists(path):
         return
     current = _read_ui_owner_record(path)
-    if not _is_current_ui_owner(current, expected):
+    if not _is_current_ui_owner(current, expected, require_window=require_window):
         return
     path.unlink(missing_ok=True)
 
@@ -210,7 +232,7 @@ class ContextUiLease:
 
         if not self.acquired or self.handle is None:
             raise SkillMagnetError("Context UI lease is not owned by this process")
-        if phase not in {"context_selection", "library_manager"}:
+        if phase not in UI_SURFACE_STARTING_PHASE:
             raise SkillMagnetError(f"Unknown context UI lease phase: {phase}")
         if not isinstance(window_handle, int) or window_handle <= 0:
             raise SkillMagnetError("Visible UI window handle is unavailable")
@@ -222,7 +244,7 @@ class ContextUiLease:
             payload = current
         payload.pop("ui_surface", None)
         payload.update(
-            phase=phase,
+            phase=UI_SURFACE_STARTING_PHASE[phase],
             window_handle=window_handle,
             revision=int(payload.get("revision", 0)) + 1,
             published_at_utc=_owner_timestamp(),
@@ -243,7 +265,9 @@ class ContextUiLease:
         try:
             if self.owner_path is not None:
                 try:
-                    _remove_owned_ui_owner_record(self.owner_path, self.owner)
+                    _remove_owned_ui_owner_record(
+                        self.owner_path, self.owner, require_window=False
+                    )
                 except (OSError, SkillMagnetError):
                     pass
         finally:
@@ -325,7 +349,7 @@ def ui_surface_owner_identity(
         or process_instance_id != _PROCESS_INSTANCE_ID
         or age_seconds < -5
         or age_seconds > UI_OWNER_BIND_MAX_AGE_SECONDS
-        or payload.get("phase") != phase
+        or payload.get("phase") not in UI_SURFACE_PHASE_TABLE.get(phase, ())
         or payload.get("window_handle") != window_handle
     ):
         raise SkillMagnetError("Visible UI owner record changed before publication")
@@ -517,7 +541,9 @@ def publish_tk_ui_surface(
             current.get("generation") != identity.generation,
             current.get("pid") != identity.pid,
             current.get("process_instance_id") != identity.process_instance_id,
-            current.get("phase") != identity.phase,
+            current.get("phase") not in UI_SURFACE_PHASE_TABLE.get(
+                identity.phase, ()
+            ),
             current.get("window_handle") != identity.window_handle,
         )
     ):
@@ -532,6 +558,7 @@ def publish_tk_ui_surface(
     surface["revision"] = next_revision
     surface["published_at_utc"] = published_at
     current["ui_surface"] = surface
+    current["phase"] = identity.phase
     current["revision"] = next_revision
     current["published_at_utc"] = published_at
     _atomic_write_ui_owner_record(identity.owner_path, current)
@@ -723,7 +750,11 @@ def focus_context_ui(owner: dict[str, Any]) -> bool:
         if not candidates:
             return False
         phase = str(owner.get("phase", ""))
-        expected_title = "Library Manager" if phase == "library_manager" else "Skill Magnet"
+        expected_title = (
+            "Library Manager"
+            if phase in {"library_manager_starting", "library_manager"}
+            else "Skill Magnet"
+        )
         candidates.sort(
             key=lambda candidate: (
                 expected_title.casefold() not in candidate[1].casefold(),

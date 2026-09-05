@@ -3560,19 +3560,19 @@ class ActivationEndToEndTest(unittest.TestCase):
             repeated = acquire_context_ui_lease(lease_dir, self.project)
             self.assertFalse(repeated.acquired)
             self.assertTrue(repeated.owner["same_request"])
-            self.assertEqual(repeated.owner["phase"], "library_manager")
+            self.assertEqual(repeated.owner["phase"], "library_manager_starting")
             self.assertEqual(repeated.owner["window_handle"], 2222)
 
             different = acquire_context_ui_lease(lease_dir, other_project)
             self.assertFalse(different.acquired)
             self.assertFalse(different.owner["same_request"])
-            self.assertEqual(different.owner["phase"], "library_manager")
+            self.assertEqual(different.owner["phase"], "library_manager_starting")
             self.assertEqual(different.owner["window_handle"], 2222)
 
             owner_record = json.loads(
                 (lease_dir / "context-launcher.owner.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(owner_record["phase"], "library_manager")
+            self.assertEqual(owner_record["phase"], "library_manager_starting")
             self.assertEqual(owner_record["window_handle"], 2222)
         finally:
             first.release()
@@ -3654,6 +3654,9 @@ class ActivationEndToEndTest(unittest.TestCase):
         try:
             lease.publish_window(phase="context_selection", window_handle=root.handle)
             owner_path = lease_dir / "context-launcher.owner.json"
+            starting_owner = json.loads(owner_path.read_text(encoding="utf-8"))
+            self.assertEqual(starting_owner["phase"], "context_starting")
+            self.assertNotIn("ui_surface", starting_owner)
             identity = ui_surface_owner_identity(
                 owner_path,
                 phase="context_selection",
@@ -3677,6 +3680,7 @@ class ActivationEndToEndTest(unittest.TestCase):
 
             publish()
             pre_map = json.loads(owner_path.read_text(encoding="utf-8"))
+            self.assertEqual(pre_map["phase"], "context_selection")
             pre_map_revision = pre_map["revision"]
             self.assertGreater(pre_map_revision, 0)
             self.assertFalse(pre_map["ui_surface"]["widgets"][0]["viewable"])
@@ -3706,8 +3710,55 @@ class ActivationEndToEndTest(unittest.TestCase):
             root.idle.pop()()  # type: ignore[operator]
             after_close = json.loads(owner_path.read_text(encoding="utf-8"))
             self.assertEqual(after_close["revision"], pre_map_revision + 1)
+
+            # Context selection, registration and Manager recovery all use the
+            # same explicit starting -> atomic completion state table.
+            lease.publish_window(
+                phase="library_manager", window_handle=root.handle
+            )
+            manager_starting = json.loads(owner_path.read_text(encoding="utf-8"))
+            self.assertEqual(manager_starting["phase"], "library_manager_starting")
+            self.assertNotIn("ui_surface", manager_starting)
+            self.assertEqual(manager_starting["generation"], identity.generation)
+            self.assertGreater(
+                manager_starting["revision"], after_close["revision"]
+            )
+            manager_identity = ui_surface_owner_identity(
+                owner_path,
+                phase="library_manager",
+                window_handle=root.handle,
+            )
+            root.raise_on_update = False
+            publish_tk_ui_surface(
+                manager_identity,
+                root,
+                widgets=(widget,),
+                state={"processing": False, "register_selected": True},
+            )
+            manager_complete = json.loads(owner_path.read_text(encoding="utf-8"))
+            self.assertEqual(manager_complete["phase"], "library_manager")
+            self.assertEqual(
+                manager_complete["ui_surface"]["phase"], "library_manager"
+            )
+            self.assertGreater(
+                manager_complete["revision"], manager_starting["revision"]
+            )
+            recovery_surface = publish_tk_ui_surface(
+                manager_identity,
+                root,
+                widgets=(widget,),
+                state={
+                    "processing": True,
+                    "register_selected": False,
+                    "stage": "missing-skill-recovery",
+                },
+            )
+            self.assertGreater(
+                recovery_surface["revision"], manager_complete["revision"]
+            )
         finally:
             lease.release()
+        self.assertFalse(owner_path.exists())
 
     def test_ui_surface_receipt_is_atomic_generation_bound_and_secret_free(self) -> None:
         secret = "SECRET-request-token-123"

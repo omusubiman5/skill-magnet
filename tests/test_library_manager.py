@@ -52,6 +52,11 @@ from skill_magnet.library_ui import (
     source_already_registered,
     skill_registration_metadata,
 )
+from skill_magnet.ui import (
+    UiWidgetSpec,
+    publish_tk_ui_surface,
+    ui_surface_owner_identity,
+)
 
 
 class LibraryManagerTests(unittest.TestCase):
@@ -186,7 +191,7 @@ class LibraryManagerTests(unittest.TestCase):
             duplicate = acquire_library_ui_lease(state, selected)
             self.assertFalse(duplicate.acquired)
             self.assertTrue(duplicate.same_request)
-            self.assertEqual(duplicate.owner["phase"], "library_manager")
+            self.assertEqual(duplicate.owner["phase"], "library_manager_starting")
             self.assertEqual(duplicate.owner["window_handle"], 24680)
             self.assertNotIn("selected_source", duplicate.owner)
             self.assertRegex(duplicate.owner["target_sha256"], r"^[0-9a-f]{64}$")
@@ -196,7 +201,7 @@ class LibraryManagerTests(unittest.TestCase):
             competing = acquire_library_ui_lease(state, other)
             self.assertFalse(competing.acquired)
             self.assertFalse(competing.same_request)
-            self.assertEqual(competing.owner["phase"], "library_manager")
+            self.assertEqual(competing.owner["phase"], "library_manager_starting")
             self.assertEqual(competing.owner["window_handle"], 24680)
         finally:
             first.release()
@@ -204,6 +209,52 @@ class LibraryManagerTests(unittest.TestCase):
         self.assertTrue(recovered.acquired)
         recovered.release()
         self.assertTrue((state / "library-manager.lock").exists())
+
+    def test_direct_library_owner_completes_atomically_and_releases(self) -> None:
+        state = self.root / "direct-library-surface"
+        lease = acquire_library_ui_lease(state)
+
+        class Widget:
+            def winfo_id(self) -> int: return 24680
+            def winfo_rootx(self) -> int: return 10
+            def winfo_rooty(self) -> int: return 20
+            def winfo_width(self) -> int: return 300
+            def winfo_height(self) -> int: return 200
+            def winfo_viewable(self) -> bool: return True
+            def update_idletasks(self) -> None: return None
+            def title(self) -> str: return "Library Manager"
+            def cget(self, key: str) -> str: return "normal"
+            def instate(self, states: tuple[str, ...]) -> bool: return True
+
+        root = Widget()
+        owner_path = state / "library-manager.owner.json"
+        try:
+            lease.publish_window(root.winfo_id())
+            starting = json.loads(owner_path.read_text(encoding="utf-8"))
+            self.assertEqual(starting["phase"], "library_manager_starting")
+            self.assertNotIn("ui_surface", starting)
+            identity = ui_surface_owner_identity(
+                owner_path,
+                phase="library_manager",
+                window_handle=root.winfo_id(),
+            )
+            surface = publish_tk_ui_surface(
+                identity,
+                root,
+                widgets=(UiWidgetSpec("status", root, "status", text="ready"),),
+                state={"processing": False, "register_selected": False},
+            )
+            completed = json.loads(owner_path.read_text(encoding="utf-8"))
+            self.assertEqual(completed["phase"], "library_manager")
+            self.assertEqual(completed["ui_surface"], surface)
+            self.assertEqual(completed["revision"], surface["revision"])
+            self.assertEqual(
+                completed["published_at_utc"], surface["published_at_utc"]
+            )
+            self.assertGreater(completed["revision"], starting["revision"])
+        finally:
+            lease.release()
+        self.assertFalse(owner_path.exists())
 
     def test_library_ui_lease_rejects_linked_lock_without_touching_target(self) -> None:
         state = self.root / "linked-library-lease"

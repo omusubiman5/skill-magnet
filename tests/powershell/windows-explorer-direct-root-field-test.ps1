@@ -1694,15 +1694,17 @@ exact_int(owner["process_started_at_unix_ns"], "owner.process_started_at_unix_ns
 text(owner["target_sha256"], "owner.target_sha256", r"[0-9a-f]{64}")
 text(owner["generation"], "owner.generation", r"[0-9a-f]{32}")
 phase = text(owner["phase"], "owner.phase")
-if phase not in {"context_starting", "context_selection", "library_manager"}:
+starting_phases = {"context_starting", "library_manager_starting"}
+completion_phases = {"context_selection", "library_manager"}
+if phase not in starting_phases | completion_phases:
     raise ValueError("owner.phase is unsupported")
 exact_int(owner["window_handle"], "owner.window_handle")
 exact_int(owner["revision"], "owner.revision", True)
 text(owner["published_at_utc"], "owner.published_at_utc")
-if "ui_surface" not in owner and phase != "context_starting":
+if "ui_surface" not in owner and phase in completion_phases:
     raise ValueError(phase + " owner must contain ui_surface")
 if "ui_surface" in owner:
-    if phase not in {"context_selection", "library_manager"}:
+    if phase not in completion_phases:
         raise ValueError("starting owner must not contain ui_surface")
     surface = exact_object(owner["ui_surface"], SURFACE_KEYS, "ui_surface")
     if exact_int(surface["schema_version"], "ui_surface.schema_version") != 1:
@@ -1863,6 +1865,27 @@ function Test-RequiredFieldWidgetRevision(
         [int64]$Surface.revision -gt [int64]$RejectedWidgetRevision[$Generation]
 }
 
+function Update-FieldOwnerRevision(
+    [string]$Generation,
+    [int64]$Revision,
+    [hashtable]$ObservedOwnerRevision
+) {
+    Assert-Field ($Generation -match '^[0-9a-f]{32}$') `
+        "Context UI receipt generation is invalid: $Generation"
+    Assert-Field ($Revision -gt 0) "Context UI owner revision is not positive."
+    if ($ObservedOwnerRevision.ContainsKey($Generation)) {
+        Assert-Field (
+            $Revision -ge [int64]$ObservedOwnerRevision[$Generation]
+        ) "Context UI owner receipt revision rolled back within one generation."
+    }
+    $ObservedOwnerRevision[$Generation] = [Math]::Max(
+        $Revision,
+        $(if ($ObservedOwnerRevision.ContainsKey($Generation)) {
+            [int64]$ObservedOwnerRevision[$Generation]
+        } else { [int64]0 })
+    )
+}
+
 function Wait-FieldUiSurface(
     [int]$ExpectedProcessId,
     [string]$ExpectedPhase,
@@ -1874,6 +1897,7 @@ function Wait-FieldUiSurface(
 ) {
     $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
     $rejectedWidgetRevision = @{}
+    $observedOwnerRevision = @{}
     do {
         $validatedOwner = Read-ValidatedFieldContextOwner
         if ($null -eq $validatedOwner) {
@@ -1890,10 +1914,10 @@ function Wait-FieldUiSurface(
             )
         }
         $generation = [string]$owner.generation
-        Assert-Field ($generation -match '^[0-9a-f]{32}$') `
-            "Context UI receipt generation is invalid: $generation"
         Assert-Field ($generation -ne $script:FieldPreExistingOwnerGeneration) `
             "Context UI receipt reused the pre-field owner generation."
+        $ownerRevision = [int64]$owner.revision
+        Update-FieldOwnerRevision $generation $ownerRevision $observedOwnerRevision
         $script:FieldOwnedOwnerTokens[$generation] = [ordered]@{
             process_id = $ExpectedProcessId
             invocation_id = [string](

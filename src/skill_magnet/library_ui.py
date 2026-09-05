@@ -140,7 +140,7 @@ class LibraryUiLease:
             payload = current
         payload.pop("ui_surface", None)
         payload.update(
-            phase="library_manager",
+            phase="library_manager_starting",
             window_handle=window_handle,
             revision=int(payload.get("revision", 0)) + 1,
             published_at_utc=_owner_timestamp(),
@@ -161,7 +161,9 @@ class LibraryUiLease:
         try:
             if self.owner_path is not None:
                 try:
-                    _remove_owned_ui_owner_record(self.owner_path, self.owner)
+                    _remove_owned_ui_owner_record(
+                        self.owner_path, self.owner, require_window=False
+                    )
                 except (OSError, SkillMagnetError):
                     pass
         finally:

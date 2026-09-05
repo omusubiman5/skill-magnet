@@ -86,16 +86,18 @@ def _validate_ui_owner_receipt_schema(value: object) -> None:
     text(owner["target_sha256"], "owner.target_sha256", r"[0-9a-f]{64}")
     text(owner["generation"], "owner.generation", r"[0-9a-f]{32}")
     phase = text(owner["phase"], "owner.phase")
-    if phase not in {"context_starting", "context_selection", "library_manager"}:
+    starting_phases = {"context_starting", "library_manager_starting"}
+    completion_phases = {"context_selection", "library_manager"}
+    if phase not in starting_phases | completion_phases:
         raise ValueError("owner.phase is not supported by the field receipt schema")
     exact_int(owner["window_handle"], "owner.window_handle")
     exact_int(owner["revision"], "owner.revision", positive=True)
     text(owner["published_at_utc"], "owner.published_at_utc")
     if "ui_surface" not in owner:
-        if phase != "context_starting":
+        if phase in completion_phases:
             raise ValueError(f"{phase} owner must contain ui_surface")
         return
-    if phase not in {"context_selection", "library_manager"}:
+    if phase not in completion_phases:
         raise ValueError("starting owner must not contain ui_surface")
 
     surface = exact_object(owner["ui_surface"], _UI_SURFACE_KEYS, "ui_surface")
