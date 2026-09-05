@@ -2526,6 +2526,109 @@ $observations | ConvertTo-Json -Compress
         observation = json.loads(completed.stdout.strip())
         self.assertTrue(all(observation.values()), observation)
 
+    @unittest.skipUnless(os.name == "nt", "requires real Windows UIAutomation")
+    def test_selected_row_lineage_is_kept_between_left_and_right_clicks(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        csharp = collector.split(') -TypeDefinition @"', 1)[1].split('"@', 1)[0]
+        encoded_csharp = base64.b64encode(csharp.encode("utf-8")).decode("ascii")
+        probe = rf'''
+$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("{encoded_csharp}"))
+Add-Type -ReferencedAssemblies @(
+    "UIAutomationClient", "UIAutomationTypes", "WindowsBase"
+) -TypeDefinition $source
+function Sha([string]$Text) {{
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Text)
+    [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes)).Replace("-", "").ToLowerInvariant()
+}}
+function Run-Sequence([string]$Kind, [int]$Offset) {{
+    $root = [Windows.Forms.Form]::new(); $root.Text = "root-$Kind"
+    $root.StartPosition = "Manual"; $root.SetDesktopBounds(80, 80 + $Offset, 360, 180)
+    $row = [Windows.Forms.Panel]::new(); $row.Text = "selected-row"
+    $row.SetBounds(20, 30, 260, 80)
+    $button = [Windows.Forms.Button]::new(); $button.Text = "selected-child"
+    $button.SetBounds(30, 20, 170, 40); $row.Controls.Add($button); $root.Controls.Add($row)
+    $competitor = [Windows.Forms.Form]::new(); $competitor.Text = "other-$Kind"
+    $competitor.StartPosition = "Manual"; $competitor.SetDesktopBounds(500, 80 + $Offset, 300, 180)
+    $button.Add_MouseDown({{ param($sender, $event); if($event.Button -eq [Windows.Forms.MouseButtons]::Right){{$script:rightCount++}} }})
+    try {{
+        $root.Show(); $competitor.Show(); [Windows.Forms.Application]::DoEvents()
+        $point = $button.PointToScreen([Drawing.Point]::new(60, 20))
+        $process = [Diagnostics.Process]::GetCurrentProcess()
+        $rowUia = [Windows.Automation.AutomationElement]::FromHandle($row.Handle)
+        $rowRect = $rowUia.Current.BoundingRectangle
+        $args = @(
+            $point.X, $point.Y, $button.Handle, $root.Handle, [uint32]$process.Id,
+            [IO.Path]::GetFullPath($process.MainModule.FileName),
+            [long]$process.StartTime.ToUniversalTime().Ticks, $true,
+            (Sha "selected-child"), "", "", "", "", [long]0, "",
+            [string]::Join(".", $rowUia.GetRuntimeId()),
+            [int]$rowUia.Current.ControlType.Id, (Sha $rowUia.Current.Name),
+            [double]$rowRect.X, [double]$rowRect.Y,
+            [double]$rowRect.Width, [double]$rowRect.Height
+        )
+        [SkillMagnetFieldInput]::SetCursorPos($point.X, $point.Y) | Out-Null
+        [SkillMagnetFieldInput]::FocusWindow($root.Handle) | Out-Null
+        $left = [SkillMagnetFieldInput]::CheckedClickCurrent(
+            $args[0],$args[1],$args[2],$args[3],$args[4],$args[5],$args[6],
+            $args[7],$args[8],$args[9],$args[10],$args[11],$args[12],$args[13],
+            $args[14],$args[15],$args[16],$args[17],$args[18],$args[19],$args[20],
+            $args[21],$false
+        )
+        [Windows.Forms.Application]::DoEvents()
+        if ($Kind -eq "reparent") {{ $competitor.Controls.Add($button) }}
+        else {{
+            $root.Controls.Remove($row)
+            $replacement = [Windows.Forms.Panel]::new(); $replacement.Text = "selected-row"
+            $replacement.SetBounds(20, 30, 260, 80)
+            $replacementButton = [Windows.Forms.Button]::new(); $replacementButton.Text = "selected-child"
+            $replacementButton.SetBounds(30, 20, 170, 40)
+            $replacementButton.Add_MouseDown({{ param($sender, $event); if($event.Button -eq [Windows.Forms.MouseButtons]::Right){{$script:rightCount++}} }})
+            $replacement.Controls.Add($replacementButton); $root.Controls.Add($replacement)
+        }}
+        [Windows.Forms.Application]::DoEvents()
+        [SkillMagnetFieldInput]::SetCursorPos($point.X, $point.Y) | Out-Null
+        [SkillMagnetFieldInput]::FocusWindow($root.Handle) | Out-Null
+        $right = [SkillMagnetFieldInput]::CheckedClickCurrent(
+            $args[0],$args[1],$args[2],$args[3],$args[4],$args[5],$args[6],
+            $args[7],$args[8],$args[9],$args[10],$args[11],$args[12],$args[13],
+            $args[14],$args[15],$args[16],$args[17],$args[18],$args[19],$args[20],
+            $args[21],$true
+        )
+        [Windows.Forms.Application]::DoEvents()
+        return $left -and -not $right
+    }}
+    finally {{ $competitor.Close(); $root.Close() }}
+}}
+$script:rightCount = 0
+[pscustomobject]@{{
+    reparent = Run-Sequence "reparent" 0
+    same_name_swap = Run-Sequence "same_name_swap" 8
+    right_mouse_zero = $script:rightCount -eq 0
+}} | ConvertTo-Json -Compress
+'''
+        with tempfile.TemporaryDirectory() as temporary:
+            probe_path = Path(temporary) / "between-click-row-guard.ps1"
+            probe_path.write_text(probe, encoding="utf-8-sig")
+            completed = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-STA", "-File", str(probe_path)],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=60,
+                check=False,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        observation = json.loads(completed.stdout.strip())
+        self.assertTrue(all(observation.values()), observation)
+
     def test_explorer_physical_clicks_share_the_final_identity_gate(self) -> None:
         collector = (
             ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
@@ -2555,6 +2658,14 @@ $observations | ConvertTo-Json -Compress
             collector.index("function Invoke-VisibleSkillMagnetRoot")
         ]
         self.assertEqual(menu.count("Invoke-CheckedExplorerPhysicalClick"), 3)
+        self.assertIn(
+            "Invoke-CheckedExplorerPhysicalClick $Window $x $y $true $candidates[0]",
+            menu,
+        )
+        self.assertIn(
+            "Invoke-CheckedExplorerPhysicalClick $Window $x $y $true $null",
+            menu,
+        )
         self.assertNotIn("LeftClick", menu)
         self.assertNotIn("RightClick", menu)
 
@@ -2630,6 +2741,16 @@ try {{
     try {{ Read-InvokeLines $path | Out-Null }} catch {{ $truncateRejected = $true }}
 
     $script:InvokeLogSnapshots = @{{}}
+    Write-Utf16 $path "one`r`n"
+    Read-InvokeLines $path | Out-Null
+    Write-Utf16 $path "x"
+    $incompleteRewriteRejected = $false
+    try {{ Read-InvokeLines $path | Out-Null }} catch {{ $incompleteRewriteRejected = $true }}
+    Append-Utf16 $path "forged-terminal`r`n"
+    $forgedRegrowthRejected = $false
+    try {{ Read-InvokeLines $path | Out-Null }} catch {{ $forgedRegrowthRejected = $true }}
+
+    $script:InvokeLogSnapshots = @{{}}
     Write-Utf16 $path "rotation-base`r`n"
     Read-InvokeLines $path | Out-Null
     Move-Item -LiteralPath $path -Destination ($path + ".old")
@@ -2663,6 +2784,8 @@ try {{
         partial_terminal_held = $partialTerminalHeld
         partial_terminal_completed = $partialTerminalCompleted
         truncate_rejected = $truncateRejected
+        incomplete_rewrite_rejected = $incompleteRewriteRejected
+        forged_regrowth_rejected = $forgedRegrowthRejected
         rotation_rejected = $rotationRejected
         growth_rejected = $growthRejected
         path_swap_rejected = $swapRejected

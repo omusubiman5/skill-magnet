@@ -995,13 +995,13 @@ function Open-ExplorerContextMenu($Window, [string]$SelectedName = "") {
         $y = [int]($rectangle.Top + ($rectangle.Height / 2))
         Invoke-CheckedExplorerPhysicalClick $Window $x $y $false $candidates[0]
         Start-Sleep -Milliseconds 100
-        Invoke-CheckedExplorerPhysicalClick $Window $x $y $true
+        Invoke-CheckedExplorerPhysicalClick $Window $x $y $true $candidates[0]
     }
     else {
         $rectangle = $explorer.Current.BoundingRectangle
         $x = [int]($rectangle.Left + ($rectangle.Width * 0.76))
         $y = [int]($rectangle.Top + ($rectangle.Height * 0.72))
-        Invoke-CheckedExplorerPhysicalClick $Window $x $y $true
+        Invoke-CheckedExplorerPhysicalClick $Window $x $y $true $null
     }
     Start-Sleep -Milliseconds 300
     [ordered]@{
@@ -2300,10 +2300,6 @@ function Read-InvokeLines([string]$Path) {
         }
         throw "Invoke log stable read failed: $($snapshot.Error)"
     }
-    if (-not $snapshot.Complete) {
-        if ($null -eq $baseline) { return @() }
-        return @($baseline.text -split "`r?`n" | Where-Object { $_ })
-    }
     if ($null -ne $baseline) {
         if ([string]$snapshot.Identity -cne [string]$baseline.identity) {
             throw "Invoke log identity changed after observation."
@@ -2314,6 +2310,12 @@ function Read-InvokeLines([string]$Path) {
         if (-not ([string]$snapshot.Text).StartsWith(
             [string]$baseline.text, [StringComparison]::Ordinal
         )) { throw "Invoke log content was replaced after observation." }
+    }
+    if (-not $snapshot.Complete) {
+        if ($null -eq $baseline) { return @() }
+        return @($baseline.text -split "`r?`n" | Where-Object { $_ })
+    }
+    if ($null -ne $baseline) {
         if ([long]$snapshot.Length -eq [long]$baseline.length -and
             [long]$snapshot.LastWriteUtcTicks -ne [long]$baseline.last_write_utc_ticks) {
             throw "Invoke log timestamp changed without an append."
