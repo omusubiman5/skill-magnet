@@ -1148,6 +1148,51 @@ class ExplorerResultsGateTest(unittest.TestCase):
         self.assertIn("$identity.invocation_id = $InvocationId", ownership)
         self.assertIn("Fast duplicate launchers can exit before registration", ownership)
 
+    def test_field_collector_native_wait_rejects_ambiguous_and_failed_dispatch(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        sequence = collector[
+            collector.index("function Wait-NativeSequence") :
+            collector.index("function Assert-BusyMessageAndClose")
+        ]
+        self.assertIn("$enterRecords.Count -gt 1", sequence)
+        self.assertIn("multiple native invoke_enter records", sequence)
+        for event in (
+            "selection_failed",
+            "marker_missing",
+            "create_process_failed",
+            "child_wait_failed",
+            "child_exit_read_failed",
+            "child_process_failed",
+        ):
+            self.assertIn(f'"{event}"', sequence)
+        self.assertIn("Native invocation failed: event=", sequence)
+        self.assertIn("exit_code=", sequence)
+        self.assertIn("Register-FieldOwnedProcess $processId $id", sequence)
+        self.assertIn("observed_events=$lastObserved", sequence)
+
+    def test_field_collector_checks_both_original_and_duplicate_process_ui(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        manager_flow = collector[
+            collector.index("$managerSameSequence = Wait-NativeSequence") :
+            collector.index("$managerDifferentSequence = Wait-NativeSequence")
+        ]
+        same_folder_flow = collector[
+            collector.index("$sameSequence = Wait-NativeSequence") :
+            collector.index("$differentSequence = Wait-NativeSequence")
+        ]
+        self.assertIn("$managerFieldProcessIds", manager_flow)
+        self.assertIn("[int]$selectedSequence.process_id", manager_flow)
+        self.assertIn("[int]$managerSameSequence.process_id", manager_flow)
+        self.assertIn("$managerFieldProcessIds -contains", manager_flow)
+        self.assertIn("$sameFieldProcessIds", same_folder_flow)
+        self.assertIn("[int]$backgroundSequence.process_id", same_folder_flow)
+        self.assertIn("[int]$sameSequence.process_id", same_folder_flow)
+        self.assertIn("$sameFieldProcessIds -contains", same_folder_flow)
+
     def test_field_collector_scopes_root_to_the_context_menu_it_opened(self) -> None:
         collector = (
             ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
@@ -1188,7 +1233,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
         self.assertIn("[int]$_.Current.ProcessId -eq $ProcessId", named_elements)
         self.assertIn("[int]$ExpectedProcessId", unified_gui)
         self.assertIn(
-            'Wait-VisibleNamedElement "Skill Magnet — 実行確認" $ExpectedProcessId',
+            'Wait-VisibleWindowByPrefix "Skill Magnet — 実行確認" $ExpectedProcessId',
             unified_gui,
         )
         self.assertIn(
@@ -1196,7 +1241,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
             manager,
         )
         self.assertIn(
-            'Wait-VisibleNamedElement "Skill Magnet エラー" $ExpectedProcessId',
+            'Wait-VisibleWindowByPrefix "Skill Magnet エラー" $ExpectedProcessId',
             busy,
         )
         self.assertRegex(

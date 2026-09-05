@@ -500,21 +500,26 @@ function Get-SelectionChoiceContract($Gui, [object[]]$ExpectedChoices) {
         if ($null -eq $expand) { continue }
         try {
             $expand.Expand()
-            Start-Sleep -Milliseconds 150
-            $listCondition = New-Object System.Windows.Automation.PropertyCondition(
-                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-                [System.Windows.Automation.ControlType]::ListItem
-            )
-            $visible = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
-                [System.Windows.Automation.TreeScope]::Descendants, $listCondition
-            )
             $comboProcessId = [int]$combo.Current.ProcessId
-            $items = @($visible | Where-Object {
-                try {
-                    -not $_.Current.IsOffscreen -and
-                    [int]$_.Current.ProcessId -eq $comboProcessId
-                } catch { $false }
-            } | ForEach-Object { [string]$_.Current.Name })
+            $items = @()
+            $listDeadline = [DateTime]::UtcNow.AddSeconds(3)
+            do {
+                $listCondition = New-Object System.Windows.Automation.PropertyCondition(
+                    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                    [System.Windows.Automation.ControlType]::ListItem
+                )
+                $visible = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+                    [System.Windows.Automation.TreeScope]::Descendants, $listCondition
+                )
+                $items = @($visible | Where-Object {
+                    try {
+                        -not $_.Current.IsOffscreen -and
+                        [int]$_.Current.ProcessId -eq $comboProcessId
+                    } catch { $false }
+                } | ForEach-Object { [string]$_.Current.Name })
+                if (Test-ExactStringSequence $items $expectedLabels) { break }
+                Start-Sleep -Milliseconds 100
+            } while ([DateTime]::UtcNow -lt $listDeadline)
             $entry = [ordered]@{
                 element = Get-UiaElementSnapshot $combo
                 labels = $items
@@ -529,8 +534,37 @@ function Get-SelectionChoiceContract($Gui, [object[]]$ExpectedChoices) {
             try { $expand.Collapse() } catch { }
         }
     }
+    $diagnostic = ConvertTo-Json @($observed) -Depth 6 -Compress
+    $expectedDiagnostic = ConvertTo-Json @($expectedLabels) -Compress
+    $descendantDiagnostic = @($Gui.FindAll(
+        [System.Windows.Automation.TreeScope]::Descendants,
+        [System.Windows.Automation.Condition]::TrueCondition
+    ) | Select-Object -First 80 | ForEach-Object {
+        try {
+            $rectangle = $_.Current.BoundingRectangle
+            $valuePattern = Get-Pattern $_ ([System.Windows.Automation.ValuePattern]::Pattern)
+            [ordered]@{
+                name = [string]$_.Current.Name
+                type = [string]$_.Current.ControlType.ProgrammaticName
+                class = [string]$_.Current.ClassName
+                automation_id = [string]$_.Current.AutomationId
+                hwnd = [int]$_.Current.NativeWindowHandle
+                rect = "{0},{1},{2},{3}" -f [int]$rectangle.Left, [int]$rectangle.Top,
+                    [int]$rectangle.Width, [int]$rectangle.Height
+                patterns = @($_.GetSupportedPatterns() | ForEach-Object {
+                    [string]$_.ProgrammaticName
+                })
+                value = if ($null -ne $valuePattern) {
+                    [string]$valuePattern.Current.Value
+                } else { "" }
+            }
+        } catch { [ordered]@{ error = [string]$_.Exception.Message } }
+    })
+    $descendantDiagnosticJson = ConvertTo-Json $descendantDiagnostic -Compress
     Assert-Field ($matching.Count -eq 1) `
-        "Exactly one combo box must expose the configured selector labels; observed $($matching.Count)."
+        ("Exactly one combo box must expose the configured selector labels; " +
+         "observed $($matching.Count); expected=$expectedDiagnostic; combos=$diagnostic; " +
+         "descendants=$descendantDiagnosticJson")
     [ordered]@{
         configured_choices = @($ExpectedChoices)
         labels = @($matching[0].labels)
@@ -559,7 +593,7 @@ function Inspect-UnifiedGui(
     [int]$ExpectedProcessId,
     [string]$TranscriptSource = ""
 ) {
-    $gui = Wait-VisibleNamedElement "Skill Magnet — 実行確認" $ExpectedProcessId
+    $gui = Wait-VisibleWindowByPrefix "Skill Magnet — 実行確認" $ExpectedProcessId
     $projectBound = $false
     $descendants = $gui.FindAll(
         [System.Windows.Automation.TreeScope]::Descendants,
@@ -1048,32 +1082,77 @@ function Wait-NativeSequence(
     [int]$AfterLineCount,
     [string[]]$TerminalEvents = @("child_running")
 ) {
+    $failureEvents = @(
+        "selection_failed", "marker_missing", "create_process_failed",
+        "child_wait_failed", "child_exit_read_failed", "child_process_failed"
+    )
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    $lastObserved = "none"
     do {
         $lines = @(Read-InvokeLines $Path)
         $newRecords = @($lines | Select-Object -Skip $AfterLineCount | ForEach-Object {
             Parse-InvokeLine $_
         })
-        $ids = @($newRecords | Where-Object {
-            $_.event -eq "invoke_enter" -and $_.selection_source -eq $Source
-        } | ForEach-Object { $_.invocation_id })
-        foreach ($id in $ids) {
-            $group = @($newRecords | Where-Object { $_.invocation_id -eq $id })
+        $enterRecords = @($newRecords | Where-Object { $_.event -eq "invoke_enter" })
+        if ($enterRecords.Count -gt 1) {
+            $dispatchIds = @($enterRecords | ForEach-Object { $_.invocation_id }) -join ","
+            throw "One UI dispatch produced multiple native invoke_enter records: $dispatchIds"
+        }
+        if ($enterRecords.Count -eq 1) {
+            $enter = $enterRecords[0]
+            Assert-Field ([string]$enter.selection_source -eq $Source) `
+                ("Native invocation source mismatch: expected=$Source; " +
+                 "observed=$($enter.selection_source); invocation_id=$($enter.invocation_id)")
+            $id = [string]$enter.invocation_id
+            Assert-Field ($id -match '^[0-9a-f]{32}$') `
+                "Native invocation has an invalid invocation_id: $id"
+            $group = @($newRecords | Where-Object { [string]$_.invocation_id -eq $id })
             $events = @($group | ForEach-Object { [string]$_.event })
-            if ($events.Count -eq 4 -and
-                ($events[0..2] -join ",") -eq (
-                    "invoke_enter,selection_succeeded,create_process_succeeded"
-                ) -and $TerminalEvents -contains $events[3]) {
-                $processId = [int]$group[2].detail
+            $lastObserved = $events -join ","
+            $failure = @($group | Where-Object { $failureEvents -contains $_.event } |
+                Select-Object -First 1)
+            if ($failure.Count -eq 1) {
+                throw ("Native invocation failed: event=$($failure[0].event); " +
+                    "detail=$($failure[0].detail); invocation_id=$id")
+            }
+            if ($events -contains "child_exited") {
+                $childExit = @($group | Where-Object { $_.event -eq "child_exited" } |
+                    Select-Object -First 1)[0]
+                if ([string]$childExit.detail -ne "0") {
+                    throw ("Native child exited unsuccessfully: event=child_exited; " +
+                        "exit_code=$($childExit.detail); invocation_id=$id")
+                }
+            }
+            $expectedPrefix = @(
+                "invoke_enter", "selection_succeeded", "create_process_succeeded"
+            )
+            $prefixCount = [Math]::Min($events.Count, $expectedPrefix.Count)
+            if ($prefixCount -gt 0 -and
+                ($events[0..($prefixCount - 1)] -join ",") -ne
+                ($expectedPrefix[0..($prefixCount - 1)] -join ",")) {
+                throw "Native sequence is malformed: events=$lastObserved; invocation_id=$id"
+            }
+            if ($events.Count -gt 4) {
+                throw "Native sequence contains extra events: events=$lastObserved; invocation_id=$id"
+            }
+            if ($events.Count -ge 3) {
+                $processId = 0
+                Assert-Field ([int]::TryParse([string]$group[2].detail, [ref]$processId)) `
+                    "Native create_process_succeeded detail is not a process id: $($group[2].detail)"
+                Assert-Field ($processId -gt 0) `
+                    "Native create_process_succeeded process id is not positive: $processId"
+                Register-FieldOwnedProcess $processId $id
+            }
+            if ($events.Count -eq 4) {
+                Assert-Field ($TerminalEvents -contains $events[3]) `
+                    ("Native sequence ended with unexpected terminal event=$($events[3]); " +
+                     "detail=$($group[3].detail); invocation_id=$id")
                 $terminalDetailValid = if ($events[3] -eq "child_running") {
                     $group[3].detail -eq $group[2].detail
-                }
-                else {
-                    $group[3].detail -eq "0"
-                }
-                Assert-Field ($processId -gt 0 -and $terminalDetailValid) `
-                    "Native success sequence does not identify one successful child process."
-                Register-FieldOwnedProcess $processId $id
+                } else { $group[3].detail -eq "0" }
+                Assert-Field $terminalDetailValid `
+                    ("Native terminal detail is inconsistent: event=$($events[3]); " +
+                     "detail=$($group[3].detail); process_id=$processId; invocation_id=$id")
                 return @{
                     invocation_id = $id
                     project_sha256 = $group[1].project_sha256
@@ -1085,11 +1164,11 @@ function Wait-NativeSequence(
         }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
-    throw "Native success sequence did not complete for $Source."
+    throw "Native sequence timed out for $Source; observed_events=$lastObserved."
 }
 
 function Assert-BusyMessageAndClose([int]$ExpectedProcessId) {
-    $dialog = Wait-VisibleNamedElement "Skill Magnet エラー" $ExpectedProcessId
+    $dialog = Wait-VisibleWindowByPrefix "Skill Magnet エラー" $ExpectedProcessId
     $containsBusy = $false
     $actionable = $false
     $text = Get-VisibleDescendantText $dialog
@@ -1331,16 +1410,24 @@ try {
     $managerSameSequence = Wait-NativeSequence `
         $invokeLog "selected_item" $before @("child_running", "child_exited")
     Start-Sleep -Seconds 2
-    $visibleManagers = @(Get-VisibleWindowsByPrefix `
-        "Library Manager" $selectedSequence.process_id)
+    $managerFieldProcessIds = @(
+        [int]$selectedSequence.process_id, [int]$managerSameSequence.process_id
+    ) | Sort-Object -Unique
+    $visibleManagers = @(Get-VisibleWindowsByPrefix "Library Manager" | Where-Object {
+        try { $managerFieldProcessIds -contains [int]$_.Current.ProcessId }
+        catch { $false }
+    })
     Assert-Field ($visibleManagers.Count -eq 1) `
         "Same-folder click while Manager is open created or lost a Manager window."
     $managerForeground = [SkillMagnetFieldInput]::GetForegroundWindow()
     $managerHandle = [IntPtr]([int64]$managerGui.element.Current.NativeWindowHandle)
     Assert-Field ($managerForeground -eq $managerHandle) `
         "Same-folder click did not focus the existing Library Manager."
-    $managerSameErrors = @(Get-VisibleNamedElements `
-        "Skill Magnet エラー" $managerSameSequence.process_id)
+    $managerSameErrors = @(Get-VisibleNamedElements "Skill Magnet エラー" |
+        Where-Object {
+            try { $managerFieldProcessIds -contains [int]$_.Current.ProcessId }
+            catch { $false }
+        })
     Assert-Field ($managerSameErrors.Count -eq 0) `
         "Same-folder click displayed an error while Library Manager was open."
 
@@ -1414,16 +1501,25 @@ try {
     $sameSequence = Wait-NativeSequence `
         $invokeLog "background_site" $before @("child_running", "child_exited")
     Start-Sleep -Seconds 2
-    $sameGuis = @(Get-VisibleNamedElements `
-        "Skill Magnet — 実行確認" $backgroundSequence.process_id)
+    $sameFieldProcessIds = @(
+        [int]$backgroundSequence.process_id, [int]$sameSequence.process_id
+    ) | Sort-Object -Unique
+    $sameGuis = @(Get-VisibleNamedElements "Skill Magnet — 実行確認" |
+        Where-Object {
+            try { $sameFieldProcessIds -contains [int]$_.Current.ProcessId }
+            catch { $false }
+        })
     $sameGuiCount = $sameGuis.Count
     Assert-Field ($sameGuiCount -eq 1) "Repeated same-folder click created another GUI."
     $focusedWindow = [SkillMagnetFieldInput]::GetForegroundWindow()
     $expectedFocusedWindow = [IntPtr]([int64]$backgroundGui.element.Current.NativeWindowHandle)
     Assert-Field ($focusedWindow -eq $expectedFocusedWindow) `
         "Repeated same-folder click did not focus the existing Skill Magnet GUI."
-    $unexpectedErrors = @(Get-VisibleNamedElements `
-        "Skill Magnet エラー" $sameSequence.process_id)
+    $unexpectedErrors = @(Get-VisibleNamedElements "Skill Magnet エラー" |
+        Where-Object {
+            try { $sameFieldProcessIds -contains [int]$_.Current.ProcessId }
+            catch { $false }
+        })
     Assert-Field ($unexpectedErrors.Count -eq 0) `
         "Repeated same-folder click displayed an error instead of focusing the existing GUI."
     Assert-Field ($sameSequence.project_sha256 -eq $backgroundSequence.project_sha256) `
