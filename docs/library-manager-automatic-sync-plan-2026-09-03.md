@@ -2,9 +2,13 @@
 
 日付: 2026-09-03
 
+> 履歴資料: この計画の「OSメニュー再登録」は、pack／skillをExplorerの子項目として固定していた0.5.8時点の設計です。0.5.9の単一direct-root方式では、pack／skillの登録・更新・削除だけでOSメニューを再登録しません。起動時に現在の設定を読み直します。
+
+> 現行境界: 操作入口は統合GUI内の`Library Manager`です。永続正本はユーザー所有GitHub repositoryだけで、Codex／Claudeのskill directoryへインストールしません。OS入口の再登録はinstalled executable／config location／native integrationの明示repairだけに限定し、rollback snapshotを破壊的操作前に検証します。0.5.9実機受入と最終件数は`PENDING`です。
+
 ## 目的
 
-スキルの登録・更新・削除をローカル管理領域だけで終わらせず、GitHubへのpush、PR作成、自動マージ、merge commit検証、Skill Magnet設定更新、OSメニュー再登録まで一つの操作で完了させる。
+当時の0.5.8では、スキルの登録・更新・削除をローカル管理領域だけで終わらせず、GitHubへのpush、PR作成、自動マージ、merge commit検証、Skill Magnet設定更新、OSメニュー再登録まで一つの操作で完了させる計画だった。現行0.5.9では最後のOSメニュー再登録を行わず、単一rootが次回起動時に更新済み設定を読む。
 
 ## 状態遷移
 
@@ -35,5 +39,5 @@ draft
 - publish前失敗: ローカル候補を修正または破棄できる。
 - push／PR後失敗: branchとPRを保持し、同じtransactionから再開する。
 - merge待ち: merge要求を再送せずPR状態だけ確認する。
-- activation失敗: 旧configを復元し、remote commitを`published_but_inactive`として保持する。
+- activation失敗: 旧configを復元し、remote commitを`published_but_inactive`として保持する。通常activationではOSメニューを変更しない。
 - アプリ終了: 次回起動時にjournalから次の有効遷移を復元する。

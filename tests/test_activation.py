@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import xml.etree.ElementTree as ET
@@ -34,6 +35,12 @@ from skill_magnet.activation import (
 from skill_magnet.cli import exit_process, main as cli_main
 from skill_magnet.core import Config, Pack, SafetyError, SkillMagnetError
 from skill_magnet.platforms import (
+    _capture_windows_context_backup,
+    _recover_windows_rollback_rotation,
+    _restore_windows_context_backup,
+    _rotate_windows_context_backup,
+    _windows_owned_menu_roots,
+    _windows_native_source_manifest,
     context_menu_spec,
     finder_context_menu_status,
     install_context_menu,
@@ -50,10 +57,14 @@ from skill_magnet.platforms import (
     windows_leaf_command_argv,
     windows_library_manager_command_argv,
     windows_menu_leaves,
+    windows_root_launcher_command_argv,
     render_windows_modern_menu_manifest,
     rollback_windows_context_menus,
+    validate_isolated_menu_runtime,
 )
 from skill_magnet.ui import (
+    ContextUiAction,
+    acquire_context_ui_lease,
     codex_desktop_deep_link,
     confirm_context_selection,
     context_error_message,
@@ -61,10 +72,13 @@ from skill_magnet.ui import (
     context_failure_surface,
     context_result_surface,
     context_selection_details,
+    context_selection_choice_map,
     context_ui_confirmation,
+    context_ui_details,
     context_ui_request_error,
     context_ui_text,
     launch_context_leaf,
+    start_context_background_operation,
     deliver_codex_desktop_prompt,
     deliver_prepared_codex_handoff,
     claude_desktop_deep_link,
@@ -84,10 +98,44 @@ def git(repo: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
+class ContextBackgroundOperationTest(unittest.TestCase):
+    def test_operation_is_non_blocking_and_close_signal_is_observed(self) -> None:
+        entered = threading.Event()
+
+        def operation(cancel_event: threading.Event) -> str:
+            entered.set()
+            cancel_event.wait(2)
+            return "late result"
+
+        started = time.monotonic()
+        cancel_event, worker, outcome = start_context_background_operation(
+            operation,
+            name="context-background-cancel-test",
+        )
+        self.assertLess(time.monotonic() - started, 0.5)
+        self.assertTrue(entered.wait(1))
+        self.assertTrue(worker.daemon)
+        cancel_event.set()
+        worker.join(2)
+        self.assertFalse(worker.is_alive())
+        self.assertNotIn("value", outcome)
+        self.assertIsInstance(outcome.get("error"), SkillMagnetError)
+
+    def test_success_is_returned_without_touching_tk(self) -> None:
+        cancel_event, worker, outcome = start_context_background_operation(
+            lambda event: "ok" if not event.is_set() else "cancelled",
+            name="context-background-success-test",
+        )
+        worker.join(2)
+        self.assertFalse(cancel_event.is_set())
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(outcome, {"value": "ok"})
+
+
 class ActivationEndToEndTest(unittest.TestCase):
-    def test_pythonw_entrypoint_hard_exits_after_failure_ui_returns(self) -> None:
+    def test_windowless_python_entrypoint_exits_after_failure_ui_returns(self) -> None:
         if sys.platform != "win32":
-            self.skipTest("real pythonw child regression requires Windows")
+            self.skipTest("real CREATE_NO_WINDOW child regression requires Windows")
         import ctypes
         import time
         from ctypes import wintypes
@@ -99,8 +147,11 @@ class ActivationEndToEndTest(unittest.TestCase):
             and item.skill_id == "bounded-answer"
         )
         command = list(leaf.command)
-        if Path(command[0]).name.casefold() != "pythonw.exe":
-            self.skipTest("the active Windows Python installation has no pythonw.exe")
+        self.assertEqual(
+            Path(command[0]).name.casefold(),
+            "python.exe",
+            "the native leaf must use the installed console interpreter",
+        )
         context_index = command.index("context")
         command[context_index:context_index] = ["--state-dir", str(self.state)]
         target_root = self.root / ".e2e-target"
@@ -117,6 +168,7 @@ class ActivationEndToEndTest(unittest.TestCase):
             command,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         teardown.track_process(process.pid, [exact_command_line])
         manually_terminated = False
@@ -136,7 +188,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                 length = user32.GetWindowTextLengthW(hwnd)
                 title = ctypes.create_unicode_buffer(length + 1)
                 user32.GetWindowTextW(hwnd, title, length + 1)
-                if title.value == "Skill Magnet":
+                if title.value == context_ui_text("ja", "error_title"):
                     dialog_seen = True
                     user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
                 return True
@@ -146,18 +198,18 @@ class ActivationEndToEndTest(unittest.TestCase):
             while process.poll() is None and time.monotonic() < deadline:
                 user32.EnumWindows(callback, 0)
                 time.sleep(0.05)
-            self.assertTrue(dialog_seen, "pythonw failure dialog did not appear")
+            self.assertTrue(dialog_seen, "windowless Python failure dialog did not appear")
             self.assertEqual(
                 process.wait(timeout=5),
                 2,
-                "pythonw did not reach the product hard-exit boundary",
+                "windowless Python did not exit after the failure UI returned",
             )
         finally:
             if process.poll() is None:
                 manually_terminated = True
                 process.terminate()
                 process.wait(timeout=5)
-        self.assertFalse(manually_terminated, "test had to terminate pythonw manually")
+        self.assertFalse(manually_terminated, "test had to terminate Python manually")
 
         rejected = list((self.state / "events").glob("*-rejected.json"))
         self.assertEqual(len(rejected), 1)
@@ -219,7 +271,9 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertIn("未実行・未確認の範囲", failure_message)
         self.assertIn("次の操作", failure_message)
         self.assertNotIn("stale_menu_commit", failure_message)
-        self.assertNotIn("Pack version changed", failure_message)
+        self.assertIn("Pack version changed", failure_message)
+        self.assertIn("close and reopen Skill Magnet", failure_message)
+        self.assertNotIn("install-context-menu", failure_message)
         self.assertEqual(stdout.getvalue(), "")
         self.assertEqual(stderr.getvalue(), "")
 
@@ -361,10 +415,40 @@ class ActivationEndToEndTest(unittest.TestCase):
             / "out"
         )
         native_output.mkdir(parents=True, exist_ok=True)
-        for binary in ("SkillMagnetCommand.dll", "SkillMagnetIdentity.exe"):
-            path = native_output / binary
-            if not path.exists():
-                path.write_bytes(b"unit-test-placeholder")
+        self._native_output = native_output
+        native_root = native_output.parent
+        source_manifest = _windows_native_source_manifest(native_root)
+        source_digest = str(source_manifest["source_tree_sha256"])
+        test_artifacts = {
+            "SkillMagnetCommand.dll": (
+                b"unit-test-placeholder\0"
+                + (
+                    "skill-magnet-native-source-v1:" + source_digest
+                ).encode("utf-16-le")
+            ),
+            "SkillMagnetIdentity.exe": b"unit-test-identity-placeholder",
+        }
+        tracked_names = (*test_artifacts, "SkillMagnetNativeSource.json")
+        self._native_output_backup = {
+            name: (native_output / name).read_bytes()
+            if (native_output / name).is_file()
+            else None
+            for name in tracked_names
+        }
+        for name, payload in test_artifacts.items():
+            (native_output / name).write_bytes(payload)
+        source_manifest["artifacts"] = [
+            {
+                "path": name,
+                "size": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+            for name, payload in test_artifacts.items()
+        ]
+        (native_output / "SkillMagnetNativeSource.json").write_text(
+            json.dumps(source_manifest, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
         self.repo = self.root / "separate-user-skill-repository"
         skill = self.repo / "bounded-answer"
         skill.mkdir(parents=True)
@@ -471,6 +555,12 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.fake_codex = self._fake_codex()
 
     def tearDown(self) -> None:
+        for name, payload in self._native_output_backup.items():
+            path = self._native_output / name
+            if payload is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(payload)
         if self.previous_local_app_data is None:
             os.environ.pop("LOCALAPPDATA", None)
         else:
@@ -506,6 +596,33 @@ class ActivationEndToEndTest(unittest.TestCase):
             purpose="Make a bounded decision",
             ttl_minutes=30,
         )
+
+    def test_prepared_confirmation_has_no_state_until_atomic_persist(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        contract = engine.prepare_confirmation(self._plan(engine), confirmed=True)
+        contract_path = engine.contract_dir / f"{contract.contract_id}.json"
+        self.assertFalse(contract_path.exists())
+        self.assertFalse(engine.contract_dir.exists())
+
+        persisted = engine.persist_confirmation(contract)
+        self.assertEqual(persisted, contract)
+        self.assertTrue(contract_path.is_file())
+        with self.assertRaisesRegex(SafetyError, "identity already exists"):
+            engine.persist_confirmation(contract)
+
+    def test_cancellable_gui_preflight_does_not_persist_rejection(self) -> None:
+        engine = ActivationEngine(self.config, self.state)
+        with self.assertRaisesRegex(SkillMagnetError, "version changed"):
+            context_selection_details(
+                engine,
+                project=self.project,
+                pack_id="bounded-pack",
+                skill_id="bounded-answer",
+                runtime="codex",
+                menu_commit="0" * 40,
+                record_rejections=False,
+            )
+        self.assertFalse(engine.events_dir.exists())
 
     def _rewrite_as_legacy_entity_contract(
         self, engine: ActivationEngine, contract_id: str, purpose: str
@@ -710,6 +827,36 @@ class ActivationEndToEndTest(unittest.TestCase):
 
     def test_cross_platform_manual_selection_to_verified_application_e2e(self) -> None:
         self.assertFalse(self.state.exists())
+
+    def test_menu_mismatch_recovery_uses_an_existing_cli_action(self) -> None:
+        message = context_failure_message(
+            SkillMagnetError("reinstall required after menu installation"),
+            config_path=self.config_path,
+            state_dir=self.state,
+        )
+        self.assertIn("install-context-menu --platform windows --confirm", message)
+        self.assertNotIn("Skill Magnetへ反映", message)
+
+        mac_message = context_failure_message(
+            SkillMagnetError("reinstall required after menu installation"),
+            config_path=self.config_path,
+            state_dir=self.state,
+            platform="macos",
+        )
+        self.assertIn("install-context-menu --platform macos --confirm", mac_message)
+        self.assertNotIn("Windows Terminal", mac_message)
+
+        selection_message = context_failure_message(
+            SkillMagnetError(
+                "Pack membership changed after the selection screen opened; "
+                "close and reopen Skill Magnet"
+            ),
+            config_path=self.config_path,
+            state_dir=self.state,
+            platform="windows",
+        )
+        self.assertIn("close and reopen Skill Magnet", selection_message)
+        self.assertNotIn("install-context-menu", selection_message)
         for platform in ("windows", "macos"):
             with self.subTest(platform=platform):
                 engine = ActivationEngine(self.config, self.state)
@@ -1909,8 +2056,11 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertIn("macos_finder", macos["integration"])
         registration = render_registration("windows", self.config_path)
         self.assertIn("HKEY_CURRENT_USER", registration)
-        self.assertIn("--pack bounded-pack", registration)
-        self.assertIn('"MUIVerb"="Skill: bounded-answer"', registration)
+        self.assertIn("--launcher", registration)
+        self.assertNotIn("--pack bounded-pack", registration)
+        self.assertNotIn("\\shell\\leaf-", registration)
+        self.assertIn('"MUIVerb"="Skill Magnet"', registration)
+        self.assertIn("--launcher", windows["command"])
         self.assertIn("Finder Quick Action", render_registration("macos", self.config_path))
 
     def test_windows_individual_skill_leaves_fix_skill_runtime_and_digests(self) -> None:
@@ -1967,33 +2117,16 @@ class ActivationEndToEndTest(unittest.TestCase):
                 command_keys = [
                     key for key, _, _ in entries if key.endswith(r"\command")
                 ]
-                self.assertEqual(len(command_keys), 4)
-                leaf_command_keys = [
-                    key for key in command_keys if r"\shell\leaf-" in key
-                ]
-                manager_command_keys = [
-                    key for key in command_keys if r"\shell\library-manager" in key
-                ]
-                self.assertEqual(len(leaf_command_keys), 3)
-                self.assertEqual(len(manager_command_keys), 1)
-                self.assertTrue(
-                    all(
-                        r"\shell\leaf-" in key
-                        and r"\shell\skill-" not in key
-                        and r"\shell\runtime-" not in key
-                        and r"\shell\pack-" not in key
-                        for key in leaf_command_keys
-                    )
+                self.assertEqual(len(command_keys), 1)
+                self.assertNotIn(
+                    "\\SkillMagnetClassic\\shell\\", command_keys[0]
                 )
                 pack_labels = {
                     value
                     for _, name, value in entries
                     if name == "MUIVerb" and value != "Skill Magnet"
                 }
-                self.assertEqual(
-                    pack_labels,
-                    {leaf.skill_label for leaf in leaves} | {"Library Manager"},
-                )
+                self.assertEqual(pack_labels, set())
 
     def test_both_roots_propagate_complete_pack_contract_and_reject_tampering(self) -> None:
         product_config = Path(__file__).resolve().parents[1] / "skill-magnet.json"
@@ -2239,11 +2372,12 @@ class ActivationEndToEndTest(unittest.TestCase):
         for required in (
             "review and approve",
             "expected commit and skill digests",
-            "reinstall the Explorer menu",
-            "selected leaf matches",
+            "Library Manager",
+            "close and reopen the Skill Magnet selection screen",
             "clean source HEAD",
         ):
             self.assertIn(required, message)
+        self.assertNotIn("reinstall the Explorer menu", message)
 
     def test_context_ui_defaults_to_japanese_and_switches_to_english(self) -> None:
         self.assertEqual(context_ui_text("unknown", "language"), "言語")
@@ -2275,6 +2409,68 @@ class ActivationEndToEndTest(unittest.TestCase):
             self.assertIn(r"C:\Projects\対象", rendered)
         self.assertIn("実際の依頼", japanese)
         self.assertIn("Actual request", english)
+
+    def test_dynamic_selector_uses_normalized_unique_labels_without_internal_ids(self) -> None:
+        value = json.loads(self.config_path.read_text(encoding="utf-8"))
+        for pack in value["packs"]:
+            skill_id = pack["skills"][0]
+            pack["skill_metadata"] = {
+                skill_id: {
+                    "display_name": "同名&#x20;スキル",
+                    "purpose": "同じ表示名でも内部選択を保持する",
+                }
+            }
+        suffix_pack = dict(value["packs"][0])
+        suffix_pack["id"] = "suffix-pack"
+        suffix_pack["skills"] = ["suffix-skill"]
+        suffix_pack["skill_metadata"] = {
+            "suffix-skill": {
+                "display_name": "同名 スキル （同名 1）",
+                "purpose": "接尾辞風の実表示名も保持する",
+            }
+        }
+        value["packs"].append(suffix_pack)
+        duplicate_config = self.root / "duplicate-labels.json"
+        duplicate_config.write_text(json.dumps(value), encoding="utf-8")
+        engine = ActivationEngine(Config.load(duplicate_config), self.state)
+        choices = context_selection_choice_map(engine)
+        self.assertEqual(len(choices), 3)
+        self.assertEqual(len(set(choices)), 3)
+        self.assertTrue(all("&#x20;" not in label for label in choices))
+        self.assertTrue(all("bounded-pack" not in label for label in choices))
+        self.assertTrue(all("unused-pack" not in label for label in choices))
+        self.assertTrue(all("suffix-pack" not in label for label in choices))
+        self.assertEqual(
+            set(choices.values()),
+            {
+                ("bounded-pack", "bounded-answer"),
+                ("unused-pack", "unused-skill"),
+                ("suffix-pack", "suffix-skill"),
+            },
+        )
+
+    def test_verified_details_show_only_selected_skill_and_real_digests(self) -> None:
+        value = json.loads(self.config_path.read_text(encoding="utf-8"))
+        bounded = value["packs"][0]
+        bounded["skills"] = ["bounded-answer", "unused-skill"]
+        expanded_config = self.root / "expanded-pack.json"
+        expanded_config.write_text(json.dumps(value), encoding="utf-8")
+        engine = ActivationEngine(Config.load(expanded_config), self.state)
+        details = context_selection_details(
+            engine,
+            project=self.project,
+            pack_id="bounded-pack",
+            skill_id="bounded-answer",
+            runtime="codex",
+        )
+        self.assertEqual(details["skill_count"], 1)
+        self.assertEqual(details["skill_ids"], ("bounded-answer",))
+        rendered = context_ui_details("ja", details)
+        self.assertIn("bounded-answer", rendered)
+        self.assertNotIn("unused-skill", rendered)
+        self.assertNotIn(" / 指示 -", rendered)
+        for key in ("skill_ids_digest", "instruction_digest", "acceptance_digest"):
+            self.assertRegex(str(details[key]), r"^[0-9a-f]{64}$")
 
     def test_context_display_normalizes_only_u0020_numeric_references(self) -> None:
         details = {
@@ -2950,35 +3146,26 @@ class ActivationEndToEndTest(unittest.TestCase):
         ):
             with self.subTest(root=root_name):
                 command_keys = [key for key, _, _ in entries if key.endswith(r"\command")]
-                self.assertEqual(len(command_keys), 3)
+                self.assertEqual(len(command_keys), 1)
                 leaf_command_keys = [
                     key for key in command_keys if r"\shell\leaf-" in key
                 ]
                 manager_command_keys = [
                     key for key in command_keys if r"\shell\library-manager" in key
                 ]
-                self.assertEqual(len(leaf_command_keys), 2)
-                self.assertEqual(len(manager_command_keys), 1)
-                self.assertTrue(
-                    all(
-                        r"\shell\leaf-" in key
-                        and r"\shell\skill-" not in key
-                        and r"\shell\runtime-" not in key
-                        and r"\shell\pack-" not in key
-                        for key in leaf_command_keys
-                    )
-                )
+                self.assertEqual(len(leaf_command_keys), 0)
+                self.assertEqual(len(manager_command_keys), 0)
                 non_leaf_keys = {
                     key for key, _, _ in entries if not key.endswith(r"\command")
                 }
                 self.assertTrue(non_leaf_keys)
                 self.assertFalse(any(key.endswith(r"\command") for key in non_leaf_keys))
 
-                # Explorer owns menu opening. Closing it without choosing a runtime
-                # leaf emits no command-selection event, so no runner is dispatched.
-                selected_leaf_command = None
-                if selected_leaf_command is not None:
-                    runner(selected_leaf_command)
+                # Explorer owns menu opening. Closing it without pressing the
+                # direct root emits no command, so no runner is dispatched.
+                selected_root_command = None
+                if selected_root_command is not None:
+                    runner(selected_root_command)
 
         runner.assert_not_called()
         process.assert_not_called()
@@ -3047,26 +3234,15 @@ class ActivationEndToEndTest(unittest.TestCase):
             value for key, name, value in entries if key.endswith(r"\command") and not name
         ]
         expected = [
-            windows_command(leaf.command)
-            for leaf in windows_menu_leaves(self.config_path, "%1")
-        ]
-        expected.append(
             windows_command(
-                windows_library_manager_command_argv(self.config_path, "%1")
+                windows_root_launcher_command_argv(self.config_path, "%1")
             )
-        )
-        self.assertCountEqual(commands, expected)
-        self.assertEqual(len(commands), 3)
-        for pack_id, skill_id in (
-            ("bounded-pack", "bounded-answer"),
-            ("unused-pack", "unused-skill"),
-        ):
-            command = windows_command(
-                windows_leaf_command_argv(
-                    self.config_path, "%1", pack_id, skill_id
-                )
-            )
-            self.assertIn(command, commands)
+        ]
+        self.assertEqual(commands, expected)
+        self.assertEqual(len(commands), 1)
+        self.assertIn("--launcher", commands[0])
+        self.assertNotIn("--pack", commands[0])
+        self.assertNotIn("library ui", commands[0])
 
     def test_background_registry_entries_cover_all_leaves_and_only_owned_subtree(self) -> None:
         root = r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnetClassic"
@@ -3084,26 +3260,15 @@ class ActivationEndToEndTest(unittest.TestCase):
             value for key, name, value in entries if key.endswith(r"\command") and not name
         ]
         expected = [
-            windows_command(leaf.command)
-            for leaf in windows_menu_leaves(self.config_path, "%V")
-        ]
-        expected.append(
             windows_command(
-                windows_library_manager_command_argv(self.config_path, "%V")
+                windows_root_launcher_command_argv(self.config_path, "%V")
             )
-        )
-        self.assertCountEqual(commands, expected)
-        self.assertEqual(len(commands), 3)
-        for pack_id, skill_id in (
-            ("bounded-pack", "bounded-answer"),
-            ("unused-pack", "unused-skill"),
-        ):
-            command = windows_command(
-                windows_leaf_command_argv(
-                    self.config_path, "%V", pack_id, skill_id
-                )
-            )
-            self.assertIn(command, commands)
+        ]
+        self.assertEqual(commands, expected)
+        self.assertEqual(len(commands), 1)
+        self.assertIn("--launcher", commands[0])
+        self.assertNotIn("--pack", commands[0])
+        self.assertNotIn("library ui", commands[0])
 
     def test_both_registry_roots_preserve_special_absolute_paths_as_single_argv(self) -> None:
         config = self.root / "config 空白 日本語 & ( ) ' ! ^ # %.json"
@@ -3124,31 +3289,8 @@ class ActivationEndToEndTest(unittest.TestCase):
                     for key, name, value in entries
                     if key.endswith(r"\command") and not name
                 ]
-                leaves = windows_menu_leaves(config, placeholder)
-                self.assertEqual(len(commands), len(leaves) + 1)
-                for registered, leaf in zip(commands[:-1], leaves, strict=True):
-                    quoted_placeholder = f'"{placeholder}"'
-                    self.assertEqual(registered.count(quoted_placeholder), 1)
-                    substituted = registered.replace(
-                        quoted_placeholder, windows_command((project_path,)), 1
-                    )
-                    expected_argv = windows_leaf_command_argv(
-                        config,
-                        project_path,
-                        leaf.pack_id,
-                        leaf.skill_id,
-                        None,
-                    )
-                    self.assertEqual(substituted, windows_command(expected_argv))
-                    self.assertEqual(
-                        expected_argv[expected_argv.index("--config") + 1],
-                        os.path.abspath(str(config)),
-                    )
-                    self.assertEqual(
-                        expected_argv[expected_argv.index("--project") + 1],
-                        project_path,
-                    )
-                manager_registered = commands[-1]
+                self.assertEqual(len(commands), 1)
+                manager_registered = commands[0]
                 quoted_placeholder = f'"{placeholder}"'
                 self.assertEqual(manager_registered.count(quoted_placeholder), 1)
                 manager_substituted = manager_registered.replace(
@@ -3157,8 +3299,15 @@ class ActivationEndToEndTest(unittest.TestCase):
                 self.assertEqual(
                     manager_substituted,
                     windows_command(
-                        windows_library_manager_command_argv(config, project_path)
+                        windows_root_launcher_command_argv(config, project_path)
                     ),
+                )
+                expected_argv = windows_root_launcher_command_argv(
+                    config, project_path
+                )
+                self.assertEqual(
+                    expected_argv[expected_argv.index("--config") + 1],
+                    os.path.abspath(str(config)),
                 )
 
     def test_context_cancel_and_supported_claude_contract(self) -> None:
@@ -3272,6 +3421,403 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "")
         self.assertEqual(stderr.getvalue(), "")
 
+    def test_windows_root_launcher_opens_dynamic_selection_and_library_manager(self) -> None:
+        activation = mock.Mock()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            mock.patch("skill_magnet.cli.ActivationEngine", return_value=activation),
+            mock.patch(
+                "skill_magnet.cli.show_context_selection", return_value=None
+            ) as selection,
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            exit_code = cli_main(
+                [
+                    "--config",
+                    str(self.config_path),
+                    "--state-dir",
+                    str(self.state),
+                    "context",
+                    "--platform",
+                    "windows",
+                    "--project",
+                    str(self.project),
+                    "--launcher",
+                ]
+            )
+        self.assertEqual(exit_code, 0)
+        selection.assert_called_once()
+        self.assertTrue(selection.call_args.kwargs["allow_dynamic_selection"])
+        self.assertIsNone(selection.call_args.kwargs["pack_id"])
+        self.assertTrue(callable(selection.call_args.kwargs["library_manager"]))
+        self.assertTrue(callable(selection.call_args.kwargs["register_selected"]))
+        self.assertTrue(callable(selection.call_args.kwargs["window_ready"]))
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_root_launcher_dispatches_library_action_outside_tk_callback(self) -> None:
+        for action, extra in (
+            ("library_manager", {}),
+            ("register_selected", {"register_selected": True}),
+        ):
+            with (
+                self.subTest(action=action),
+                mock.patch(
+                    "skill_magnet.cli.show_context_selection",
+                    return_value=ContextUiAction(action),
+                ),
+                mock.patch("skill_magnet.cli._show_library_manager_ui") as manager,
+            ):
+                exit_code = cli_main(
+                    [
+                        "--config",
+                        str(self.config_path),
+                        "--state-dir",
+                        str(self.state),
+                        "context",
+                        "--platform",
+                        "windows",
+                        "--project",
+                        str(self.project),
+                        "--launcher",
+                    ]
+                )
+            self.assertEqual(exit_code, 0)
+            manager.assert_called_once_with(
+                mock.ANY,
+                self.project.resolve(),
+                context_lease=mock.ANY,
+                **extra,
+            )
+
+    def test_root_launcher_surfaces_library_startup_failure(self) -> None:
+        with (
+            mock.patch(
+                "skill_magnet.cli.show_context_selection",
+                return_value=ContextUiAction("register_selected"),
+            ),
+            mock.patch(
+                "skill_magnet.cli._show_library_manager_ui",
+                side_effect=OSError("state directory is unavailable"),
+            ),
+            mock.patch("skill_magnet.cli.show_context_error") as error_ui,
+        ):
+            exit_code = cli_main(
+                [
+                    "--config",
+                    str(self.config_path),
+                    "--state-dir",
+                    str(self.state),
+                    "context",
+                    "--platform",
+                    "windows",
+                    "--project",
+                    str(self.project),
+                    "--launcher",
+                ]
+            )
+        self.assertEqual(exit_code, 2)
+        error_ui.assert_called_once()
+        message = error_ui.call_args.args[0]
+        expected_repair = subprocess.list2cmdline(
+            [
+                sys.executable,
+                "-I",
+                "-m",
+                "skill_magnet",
+                "--config",
+                str(self.config_path.resolve()),
+                "--state-dir",
+                str(self.state.resolve()),
+                "library",
+                "ui",
+            ]
+        )
+        self.assertIn("state directory is unavailable", message)
+        self.assertIn(expected_repair, message)
+        self.assertIn(str(self.config_path.resolve()), message)
+        self.assertIn("library ui", message)
+
+    def test_root_launcher_surfaces_unexpected_ui_initialization_failure(self) -> None:
+        with (
+            mock.patch(
+                "skill_magnet.cli.show_context_selection",
+                side_effect=OSError("display initialization failed"),
+            ),
+            mock.patch("skill_magnet.cli.show_context_error") as error_ui,
+        ):
+            exit_code = cli_main(
+                [
+                    "--config",
+                    str(self.config_path),
+                    "--state-dir",
+                    str(self.state),
+                    "context",
+                    "--platform",
+                    "windows",
+                    "--project",
+                    str(self.project),
+                    "--launcher",
+                ]
+            )
+        self.assertEqual(exit_code, 2)
+        error_ui.assert_called_once()
+        message = error_ui.call_args.args[0]
+        self.assertIn("OSError", message)
+        self.assertIn("display initialization failed", message)
+        self.assertIn("library ui", message)
+
+    def test_context_launcher_lease_blocks_duplicate_and_recovers_after_release(self) -> None:
+        lease_dir = self.root / "context-lease"
+        first = acquire_context_ui_lease(lease_dir, self.project)
+        self.assertTrue(first.acquired)
+        second = acquire_context_ui_lease(lease_dir, self.project)
+        self.assertFalse(second.acquired)
+        self.assertTrue(second.owner["same_request"])
+        self.assertEqual(second.owner["pid"], os.getpid())
+        self.assertEqual(second.owner["project"], str(self.project.resolve()))
+        first.release()
+        recovered = acquire_context_ui_lease(lease_dir, self.project)
+        self.assertTrue(recovered.acquired)
+        recovered.release()
+        self.assertFalse((lease_dir / "context-launcher.owner.json").exists())
+
+    def test_context_lease_retargets_same_and_different_folder_clicks_to_manager(self) -> None:
+        lease_dir = self.root / "context-manager-handoff"
+        other_project = self.root / "other-manager-project"
+        other_project.mkdir()
+        first = acquire_context_ui_lease(lease_dir, self.project)
+        self.assertTrue(first.acquired)
+        try:
+            first.publish_window(phase="context_selection", window_handle=1111)
+            first.publish_window(phase="library_manager", window_handle=2222)
+
+            repeated = acquire_context_ui_lease(lease_dir, self.project)
+            self.assertFalse(repeated.acquired)
+            self.assertTrue(repeated.owner["same_request"])
+            self.assertEqual(repeated.owner["phase"], "library_manager")
+            self.assertEqual(repeated.owner["window_handle"], 2222)
+
+            different = acquire_context_ui_lease(lease_dir, other_project)
+            self.assertFalse(different.acquired)
+            self.assertFalse(different.owner["same_request"])
+            self.assertEqual(different.owner["phase"], "library_manager")
+            self.assertEqual(different.owner["window_handle"], 2222)
+
+            owner_record = json.loads(
+                (lease_dir / "context-launcher.owner.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(owner_record["phase"], "library_manager")
+            self.assertEqual(owner_record["window_handle"], 2222)
+        finally:
+            first.release()
+
+    def test_context_launcher_lease_recovers_owner_publish_and_release_races(self) -> None:
+        lease_dir = self.root / "context-lease-race"
+        first = acquire_context_ui_lease(lease_dir, self.project)
+        first.owner_path.unlink()
+        release = threading.Timer(0.05, first.release)
+        release.start()
+        recovered = acquire_context_ui_lease(lease_dir, self.project)
+        release.join(timeout=1)
+        self.assertTrue(recovered.acquired)
+        recovered.release()
+
+        cleanup_failure = acquire_context_ui_lease(lease_dir, self.project)
+        with mock.patch.object(Path, "unlink", side_effect=OSError("metadata busy")):
+            cleanup_failure.release()
+        self.assertFalse(cleanup_failure.acquired)
+        final = acquire_context_ui_lease(lease_dir, self.project)
+        self.assertTrue(final.acquired)
+        final.release()
+
+    def test_duplicate_root_launcher_focuses_existing_window_without_second_ui(self) -> None:
+        lease = acquire_context_ui_lease(self.state, self.project)
+        try:
+            with (
+                mock.patch("skill_magnet.cli.focus_context_ui", return_value=True) as focus,
+                mock.patch("skill_magnet.cli.show_context_selection") as selection,
+                mock.patch("skill_magnet.cli.show_context_error") as error_ui,
+            ):
+                exit_code = cli_main(
+                    [
+                        "--config",
+                        str(self.config_path),
+                        "--state-dir",
+                        str(self.state),
+                        "context",
+                        "--platform",
+                        "windows",
+                        "--project",
+                        str(self.project),
+                        "--launcher",
+                    ]
+                )
+        finally:
+            lease.release()
+        self.assertEqual(exit_code, 0)
+        focus.assert_called_once()
+        selection.assert_not_called()
+        error_ui.assert_not_called()
+
+    def test_duplicate_root_launcher_gives_recovery_when_focus_fails(self) -> None:
+        lease = acquire_context_ui_lease(self.state, self.project)
+        try:
+            with (
+                mock.patch("skill_magnet.cli.focus_context_ui", return_value=False),
+                mock.patch("skill_magnet.cli.show_context_selection") as selection,
+                mock.patch("skill_magnet.cli.show_context_error") as error_ui,
+            ):
+                exit_code = cli_main(
+                    [
+                        "--config",
+                        str(self.config_path),
+                        "--state-dir",
+                        str(self.state),
+                        "context",
+                        "--platform",
+                        "windows",
+                        "--project",
+                        str(self.project),
+                        "--launcher",
+                    ]
+                )
+        finally:
+            lease.release()
+        self.assertEqual(exit_code, 0)
+        selection.assert_not_called()
+        error_ui.assert_called_once()
+        message = error_ui.call_args.args[0]
+        self.assertIn("すでに処理中", message)
+        self.assertIn("復旧方法", message)
+        self.assertIn("タスク マネージャー", message)
+
+    def test_duplicate_root_launcher_does_not_drop_a_different_folder(self) -> None:
+        other_project = self.root / "other-project"
+        other_project.mkdir()
+        lease = acquire_context_ui_lease(self.state, self.project)
+        try:
+            with (
+                mock.patch("skill_magnet.cli.focus_context_ui", return_value=True),
+                mock.patch("skill_magnet.cli.show_context_selection") as selection,
+                mock.patch("skill_magnet.cli.show_context_error") as error_ui,
+            ):
+                exit_code = cli_main(
+                    [
+                        "--config",
+                        str(self.config_path),
+                        "--state-dir",
+                        str(self.state),
+                        "context",
+                        "--platform",
+                        "windows",
+                        "--project",
+                        str(other_project),
+                        "--launcher",
+                    ]
+                )
+        finally:
+            lease.release()
+        self.assertEqual(exit_code, 0)
+        selection.assert_not_called()
+        error_ui.assert_called_once()
+        message = error_ui.call_args.args[0]
+        self.assertIn("別のフォルダー", message)
+        self.assertIn(str(self.project.resolve()), message)
+        self.assertIn(str(other_project.resolve()), message)
+        self.assertIn("もう一度右クリック", message)
+
+    def test_windows_context_config_load_failure_always_shows_actionable_ui(self) -> None:
+        missing = self.root / "missing-config.json"
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            mock.patch("skill_magnet.cli.show_context_error") as error_ui,
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            exit_code = cli_main(
+                [
+                    "--config",
+                    str(missing),
+                    "context",
+                    "--platform",
+                    "windows",
+                    "--project",
+                    str(self.project),
+                    "--launcher",
+                ]
+            )
+        self.assertEqual(exit_code, 2)
+        error_ui.assert_called_once()
+        message = error_ui.call_args.args[0]
+        expected_repair = subprocess.list2cmdline(
+            [
+                sys.executable,
+                "-I",
+                "-m",
+                "skill_magnet",
+                "--config",
+                str(missing.resolve()),
+                "library",
+                "ui",
+            ]
+        )
+        self.assertIn("原因", message)
+        self.assertIn("Library Manager", message)
+        self.assertIn(str(missing), message)
+        self.assertIn(expected_repair, message)
+        self.assertIn("library ui", message)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_context_repair_command_binds_and_quotes_the_running_python(self) -> None:
+        executable = r"C:\Program Files\Python 3.12\python.exe"
+        config = self.root / "config path & owner" / "skill-magnet.json"
+        state = self.root / "state path & owner"
+        expected = subprocess.list2cmdline(
+            [
+                executable,
+                "-I",
+                "-m",
+                "skill_magnet",
+                "--config",
+                str(config.resolve()),
+                "--state-dir",
+                str(state.resolve()),
+                "library",
+                "ui",
+            ]
+        )
+
+        with mock.patch("skill_magnet.ui.sys.executable", executable):
+            surface = context_failure_surface(
+                SkillMagnetError("config JSON is invalid"),
+                config_path=config,
+                state_dir=state,
+            )
+
+        self.assertIn(expected, surface["next_action"])
+        self.assertNotIn("python -m skill_magnet", surface["next_action"])
+
+    def test_macos_context_recovery_messages_never_name_windows_terminal(self) -> None:
+        for error in (
+            SkillMagnetError("config JSON is invalid"),
+            SkillMagnetError("Library Manager could not recover"),
+            SkillMagnetError("unknown launch failure"),
+        ):
+            with self.subTest(error=str(error)):
+                surface = context_failure_surface(
+                    error,
+                    config_path=self.config_path,
+                    state_dir=self.state,
+                    platform="macos",
+                )
+                self.assertIn("Terminalで", surface["next_action"])
+                self.assertNotIn("Windows Terminal", surface["next_action"])
+
     def test_context_rejects_stale_installed_menu_without_state(self) -> None:
         engine = ActivationEngine(self.config, self.state)
         with self.assertRaises(Exception):
@@ -3319,13 +3865,14 @@ class ActivationEndToEndTest(unittest.TestCase):
             all(any(call[2].startswith(root) for root in classic_roots) for call in adds)
         )
         commands = [call[call.index("/d") + 1] for call in adds if "\\command" in call[2]]
-        self.assertEqual(len(commands), 6)
+        self.assertEqual(len(commands), 2)
         pack_commands = [command for command in commands if "--pack" in command]
         manager_commands = [command for command in commands if "library ui" in command]
-        self.assertEqual(len(pack_commands), 4)
-        self.assertEqual(len(manager_commands), 2)
+        self.assertEqual(len(pack_commands), 0)
+        self.assertEqual(len(manager_commands), 0)
+        self.assertTrue(all("--launcher" in command for command in commands))
         self.assertTrue(all("--runtime" not in command for command in commands))
-        self.assertTrue(result["reinstall_required_after_pack_change"])
+        self.assertFalse(result["reinstall_required_after_pack_change"])
         self.assertFalse(self.state.exists())
 
     def test_windows_public_cli_installs_and_uninstalls_modern_menu_by_default(self) -> None:
@@ -3333,6 +3880,7 @@ class ActivationEndToEndTest(unittest.TestCase):
         rollback_result = {"rolled_back": True, "rollback_point_removed": True}
         stdout = io.StringIO()
         with (
+            mock.patch("skill_magnet.cli.validate_isolated_menu_runtime") as preflight,
             mock.patch(
                 "skill_magnet.cli.install_windows_context_menus",
                 return_value=install_result,
@@ -3350,8 +3898,31 @@ class ActivationEndToEndTest(unittest.TestCase):
                 ]
             )
         self.assertEqual(exit_code, 0)
+        preflight.assert_called_once_with()
         install.assert_called_once_with(self.config_path)
         self.assertEqual(json.loads(stdout.getvalue()), install_result)
+
+        with (
+            mock.patch(
+                "skill_magnet.cli.validate_isolated_menu_runtime",
+                side_effect=SkillMagnetError("isolated runtime mismatch"),
+            ),
+            mock.patch("skill_magnet.cli.install_windows_context_menus") as blocked_install,
+            redirect_stderr(io.StringIO()) as blocked_error,
+        ):
+            blocked_code = cli_main(
+                [
+                    "--config",
+                    str(self.config_path),
+                    "install-context-menu",
+                    "--platform",
+                    "windows",
+                    "--confirm",
+                ]
+            )
+        self.assertEqual(blocked_code, 2)
+        blocked_install.assert_not_called()
+        self.assertIn("isolated runtime mismatch", blocked_error.getvalue())
 
         stdout = io.StringIO()
         with (
@@ -3375,6 +3946,50 @@ class ActivationEndToEndTest(unittest.TestCase):
         rollback.assert_called_once_with()
         self.assertEqual(json.loads(stdout.getvalue()), rollback_result)
 
+    def test_menu_runtime_preflight_rejects_split_or_editable_generation(self) -> None:
+        purelib = self.root / "site-packages"
+        module_init = purelib / "skill_magnet" / "__init__.py"
+        module_init.parent.mkdir(parents=True)
+        module_init.write_text("# probe path\n", encoding="utf-8")
+
+        def probe_result(*, module: str, distribution: str, editable: bool) -> SimpleNamespace:
+            from skill_magnet import __version__
+            from skill_magnet.platforms import _python_runtime_source_sha256, _PACKAGE_ROOT
+
+            return SimpleNamespace(
+                returncode=0,
+                stderr="",
+                stdout=json.dumps(
+                    {
+                        "module_version": module,
+                        "distribution_version": distribution,
+                        "distribution_name": "skill-magnet",
+                        "module_init": str(module_init),
+                        "distribution_module_init": str(module_init),
+                        "purelib": str(purelib),
+                        "editable": editable,
+                        "python_payload_sha256": _python_runtime_source_sha256(_PACKAGE_ROOT),
+                    }
+                ),
+            )
+
+        from skill_magnet import __version__
+
+        valid = validate_isolated_menu_runtime(
+            run=lambda *_args, **_kwargs: probe_result(
+                module=__version__, distribution=__version__, editable=False
+            )
+        )
+        self.assertEqual(valid["module_version"], __version__)
+        for result in (
+            probe_result(module="0.5.0", distribution=__version__, editable=False),
+            probe_result(module=__version__, distribution=__version__, editable=True),
+        ):
+            with self.subTest(result=result), self.assertRaisesRegex(
+                SkillMagnetError, "まだ登録していません"
+            ):
+                validate_isolated_menu_runtime(run=lambda *_args, **_kwargs: result)
+
     def test_windows_commands_quote_special_config_path_and_placeholders(self) -> None:
         special = self.root / "config & (日本語) ' quoted.json"
         special.write_bytes(self.config_path.read_bytes())
@@ -3386,59 +4001,37 @@ class ActivationEndToEndTest(unittest.TestCase):
             self.assertIn("%1", command)
             self.assertIn("--menu-skill-digest", command)
 
-    def test_windows_modern_manifest_has_manager_and_immutable_skill_leaves(self) -> None:
+    def test_windows_modern_manifest_has_one_direct_root_launcher(self) -> None:
         rendered = render_windows_modern_menu_manifest(self.config_path)
         lines = rendered.splitlines()
         self.assertEqual(lines[0], "skill-magnet-menu-v4")
-        self.assertEqual(len(lines), 5)
+        self.assertEqual(len(lines), 2)
         records = [line.split("\t") for line in lines[1:]]
         self.assertTrue(all(len(record) == 7 for record in records))
-        registration = records[0]
+        launcher = records[0]
         self.assertEqual(
-            registration[:5],
+            launcher[:5],
             [
-                "__register_folder__",
+                "__launcher__",
                 "Skill Magnet",
-                "register",
-                "register-folder",
-                "このフォルダーのスキルを登録",
-            ],
-        )
-        self.assertEqual(registration[6].count("__SKILL_MAGNET_PROJECT__"), 1)
-        self.assertIn("--register-selected", registration[6])
-        manager = records[1]
-        self.assertEqual(
-            manager[:5],
-            [
-                "__library_manager__",
+                "launcher",
+                "root",
                 "Skill Magnet",
-                "manager",
-                "library-manager",
-                "Library Manager",
             ],
         )
-        self.assertEqual(manager[6].count("__SKILL_MAGNET_PROJECT__"), 1)
-        self.assertIn("library ui", manager[6])
-        self.assertIn("--repository", manager[6])
-        skill_records = records[2:]
-        self.assertCountEqual(
-            [(record[0], record[3], record[4]) for record in skill_records],
-            [
-                ("bounded-pack", "bounded-answer", "Skill: bounded-answer"),
-                ("unused-pack", "unused-skill", "Skill: unused-skill"),
-            ],
-        )
-        for _, menu_label, selection_kind, _, display_name, purpose, command in skill_records:
-            self.assertEqual(menu_label, "Skill Magnet")
-            self.assertEqual(selection_kind, "skill")
-            self.assertTrue(display_name)
-            self.assertTrue(purpose)
-            self.assertEqual(command.count("__SKILL_MAGNET_PROJECT__"), 1)
-            self.assertIn("--skill", command)
-            self.assertIn("--menu-commit", command)
-            self.assertIn("--menu-instruction-digest", command)
-            self.assertIn("--menu-acceptance-digest", command)
-            self.assertNotIn("--runtime", command)
+        self.assertIn("--launcher", launcher[6])
+        self.assertIn(" -I -m skill_magnet ", launcher[6])
+        self.assertNotIn("sys.path.insert", launcher[6])
+        self.assertEqual(launcher[6].count("__SKILL_MAGNET_PROJECT__"), 1)
+        self.assertNotIn("Library Manager\t", rendered)
+        self.assertNotIn("Skill Pack:", rendered)
+        self.assertNotIn("Skill:", rendered)
+
+        colliding = self.root / "__SKILL_MAGNET_PROJECT__" / "skill-magnet.json"
+        colliding.parent.mkdir()
+        colliding.write_bytes(self.config_path.read_bytes())
+        with self.assertRaisesRegex(Exception, "collides with the project placeholder"):
+            render_windows_modern_menu_manifest(colliding)
 
     def test_library_manager_context_command_preselects_selected_folder(self) -> None:
         command = windows_library_manager_command_argv(
@@ -3484,6 +4077,10 @@ class ActivationEndToEndTest(unittest.TestCase):
 
         def fake_run(args: list[str], **_: object) -> SimpleNamespace:
             calls.append(args)
+            if args[:2] == ["reg", "query"]:
+                return SimpleNamespace(
+                    returncode=1, stdout="", stderr="__REGISTRY_KEY_NOT_FOUND__"
+                )
             action = args[args.index("-Action") + 1]
             installed = action != "uninstall"
             return SimpleNamespace(
@@ -3492,7 +4089,10 @@ class ActivationEndToEndTest(unittest.TestCase):
                     {
                         "installed": installed,
                         "name": "SkillMagnet.ContextMenu",
-                        "package_full_name": "SkillMagnet.ContextMenu_1.0.0.0_x64_test",
+                        "version": "0.5.9.0",
+                        "architecture": "X64",
+                        "publisher": "CN=Skill Magnet Local",
+                        "package_full_name": "SkillMagnet.ContextMenu_0.5.9.0_x64_test",
                         "install_location": str(root),
                         "legacy_certificate_thumbprints_removed": (
                             ["A" * 40] if action == "install" else []
@@ -3514,6 +4114,12 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertEqual(installed["legacy_certificate_thumbprints_removed"], ["A" * 40])
         self.assertTrue(status["dll_exists"])
         self.assertTrue(status["menu_manifest_exists"])
+        self.assertEqual(status["menu_leaf_count"], 0)
+        self.assertEqual(status["menu_action_count"], 1)
+        self.assertEqual(status["root_launcher_entry_count"], 1)
+        self.assertEqual(status["configured_selection_count"], 2)
+        self.assertEqual(status["library_manager_entry_count"], 0)
+        self.assertEqual(status["register_folder_entry_count"], 0)
         self.assertTrue(status["command_target_exists"])
         self.assertTrue(status["command_target_signature_valid"])
         self.assertFalse(status["self_signed_launcher_referenced"])
@@ -3521,11 +4127,13 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertTrue(status["identity_anchor_exists"])
         self.assertTrue(status["identity_matches"])
         self.assertTrue(status["com_identity_matches"])
+        self.assertTrue(status["registered_identity_matches"])
+        self.assertEqual(status["classic_owned_roots_present"], [])
         self.assertTrue(status["usable_installed_state"])
         self.assertTrue(removed["removed"])
         self.assertFalse(root.exists())
         self.assertEqual(
-            [call[call.index("-Action") + 1] for call in calls],
+            [call[call.index("-Action") + 1] for call in calls if "-Action" in call],
             ["install", "status", "status", "uninstall", "cleanup-certificate"],
         )
         install_call = calls[0]
@@ -3536,7 +4144,262 @@ class ActivationEndToEndTest(unittest.TestCase):
             os.path.normcase(root.name),
         )
 
-    def test_windows_product_install_skips_unsigned_development_contract_executable(self) -> None:
+    def test_windows_modern_status_rejects_identity_and_com_manifest_tampering(self) -> None:
+        root = self.root / "modern-manifest-tamper"
+        package_identity = {
+            "version": "0.5.9.0",
+            "architecture": "X64",
+            "publisher": "CN=Skill Magnet Local",
+        }
+
+        def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+            if args[:2] == ["reg", "query"]:
+                return SimpleNamespace(
+                    returncode=1, stdout="", stderr="__REGISTRY_KEY_NOT_FOUND__"
+                )
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "installed": True,
+                        "name": "SkillMagnet.ContextMenu",
+                        **package_identity,
+                        "install_location": str(root),
+                    }
+                ),
+                stderr="",
+            )
+
+        with mock.patch("skill_magnet.platforms.os.name", "nt"):
+            install_windows_modern_context_menu(
+                self.config_path, install_root=root, run=fake_run, build=False
+            )
+        manifest = root / "AppxManifest.xml"
+        original = manifest.read_bytes()
+
+        document = ET.fromstring(original)
+        foundation = {
+            "foundation": "http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+        }
+        identity = document.find("foundation:Identity", foundation)
+        self.assertIsNotNone(identity)
+        identity.set("Version", "0.5.8.0")
+        manifest.write_bytes(ET.tostring(document, encoding="utf-8", xml_declaration=True))
+        with mock.patch("skill_magnet.platforms.os.name", "nt"):
+            status = windows_modern_context_menu_status(
+                install_root=root, config=self.config_path, run=fake_run
+            )
+        self.assertFalse(status["identity_matches"])
+        self.assertFalse(status["usable_installed_state"])
+
+        manifest.write_bytes(original)
+        document = ET.fromstring(original)
+        namespaces = {
+            "foundation": "http://schemas.microsoft.com/appx/manifest/foundation/windows10",
+            "com": "http://schemas.microsoft.com/appx/manifest/com/windows10",
+            "desktop4": "http://schemas.microsoft.com/appx/manifest/desktop/windows10/4",
+            "desktop5": "http://schemas.microsoft.com/appx/manifest/desktop/windows10/5",
+            "rescap": "http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities",
+        }
+        command_class = document.find(".//com:Class", namespaces)
+        self.assertIsNotNone(command_class)
+        command_class.set("Path", "WrongCommand.dll")
+        manifest.write_bytes(ET.tostring(document, encoding="utf-8", xml_declaration=True))
+        with mock.patch("skill_magnet.platforms.os.name", "nt"):
+            status = windows_modern_context_menu_status(
+                install_root=root, config=self.config_path, run=fake_run
+            )
+        self.assertFalse(status["com_identity_matches"])
+        self.assertFalse(status["usable_installed_state"])
+
+        for xpath, attribute, invalid_value in (
+            (".//foundation:Application", "Executable", "Missing.exe"),
+            (".//com:Extension", "Category", "wrong.category"),
+            (".//desktop4:Extension", "Category", "wrong.category"),
+            (".//com:SurrogateServer", "AppId", "00000000-0000-0000-0000-000000000000"),
+            (".//foundation:TargetDeviceFamily", "Name", "Windows.Universal"),
+            (".//rescap:Capability", "Name", "wrongCapability"),
+        ):
+            with self.subTest(xpath=xpath, attribute=attribute):
+                document = ET.fromstring(original)
+                target = document.find(xpath, namespaces)
+                self.assertIsNotNone(target)
+                target.set(attribute, invalid_value)
+                manifest.write_bytes(
+                    ET.tostring(document, encoding="utf-8", xml_declaration=True)
+                )
+                with mock.patch("skill_magnet.platforms.os.name", "nt"):
+                    status = windows_modern_context_menu_status(
+                        install_root=root, config=self.config_path, run=fake_run
+                    )
+                self.assertFalse(status["com_identity_matches"])
+                self.assertFalse(status["usable_installed_state"])
+
+        for xpath, result_key in (
+            (".//foundation:Identity", "identity_matches"),
+            (".//foundation:Application", "com_identity_matches"),
+            (".//com:Extension", "com_identity_matches"),
+            (".//desktop4:Extension", "com_identity_matches"),
+            (".//com:ComServer", "com_identity_matches"),
+            (".//com:SurrogateServer", "com_identity_matches"),
+            (".//com:Class", "com_identity_matches"),
+            (".//desktop4:FileExplorerContextMenus", "com_identity_matches"),
+            (".//desktop5:ItemType", "com_identity_matches"),
+            (".//desktop5:Verb", "com_identity_matches"),
+        ):
+            with self.subTest(extra_attribute=xpath):
+                document = ET.fromstring(original)
+                target = document.find(xpath, namespaces)
+                self.assertIsNotNone(target)
+                target.set("Unexpected", "must-fail-closed")
+                manifest.write_bytes(
+                    ET.tostring(document, encoding="utf-8", xml_declaration=True)
+                )
+                with mock.patch("skill_magnet.platforms.os.name", "nt"):
+                    status = windows_modern_context_menu_status(
+                        install_root=root, config=self.config_path, run=fake_run
+                    )
+                self.assertFalse(status[result_key])
+                self.assertFalse(status["usable_installed_state"])
+
+        manifest.write_bytes(original)
+        document = ET.fromstring(original)
+        com_extension = document.find(".//com:Extension", namespaces)
+        self.assertIsNotNone(com_extension)
+        com_extension.append(
+            ET.Element("{http://schemas.microsoft.com/appx/manifest/com/windows10}ComServer")
+        )
+        manifest.write_bytes(ET.tostring(document, encoding="utf-8", xml_declaration=True))
+        with mock.patch("skill_magnet.platforms.os.name", "nt"):
+            status = windows_modern_context_menu_status(
+                install_root=root, config=self.config_path, run=fake_run
+            )
+        self.assertFalse(status["com_identity_matches"])
+        self.assertFalse(status["usable_installed_state"])
+
+        manifest.write_bytes(original)
+        package_identity["version"] = "0.5.8.0"
+        with mock.patch("skill_magnet.platforms.os.name", "nt"):
+            status = windows_modern_context_menu_status(
+                install_root=root, config=self.config_path, run=fake_run
+            )
+        self.assertFalse(status["registered_identity_matches"])
+        self.assertFalse(status["usable_installed_state"])
+
+        package_identity["version"] = "0.5.9.0"
+        package_identity["same_name_package_count"] = 2
+        package_identity["expected_identity_match_count"] = 1
+        package_identity["unexpected_same_name_package_count"] = 1
+        with mock.patch("skill_magnet.platforms.os.name", "nt"):
+            status = windows_modern_context_menu_status(
+                install_root=root, config=self.config_path, run=fake_run
+            )
+        self.assertFalse(status["registered_identity_matches"])
+        self.assertFalse(status["usable_installed_state"])
+        package_identity.pop("same_name_package_count")
+        package_identity.pop("expected_identity_match_count")
+        package_identity.pop("unexpected_same_name_package_count")
+
+        manifest.write_bytes(original)
+        document = ET.fromstring(original)
+        item = document.find(".//desktop5:ItemType", namespaces)
+        self.assertIsNotNone(item)
+        duplicate = ET.Element(
+            "{http://schemas.microsoft.com/appx/manifest/desktop/windows10/5}Verb",
+            {
+                "Id": "DuplicateVerb",
+                "Clsid": "13E2A9DD-4378-4F9D-A385-973C61B19E63",
+            },
+        )
+        item.append(duplicate)
+        manifest.write_bytes(ET.tostring(document, encoding="utf-8", xml_declaration=True))
+        with mock.patch("skill_magnet.platforms.os.name", "nt"):
+            status = windows_modern_context_menu_status(
+                install_root=root, config=self.config_path, run=fake_run
+            )
+        self.assertFalse(status["com_identity_matches"])
+        self.assertFalse(status["usable_installed_state"])
+
+        manifest.write_bytes(original)
+        document = ET.fromstring(original)
+        container = document.find(".//desktop4:FileExplorerContextMenus", namespaces)
+        self.assertIsNotNone(container)
+        container.append(
+            ET.Element(
+                "{http://schemas.microsoft.com/appx/manifest/desktop/windows10/5}ItemType"
+            )
+        )
+        manifest.write_bytes(ET.tostring(document, encoding="utf-8", xml_declaration=True))
+        with mock.patch("skill_magnet.platforms.os.name", "nt"):
+            status = windows_modern_context_menu_status(
+                install_root=root, config=self.config_path, run=fake_run
+            )
+        self.assertFalse(status["com_identity_matches"])
+        self.assertFalse(status["usable_installed_state"])
+
+    def test_windows_modern_status_rejects_native_source_and_binary_tampering(self) -> None:
+        root = self.root / "modern-native-binding-tamper"
+
+        def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+            if args[:2] == ["reg", "query"]:
+                return SimpleNamespace(
+                    returncode=1, stdout="", stderr="__REGISTRY_KEY_NOT_FOUND__"
+                )
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "installed": True,
+                        "name": "SkillMagnet.ContextMenu",
+                        "version": "0.5.9.0",
+                        "architecture": "X64",
+                        "publisher": "CN=Skill Magnet Local",
+                        "install_location": str(root),
+                    }
+                ),
+                stderr="",
+            )
+
+        with mock.patch("skill_magnet.platforms.os.name", "nt"):
+            installed = install_windows_modern_context_menu(
+                self.config_path, install_root=root, run=fake_run, build=False
+            )
+        self.assertTrue(installed["native_build_binding_valid"])
+
+        manifest_path = root / "SkillMagnetNativeSource.json"
+        original_manifest = manifest_path.read_bytes()
+        manifest = json.loads(original_manifest)
+        manifest["source_tree_sha256"] = "0" * 64
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        with mock.patch("skill_magnet.platforms.os.name", "nt"):
+            status = windows_modern_context_menu_status(
+                install_root=root, config=self.config_path, run=fake_run
+            )
+        self.assertFalse(status["native_source_manifest_valid"])
+        self.assertFalse(status["native_build_binding_valid"])
+        self.assertFalse(status["usable_installed_state"])
+
+        manifest_path.write_bytes(original_manifest)
+        dll_path = root / "SkillMagnetCommand.dll"
+        dll_path.write_bytes(b"old-signed-dll-without-current-source-binding")
+        manifest = json.loads(original_manifest)
+        manifest["artifacts"][0] = {
+            "path": "SkillMagnetCommand.dll",
+            "size": dll_path.stat().st_size,
+            "sha256": hashlib.sha256(dll_path.read_bytes()).hexdigest(),
+        }
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        with mock.patch("skill_magnet.platforms.os.name", "nt"):
+            status = windows_modern_context_menu_status(
+                install_root=root, config=self.config_path, run=fake_run
+            )
+        self.assertTrue(status["native_source_manifest_valid"])
+        self.assertTrue(status["native_artifact_hashes_valid"])
+        self.assertFalse(status["dll_native_source_binding_valid"])
+        self.assertFalse(status["native_build_binding_valid"])
+        self.assertFalse(status["usable_installed_state"])
+
+    def test_windows_product_install_runs_native_contract_test(self) -> None:
         root = self.root / "policy-safe-modern-install"
         output = (
             Path(__file__).resolve().parents[1]
@@ -3548,6 +4411,10 @@ class ActivationEndToEndTest(unittest.TestCase):
 
         def fake_run(args: list[str], **_: object) -> SimpleNamespace:
             calls.append(args)
+            if args[:2] == ["reg", "query"]:
+                return SimpleNamespace(
+                    returncode=1, stdout="", stderr="__REGISTRY_KEY_NOT_FOUND__"
+                )
             if any(str(item).endswith("build.ps1") for item in args):
                 output.mkdir(exist_ok=True)
                 for name in ("SkillMagnetCommand.dll", "SkillMagnetIdentity.exe"):
@@ -3558,7 +4425,14 @@ class ActivationEndToEndTest(unittest.TestCase):
             return SimpleNamespace(
                 returncode=0,
                 stdout=json.dumps(
-                    {"installed": True, "name": "SkillMagnet.ContextMenu"}
+                    {
+                        "installed": True,
+                        "name": "SkillMagnet.ContextMenu",
+                        "version": "0.5.9.0",
+                        "architecture": "X64",
+                        "publisher": "CN=Skill Magnet Local",
+                        "install_location": str(root),
+                    }
                 ),
                 stderr="",
             )
@@ -3571,7 +4445,7 @@ class ActivationEndToEndTest(unittest.TestCase):
         build_call = next(
             call for call in calls if any(str(item).endswith("build.ps1") for item in call)
         )
-        self.assertIn("-SkipContractTest", build_call)
+        self.assertNotIn("-SkipContractTest", build_call)
 
     def test_windows_modern_install_removes_deprecated_blocked_launcher(self) -> None:
         root = self.root / "remove-blocked-launcher"
@@ -3580,6 +4454,10 @@ class ActivationEndToEndTest(unittest.TestCase):
         blocked.write_bytes(b"deprecated self-signed adapter")
 
         def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+            if args[:2] == ["reg", "query"]:
+                return SimpleNamespace(
+                    returncode=1, stdout="", stderr="__REGISTRY_KEY_NOT_FOUND__"
+                )
             action = args[args.index("-Action") + 1]
             return SimpleNamespace(
                 returncode=0,
@@ -3587,6 +4465,10 @@ class ActivationEndToEndTest(unittest.TestCase):
                     {
                         "installed": action != "uninstall",
                         "name": "SkillMagnet.ContextMenu",
+                        "version": "0.5.9.0",
+                        "architecture": "X64",
+                        "publisher": "CN=Skill Magnet Local",
+                        "install_location": str(root),
                     }
                 ),
                 stderr="",
@@ -3600,8 +4482,109 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertFalse(blocked.exists())
         self.assertFalse(result["deprecated_launcher_exists"])
 
+    def test_windows_modern_operations_preserve_symlinked_install_targets(self) -> None:
+        target = self.root / "foreign-windows-context-target"
+        target.mkdir()
+        sentinel = target / "do-not-delete.txt"
+        sentinel.write_text("foreign data", encoding="utf-8")
+        link = self.root / "redirected-context-root"
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except OSError as exc:
+            junction = subprocess.run(
+                ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+                capture_output=True,
+                text=True,
+            )
+            if junction.returncode != 0 or not link.is_junction():
+                self.skipTest(
+                    "directory symlink and junction are unavailable: "
+                    + str(exc)
+                    + " / "
+                    + (junction.stderr or junction.stdout).strip()
+                )
+
+        for install_root in (link, link / "nested" / "ContextMenu"):
+            with self.subTest(install_root=install_root):
+                calls: list[list[str]] = []
+
+                def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+                    calls.append(args)
+                    return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+                with (
+                    mock.patch("skill_magnet.platforms.os.name", "nt"),
+                    self.assertRaisesRegex(SafetyError, "symlink or junction"),
+                ):
+                    uninstall_windows_modern_context_menu(
+                        install_root=install_root, run=fake_run
+                    )
+                self.assertEqual(calls, [])
+                self.assertEqual(sentinel.read_text(encoding="utf-8"), "foreign data")
+
+    def test_windows_backup_and_uninstall_preserve_nested_junction_target(self) -> None:
+        root = self.root / "nested-junction-context-root"
+        root.mkdir()
+        target = self.root / "foreign-nested-junction-target"
+        target.mkdir()
+        sentinel = target / "do-not-delete.txt"
+        sentinel.write_text("foreign nested data", encoding="utf-8")
+        junction = root / "Assets"
+        try:
+            junction.symlink_to(target, target_is_directory=True)
+        except OSError as exc:
+            created = subprocess.run(
+                [
+                    "cmd.exe",
+                    "/d",
+                    "/c",
+                    "mklink",
+                    "/J",
+                    str(junction),
+                    str(target),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if created.returncode != 0 or not junction.is_junction():
+                self.skipTest(
+                    "directory symlink and junction are unavailable: "
+                    + str(exc)
+                    + " / "
+                    + (created.stderr or created.stdout).strip()
+                )
+
+        calls: list[list[str]] = []
+
+        def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+            calls.append(args)
+            return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+        backup = root.with_name(root.name + ".rollback")
+        with self.assertRaisesRegex(SafetyError, "symlink or junction"):
+            _capture_windows_context_backup(
+                backup, install_root=root, run=fake_run
+            )
+        with (
+            mock.patch("skill_magnet.platforms.os.name", "nt"),
+            self.assertRaisesRegex(SafetyError, "symlink or junction"),
+        ):
+            uninstall_windows_modern_context_menu(
+                install_root=root, run=fake_run
+            )
+        self.assertEqual(calls, [])
+        self.assertFalse(backup.exists())
+        self.assertEqual(
+            sentinel.read_text(encoding="utf-8"), "foreign nested data"
+        )
+
+        if junction.is_symlink():
+            junction.unlink()
+        else:
+            junction.rmdir()
+
     @unittest.skipUnless(sys.platform == "win32", "Windows certificate provider required")
-    def test_windows_certificate_cleanup_resume_skips_missing_machine_certificate(self) -> None:
+    def test_windows_certificate_cleanup_preserves_state_when_owner_is_missing(self) -> None:
         external = self.root / "certificate-cleanup-resume"
         external.mkdir()
         (external / "certificate-state.json").write_text(
@@ -3639,8 +4622,45 @@ class ActivationEndToEndTest(unittest.TestCase):
             text=True,
             timeout=10,
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('"name":"SkillMagnet.ContextMenu"', result.stdout)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("all certificates were preserved", result.stderr)
+        self.assertTrue((external / "certificate-state.json").is_file())
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows certificate provider required")
+    def test_windows_certificate_cleanup_preserves_malformed_state(self) -> None:
+        external = self.root / "malformed-certificate-cleanup"
+        external.mkdir()
+        state = external / "certificate-state.json"
+        state.write_bytes(b"{not-json")
+        package_script = (
+            Path(__file__).resolve().parents[1]
+            / "native"
+            / "windows-modern-context-menu"
+            / "package.ps1"
+        )
+
+        result = subprocess.run(
+            [
+                "pwsh.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(package_script),
+                "-Action",
+                "cleanup-certificate",
+                "-ExternalLocation",
+                str(external),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("all certificates were preserved", result.stderr)
+        self.assertEqual(state.read_bytes(), b"{not-json")
 
     def test_windows_combined_install_and_rollback_restore_classic_and_package_state(self) -> None:
         root = self.root / "combined-modern"
@@ -3657,7 +4677,12 @@ class ActivationEndToEndTest(unittest.TestCase):
             if args[0] == "reg":
                 action, target = args[1], args[2]
                 if action == "query":
-                    return SimpleNamespace(returncode=0 if registry.get(target) else 1, stdout="", stderr="")
+                    present = bool(registry.get(target))
+                    return SimpleNamespace(
+                        returncode=0 if present else 1,
+                        stdout="",
+                        stderr="" if present else "__REGISTRY_KEY_NOT_FOUND__",
+                    )
                 if action == "export":
                     Path(args[3]).write_text(target, encoding="utf-8")
                     return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -3683,7 +4708,16 @@ class ActivationEndToEndTest(unittest.TestCase):
                 package_installed = False
             return SimpleNamespace(
                 returncode=0,
-                stdout=json.dumps({"installed": package_installed, "name": "SkillMagnet.ContextMenu"}),
+                stdout=json.dumps(
+                    {
+                        "installed": package_installed,
+                        "name": "SkillMagnet.ContextMenu",
+                        "version": "0.5.9.0",
+                        "architecture": "X64",
+                        "publisher": "CN=Skill Magnet Local",
+                        "install_location": str(root),
+                    }
+                ),
                 stderr="",
             )
 
@@ -3793,8 +4827,11 @@ class ActivationEndToEndTest(unittest.TestCase):
             if args[0] == "reg":
                 action, target = args[1], args[2]
                 if action == "query":
+                    present = bool(registry.get(target))
                     return SimpleNamespace(
-                        returncode=0 if registry.get(target) else 1, stdout="", stderr=""
+                        returncode=0 if present else 1,
+                        stdout="",
+                        stderr="" if present else "__REGISTRY_KEY_NOT_FOUND__",
                     )
                 if action == "export":
                     Path(args[3]).write_text(target, encoding="utf-8")
@@ -3828,7 +4865,14 @@ class ActivationEndToEndTest(unittest.TestCase):
             return SimpleNamespace(
                 returncode=0,
                 stdout=json.dumps(
-                    {"installed": package_installed, "name": "SkillMagnet.ContextMenu"}
+                    {
+                        "installed": package_installed,
+                        "name": "SkillMagnet.ContextMenu",
+                        "version": "0.5.9.0",
+                        "architecture": "X64",
+                        "publisher": "CN=Skill Magnet Local",
+                        "install_location": str(root),
+                    }
                 ),
                 stderr="",
             )
@@ -3904,6 +4948,191 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertTrue(root.exists())
         self.assertFalse(rollback_root.exists())
 
+    def test_windows_rollback_rotation_recovers_after_abrupt_stop(self) -> None:
+        backup = self.root / "ContextMenu.rollback"
+        update = self.root / "ContextMenu.rollback.update"
+        for candidate in (backup, update):
+            candidate.mkdir()
+            (candidate / "backup.json").write_text(
+                json.dumps(
+                    {
+                        "version": 3,
+                        "registry_roots": [],
+                        "registry_sha256": [],
+                        "package_installed": False,
+                        "owned_packages": [],
+                        "external_existed": False,
+                        "external_manifest": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+        real_replace = os.replace
+        calls = 0
+
+        def interrupted_replace(source: object, destination: object) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                raise KeyboardInterrupt("simulated power loss during promotion")
+            real_replace(source, destination)
+
+        with (
+            mock.patch("skill_magnet.platforms.os.replace", side_effect=interrupted_replace),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            _rotate_windows_context_backup(backup, update)
+        self.assertFalse(backup.exists())
+        self.assertTrue(update.exists())
+        self.assertTrue(backup.with_name(backup.name + ".rotation-old").exists())
+        self.assertTrue(_recover_windows_rollback_rotation(backup))
+        self.assertTrue(backup.is_dir())
+        self.assertFalse(update.exists())
+        self.assertFalse(backup.with_name(backup.name + ".rotation-old").exists())
+        self.assertFalse(backup.with_name(backup.name + ".rotation.json").exists())
+
+    def test_windows_backup_restores_owned_previous_version_identity(self) -> None:
+        root = self.root / "previous-version-context"
+        root.mkdir()
+        (root / "SkillMagnet.ContextMenu.msix").write_bytes(b"previous-msix")
+        (root / "previous-static.bin").write_bytes(b"previous-content")
+        package_registered = True
+        previous_identity = {
+            "name": "SkillMagnet.ContextMenu",
+            "version": "0.5.8.0",
+            "architecture": "X64",
+            "publisher": "CN=Skill Magnet Local",
+            "package_full_name": "SkillMagnet.ContextMenu_0.5.8.0_x64__previous",
+        }
+
+        def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+            nonlocal package_registered
+            if args[0] == "reg":
+                return SimpleNamespace(
+                    returncode=1,
+                    stdout="",
+                    stderr="__REGISTRY_KEY_NOT_FOUND__",
+                )
+            action = args[args.index("-Action") + 1]
+            if action == "uninstall":
+                package_registered = False
+            elif action == "install":
+                package_registered = True
+            packages = [previous_identity] if package_registered else []
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "installed": False,
+                        "name": "SkillMagnet.ContextMenu",
+                        "same_name_package_count": len(packages),
+                        "expected_identity_match_count": 0,
+                        "unexpected_same_name_package_count": len(packages),
+                        "same_name_packages": packages,
+                    }
+                ),
+                stderr="",
+            )
+
+        backup = root.with_name(root.name + ".rollback")
+        with mock.patch(
+            "skill_magnet.platforms.windows_modern_context_menu_status",
+            return_value={
+                "installed": False,
+                "same_name_packages": [previous_identity],
+            },
+        ):
+            metadata = _capture_windows_context_backup(
+                backup, install_root=root, run=fake_run
+            )
+        self.assertTrue(metadata["package_installed"])
+        self.assertEqual(metadata["owned_packages"], [previous_identity])
+        (root / "previous-static.bin").write_bytes(b"changed")
+        _restore_windows_context_backup(backup, install_root=root, run=fake_run)
+        self.assertTrue(package_registered)
+        self.assertEqual((root / "previous-static.bin").read_bytes(), b"previous-content")
+
+    def test_windows_restore_validates_complete_backup_before_destructive_calls(self) -> None:
+        root_count = len(_windows_owned_menu_roots())
+        digest = hashlib.sha256(b"backup payload").hexdigest()
+        base = {
+            "version": 3,
+            "registry_roots": [False] * root_count,
+            "registry_sha256": [None] * root_count,
+            "package_installed": False,
+            "owned_packages": [],
+            "external_existed": False,
+            "external_manifest": {},
+        }
+        corruptions = {
+            "incomplete_schema": {"version": 3},
+            "non_boolean_registry_flag": {
+                **base,
+                "registry_roots": [False] * (root_count - 1) + [0],
+            },
+            "escaping_manifest_path": {
+                **base,
+                "external_existed": True,
+                "external_manifest": {"../payload.bin": digest},
+            },
+            "wrong_external_digest": {
+                **base,
+                "external_existed": True,
+                "external_manifest": {"payload.bin": "0" * 64},
+            },
+            "unowned_package_identity": {
+                **base,
+                "package_installed": True,
+                "owned_packages": [
+                    {
+                        "name": "SkillMagnet.ContextMenu",
+                        "version": "0.5.8.0",
+                        "architecture": "X64",
+                        "publisher": "CN=Unrelated",
+                        "package_full_name": "foreign-package",
+                    }
+                ],
+            },
+        }
+        for label, metadata in corruptions.items():
+            with self.subTest(label=label):
+                root = self.root / f"rollback-current-{label}"
+                root.mkdir()
+                (root / "AppxManifest.xml").write_bytes(b"current appx")
+                (root / "current-sentinel.bin").write_bytes(b"current bytes")
+                backup = root.with_name(root.name + ".rollback")
+                backup.mkdir()
+                if metadata.get("external_existed"):
+                    external = backup / "external"
+                    external.mkdir()
+                    (external / "payload.bin").write_bytes(b"backup payload")
+                (backup / "backup.json").write_text(
+                    json.dumps(metadata), encoding="utf-8"
+                )
+                before = {
+                    path.relative_to(root).as_posix(): path.read_bytes()
+                    for path in root.rglob("*")
+                    if path.is_file()
+                }
+                calls: list[list[str]] = []
+
+                def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+                    calls.append(args)
+                    return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+                with self.assertRaisesRegex(SkillMagnetError, "rollback"):
+                    _restore_windows_context_backup(
+                        backup, install_root=root, run=fake_run
+                    )
+                after = {
+                    path.relative_to(root).as_posix(): path.read_bytes()
+                    for path in root.rglob("*")
+                    if path.is_file()
+                }
+                self.assertEqual(calls, [])
+                self.assertEqual(after, before)
+                self.assertTrue(backup.is_dir())
+
     def test_windows_menu_command_bootstraps_outside_project_directory(self) -> None:
         leaf = windows_menu_leaves(self.config_path, "%V")[0]
         context_index = leaf.command.index("context")
@@ -3971,13 +5200,17 @@ class ActivationEndToEndTest(unittest.TestCase):
 
         def fake_run(args: list[str], **_: object) -> SimpleNamespace:
             calls.append(args)
-            return SimpleNamespace(returncode=0, stderr="")
+            if args[:2] == ["reg", "query"]:
+                return SimpleNamespace(
+                    returncode=1, stdout="", stderr="__REGISTRY_KEY_NOT_FOUND__"
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with mock.patch("skill_magnet.platforms.os.name", "nt"):
             result = uninstall_context_menu("windows", run=fake_run)
         self.assertTrue(result["removed"])
         self.assertEqual(
-            calls,
+            [call for call in calls if call[:2] == ["reg", "delete"]],
             [
                 [
                     "reg",
@@ -4005,6 +5238,25 @@ class ActivationEndToEndTest(unittest.TestCase):
                 ],
             ],
         )
+
+    def test_windows_uninstall_fails_closed_when_registry_root_remains(self) -> None:
+        residual = r"HKCU\Software\Classes\Directory\shell\SkillMagnetClassic"
+
+        def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+            if args[:2] == ["reg", "delete"]:
+                return SimpleNamespace(returncode=1, stdout="", stderr="Access is denied")
+            if args[:2] == ["reg", "query"]:
+                present = args[2] == residual
+                return SimpleNamespace(
+                    returncode=0 if present else 1,
+                    stdout="",
+                    stderr="" if present else "__REGISTRY_KEY_NOT_FOUND__",
+                )
+            raise AssertionError(args)
+
+        with mock.patch("skill_magnet.platforms.os.name", "nt"):
+            with self.assertRaisesRegex(Exception, "remain after removal"):
+                uninstall_context_menu("windows", run=fake_run)
         self.assertFalse(self.state.exists())
 
     def test_windows_reinstall_and_uninstall_preserve_registry_neighbors_and_config(self) -> None:
@@ -4049,6 +5301,13 @@ class ActivationEndToEndTest(unittest.TestCase):
             if args[:2] == ["reg", "add"]:
                 registry.add(target)
                 return SimpleNamespace(returncode=0, stderr="")
+            if args[:2] == ["reg", "query"]:
+                present = target in registry
+                return SimpleNamespace(
+                    returncode=0 if present else 1,
+                    stdout="",
+                    stderr="" if present else "__REGISTRY_KEY_NOT_FOUND__",
+                )
             raise AssertionError(args)
 
         with mock.patch("skill_magnet.platforms.os.name", "nt"):
@@ -4078,23 +5337,27 @@ class ActivationEndToEndTest(unittest.TestCase):
         workflow = services / "Skill Magnet.workflow" / "Contents" / "document.wflow"
         self.assertTrue(result["installed"])
         self.assertTrue(workflow.is_file())
-        status = finder_context_menu_status(services_dir=services)
+        status = finder_context_menu_status(
+            config=self.config_path, services_dir=services
+        )
         self.assertTrue(status["usable_installed_state"])
         self.assertTrue(status["workflow_contract_valid"])
+        self.assertTrue(status["workflow_contract_matches_config"])
+        self.assertFalse(status["release_probe_present"])
         self.assertEqual(status["transaction_residue"], [])
         workflow_bytes = workflow.read_bytes()
         self.assertIn(b"com.apple.RunShellScript", workflow_bytes)
-        self.assertIn(b"finder probe.txt", workflow_bytes)
+        self.assertNotIn(b"finder probe.txt", workflow_bytes)
         workflow_document = plistlib.loads(workflow_bytes)
         action = workflow_document["actions"][0]["action"]
         self.assertIn("ActionParameters", action)
         self.assertNotIn("parameters", action)
-        probe_command = action["ActionParameters"]["COMMAND_STRING"]
-        self.assertIn("finder probe.txt", probe_command)
-        self.assertIn("--release-probe", probe_command)
-        self.assertIn("--release-probe-runtime", probe_command)
-        self.assertNotIn("printf", probe_command)
-        self.assertNotIn("exit 0", probe_command)
+        production_command = action["ActionParameters"]["COMMAND_STRING"]
+        self.assertIn("--launcher", production_command)
+        self.assertIn("--finder-selection-count", production_command)
+        self.assertNotIn("--release-probe", production_command)
+        self.assertNotIn("printf", production_command)
+        self.assertNotIn("exit 0", production_command)
         selected = self.root / "selected by Finder"
         selected.mkdir()
         self.assertEqual(
@@ -4174,6 +5437,124 @@ class ActivationEndToEndTest(unittest.TestCase):
             ]
         )
 
+    def test_macos_workflow_update_is_idempotent_and_recovers_interrupted_swap(self) -> None:
+        services = self.root / "update-services"
+        first = install_context_menu(
+            "macos", self.config_path, services_dir=services
+        )
+        self.assertFalse(first["updated"])
+        workflow_root = services / "Skill Magnet.workflow"
+        document = workflow_root / "Contents" / "document.wflow"
+        original = document.read_bytes()
+
+        unchanged = install_context_menu(
+            "macos",
+            self.config_path,
+            services_dir=services,
+            replace_existing=True,
+        )
+        self.assertTrue(unchanged["unchanged"])
+        self.assertFalse(unchanged["updated"])
+        self.assertEqual(document.read_bytes(), original)
+
+        alternate_config = self.root / "crash config" / "skill-magnet.json"
+        alternate_config.parent.mkdir()
+        alternate_config.write_bytes(self.config_path.read_bytes())
+        real_replace = os.replace
+
+        def crash_before_candidate_swap(source: object, destination: object) -> None:
+            source_path = Path(source)
+            destination_path = Path(destination)
+            if (
+                source_path.name.startswith(".skill-magnet-workflow-stage-")
+                and destination_path == workflow_root
+            ):
+                raise SystemExit("simulated process termination")
+            real_replace(source, destination)
+
+        with (
+            self.assertRaisesRegex(SystemExit, "simulated process termination"),
+            mock.patch(
+                "skill_magnet.platforms.os.replace",
+                side_effect=crash_before_candidate_swap,
+            ),
+        ):
+            install_context_menu(
+                "macos",
+                alternate_config,
+                services_dir=services,
+                replace_existing=True,
+            )
+        self.assertFalse(workflow_root.exists())
+        self.assertEqual(
+            len(list(services.glob(".skill-magnet-workflow-backup-*"))), 1
+        )
+        self.assertEqual(
+            len(list(services.glob(".skill-magnet-workflow-stage-*"))), 1
+        )
+        recovered = install_context_menu(
+            "macos",
+            self.config_path,
+            services_dir=services,
+            replace_existing=True,
+        )
+        self.assertTrue(recovered["recovered_transaction"])
+        self.assertTrue(recovered["unchanged"])
+        self.assertEqual(document.read_bytes(), original)
+        self.assertEqual(
+            finder_context_menu_status(services_dir=services)["transaction_residue"],
+            [],
+        )
+
+    def test_macos_workflow_update_restores_previous_bytes_when_swap_fails(self) -> None:
+        services = self.root / "failed-update-services"
+        install_context_menu("macos", self.config_path, services_dir=services)
+        workflow_root = services / "Skill Magnet.workflow"
+        document = workflow_root / "Contents" / "document.wflow"
+        original = document.read_bytes()
+        alternate_config = self.root / "alternate config" / "skill-magnet.json"
+        alternate_config.parent.mkdir()
+        alternate_config.write_bytes(self.config_path.read_bytes())
+        real_replace = os.replace
+
+        def fail_candidate_swap(source: object, destination: object) -> None:
+            source_path = Path(source)
+            destination_path = Path(destination)
+            if (
+                source_path.name.startswith(".skill-magnet-workflow-stage-")
+                and destination_path == workflow_root
+            ):
+                raise OSError("injected Finder candidate swap failure")
+            real_replace(source, destination)
+
+        with (
+            self.assertRaisesRegex(OSError, "candidate swap failure"),
+            mock.patch(
+                "skill_magnet.platforms.os.replace", side_effect=fail_candidate_swap
+            ),
+        ):
+            install_context_menu(
+                "macos",
+                alternate_config,
+                services_dir=services,
+                replace_existing=True,
+            )
+
+        self.assertEqual(document.read_bytes(), original)
+        self.assertEqual(
+            finder_context_menu_status(services_dir=services)["transaction_residue"],
+            [],
+        )
+        updated = install_context_menu(
+            "macos",
+            alternate_config,
+            services_dir=services,
+            replace_existing=True,
+        )
+        self.assertTrue(updated["updated"])
+        self.assertFalse(updated["unchanged"])
+        self.assertNotEqual(document.read_bytes(), original)
+
     def test_macos_status_rejects_tampered_workflow_and_transaction_residue(self) -> None:
         services = self.root / "tampered-services"
         install_context_menu("macos", self.config_path, services_dir=services)
@@ -4188,6 +5569,86 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertFalse(status["workflow_contract_valid"])
         self.assertEqual(status["transaction_residue"], [str(residue)])
         self.assertFalse(status["usable_installed_state"])
+
+    def test_macos_recovery_preserves_foreign_residue_without_journal(self) -> None:
+        services = self.root / "foreign-residue-services"
+        services.mkdir()
+        first = services / ".skill-magnet-workflow-backup-foreign"
+        second = services / ".skill-magnet-workflow-backup-other"
+        first.mkdir()
+        second.mkdir()
+        first_sentinel = first / "do-not-delete.txt"
+        second_sentinel = second / "do-not-delete.txt"
+        first_sentinel.write_text("foreign-one", encoding="utf-8")
+        second_sentinel.write_text("foreign-two", encoding="utf-8")
+
+        with self.assertRaisesRegex(SafetyError, "transaction journal"):
+            install_context_menu(
+                "macos", self.config_path, services_dir=services
+            )
+
+        self.assertEqual(first_sentinel.read_text(encoding="utf-8"), "foreign-one")
+        self.assertEqual(second_sentinel.read_text(encoding="utf-8"), "foreign-two")
+        self.assertFalse((services / "Skill Magnet.workflow").exists())
+
+    def test_macos_recovery_preserves_corrupt_journal(self) -> None:
+        services = self.root / "corrupt-journal-services"
+        services.mkdir()
+        journal = services / ".skill-magnet-workflow-transaction.json"
+        journal.write_text("{not-json", encoding="utf-8")
+
+        with self.assertRaisesRegex(SafetyError, "journal"):
+            install_context_menu(
+                "macos", self.config_path, services_dir=services
+            )
+
+        self.assertEqual(journal.read_text(encoding="utf-8"), "{not-json")
+        self.assertFalse((services / "Skill Magnet.workflow").exists())
+
+    def test_macos_install_and_uninstall_preserve_unowned_workflow(self) -> None:
+        services = self.root / "unowned-workflow-services"
+        foreign = services / "Skill Magnet.workflow"
+        contents = foreign / "Contents"
+        contents.mkdir(parents=True)
+        sentinel = contents / "document.wflow"
+        sentinel.write_bytes(b"foreign Finder workflow")
+
+        with self.assertRaisesRegex(SafetyError, "所有marker"):
+            install_context_menu(
+                "macos",
+                self.config_path,
+                services_dir=services,
+                replace_existing=True,
+            )
+        self.assertEqual(sentinel.read_bytes(), b"foreign Finder workflow")
+
+        with self.assertRaisesRegex(SafetyError, "所有marker"):
+            uninstall_context_menu("macos", services_dir=services)
+        self.assertEqual(sentinel.read_bytes(), b"foreign Finder workflow")
+
+    def test_macos_tampered_owned_workflow_is_reported_and_preserved(self) -> None:
+        services = self.root / "owned-workflow-tamper-services"
+        install_context_menu("macos", self.config_path, services_dir=services)
+        workflow = services / "Skill Magnet.workflow"
+        document = workflow / "Contents" / "document.wflow"
+        document.write_bytes(document.read_bytes() + b"tampered")
+
+        status = finder_context_menu_status(services_dir=services)
+        self.assertFalse(status["workflow_owned"])
+        self.assertFalse(status["usable_installed_state"])
+        self.assertIn("digest", status["ownership_error"])
+
+        with self.assertRaisesRegex(SafetyError, "digest"):
+            install_context_menu(
+                "macos",
+                self.config_path,
+                services_dir=services,
+                replace_existing=True,
+            )
+        with self.assertRaisesRegex(SafetyError, "digest"):
+            uninstall_context_menu("macos", services_dir=services)
+        self.assertTrue(workflow.is_dir())
+        self.assertTrue(document.read_bytes().endswith(b"tampered"))
 
     def test_macos_product_workflow_omits_release_probe(self) -> None:
         services = self.root / "product-services"

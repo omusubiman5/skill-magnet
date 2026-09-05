@@ -42,6 +42,35 @@ def reserved_skill_content_roots(home: Path | None = None) -> tuple[Path, ...]:
     )
 
 
+def validate_product_state_directory(
+    state_dir: Path, home: Path | None = None
+) -> Path:
+    """Reject runtime skill stores as product state, including resolved descendants.
+
+    A folder selected to choose a skill is not authorization to place Skill
+    Magnet journals, locks, cloned authoring content, or other state in that
+    runtime's skill store. ``Path.resolve`` also follows an existing junction or
+    symlink before this comparison.
+    """
+
+    resolved = state_dir.resolve()
+    for reserved in reserved_skill_content_roots(home):
+        try:
+            common = os.path.commonpath(
+                [os.path.normcase(str(resolved)), os.path.normcase(str(reserved))]
+            )
+        except ValueError:
+            continue
+        if common == os.path.normcase(str(reserved)):
+            raise SkillMagnetError(
+                "Skill Magnetの状態保存先に実行環境のskillフォルダーは使えません: "
+                f"{resolved}\n"
+                "--state-dirを指定しないで既定の~/.skill-magnetを使うか、"
+                "skillフォルダー外の専用フォルダーを指定してください。"
+            )
+    return resolved
+
+
 def validate_task_workspace(project: Path, home: Path | None = None) -> Path | None:
     """Resolve a task workspace or select projectless mode for runtime skill areas."""
     resolved = project.resolve()
@@ -592,7 +621,17 @@ class ActivationEngine:
                     f"{left} composes-with {right}"
                 )
 
-    def confirm(self, plan: dict[str, Any], *, confirmed: bool) -> LaunchContract:
+    def prepare_confirmation(
+        self, plan: dict[str, Any], *, confirmed: bool
+    ) -> LaunchContract:
+        """Revalidate a plan and build, but do not persist, its contract.
+
+        GUI callers perform the potentially blocking revalidation on a worker
+        and persist the returned immutable contract in one short main-thread
+        commit section.  Closing the window before that commit therefore leaves
+        no launch contract behind.
+        """
+
         if not confirmed:
             raise SafetyError("Launch requires explicit user confirmation")
         required = {
@@ -659,11 +698,22 @@ class ActivationEngine:
             "nonce": uuid.uuid4().hex,
         }
         digest_payload = {**payload, "skill_ids": list(payload["skill_ids"])}
-        contract = LaunchContract(**payload, contract_digest=_digest(digest_payload))
+        return LaunchContract(**payload, contract_digest=_digest(digest_payload))
+
+    def persist_confirmation(self, contract: LaunchContract) -> LaunchContract:
+        """Atomically persist one freshly prepared immutable contract."""
+
+        path = self.contract_dir / f"{contract.contract_id}.json"
+        if path.exists():
+            raise SafetyError("Launch contract identity already exists")
         self.engine._write_json_atomic(
-            self.contract_dir / f"{contract.contract_id}.json", contract.as_dict()
+            path, contract.as_dict()
         )
         return contract
+
+    def confirm(self, plan: dict[str, Any], *, confirmed: bool) -> LaunchContract:
+        contract = self.prepare_confirmation(plan, confirmed=confirmed)
+        return self.persist_confirmation(contract)
 
     def _read_contract_record(
         self, contract_id: str, *, allow_consumed: bool = False

@@ -14,7 +14,7 @@
 - 選択したpackとversionをタスクへ明示し、全skillの読了、最低1つの実作業への適用、存在する場合だけINDEX関係の適用をpromptで必須にする。読了や要約だけを実行完了とみなさない。
 - Codex Desktop／Claudeの既存利用プランを使い、API key、従量課金API、追加支払いを製品経路で要求しない。
 - 公式に確認できる経路または必要な証拠がない場合はfail-closedで停止し、保証外であることを明示する。
-- 起動はユーザーの右クリックメニューからの明示選択を条件とし、自動提案・自動配布・自動有効化をしない。
+- 通常のskill実行はユーザーの右クリックメニューからの明示選択を条件とし、自動提案・自動配布・自動有効化をしない。Library Managerでは、利用者が明示した登録・更新・削除だけを同じ復旧可能transactionで自動公開・検証・反映できる。
 - Windows ExplorerとmacOS Finderで同じ選択・確認・起動の意味と安全ポリシーを提供する。
 <!-- product-policy:end -->
 
@@ -32,7 +32,7 @@
 ## 最小アーキテクチャ
 
 1. Registry/Resolver: ユーザー所有GitHub保管庫、pack ID、目的、完全なcommit SHA、承認、skill固有acceptance checkをGitHub固定commitからメモリ上で検証する。skill contentをローカルへ保存しない。
-2. Selection UI: Windowsでは通常右クリックの単一root `Skill Magnet` から日本語の利用者向け名称でskill packを一つ選ぶ。対象AIは次の画面でCodexまたはClaudeを明示選択する。
+2. Selection UI: Windowsでは通常右クリックの子を持たない単一root `Skill Magnet`を押して共通画面を直接開き、その画面で日本語の利用者向け名称からskill packを一つ選ぶ。対象AIも同じ画面でCodexまたはClaudeを明示選択する。
 3. Confirmation UI: 主画面には選択packの表示名、用途、対象project、対象AI、actual requestだけを表示する。pack ID、repository、commit、全skill ID、digest、承認は既定で閉じた「詳細」に格納し、起動の明示確認を取る。
 4. Launch contract: UIから共通CLIへ、選択内容、期限、nonce、確認時刻を機械可読形式で渡す。
 5. LLM task prompt: pack ID、全skill ID、GitHub固定commitのSKILL.md URLとdigest、存在する場合だけINDEX URLとdigest、actual request、非デモ実行、期待成果、contract/attemptを人が読める形で含める。CodexとClaudeへ参照ファイルの全文読了とdigest照合だけでなく、最低1つのskillの手順・判断基準・境界を実作業と完成成果へ反映するよう要求する。skillの説明・一覧・準備確認だけで終了することを禁止し、成果形式は依頼とskillに委ねる。
@@ -51,7 +51,7 @@ WindowsのExplorer→Python/TkはGUI-subsystem launcherが所有します。Code
 | 層 | Windows | macOS | 共通条件 |
 | --- | --- | --- | --- |
 | 入口 | Explorerコンテキストメニュー | Finderコンテキストメニュー/Quick Action | ユーザーの右クリック操作が必要 |
-| 選択 | Explorerでskill pack、画面で対象AI | Skill Magnet画面でskill packと対象AI | pack一つと対象AIを明示選択 |
+| 選択 | ExplorerからSkill Magnet画面を開き、画面でskill packと対象AI | Skill Magnet画面でskill packと対象AI | pack一つと対象AIを明示選択 |
 | 確認 | 共通表示契約 | 共通表示契約 | 対象・版・目的・検証方法を確認 |
 | 起動 | OSアダプターからCLI | OSアダプターからCLI | 有効なlaunch contractなしでは拒否 |
 
@@ -79,7 +79,7 @@ WindowsとmacOSの製品経路は、検証済みpackとactual requestを一つ�
 ## テスト可能な受入条件
 
 - 起動時のactive packはゼロで、自動提案・自動配布・自動有効化がない。
-- ExplorerとFinderの両アダプターで「右クリック→Skill Magnet→skill pack選択→対象AI/用途/依頼内容の確認→起動」が成立する。
+- ExplorerとFinderの両アダプターで「右クリック→Skill Magnet画面を直接起動→skill packと対象AI/用途/依頼内容を選択・確認→起動」が成立する。
 - 未確認、期限切れ、改変済み、再利用済みlaunch contractを共通CLIが拒否する。
 - OSアダプターが選択外packを指定したり安全判定を迂回できない。
 - WindowsとmacOSで同じ入力から同じlaunch contract意味論とfail-closed結果になるcontract testが通る。

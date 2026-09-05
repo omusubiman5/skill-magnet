@@ -87,10 +87,9 @@ print(json.dumps({
     "package_script": package_script.is_file(),
     "leaves": len(leaves),
     "command_uses_installed_package": (
-        repr(str(config_path.parent.parent))[1:-1] in next(
-            part for part in leaves[0].command if "runpy.run_module" in part
-        )
+        leaves[0].command[1:4] == ("-I", "-m", "skill_magnet")
         and str(config_path) in leaves[0].command
+        and all("sys.path.insert" not in part for part in leaves[0].command)
     ),
 }))
 '''
@@ -119,6 +118,14 @@ print(json.dumps({
 
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         python_version = project["project"]["version"]
+        package_version: dict[str, str] = {}
+        exec(
+            (ROOT / "src" / "skill_magnet" / "__init__.py").read_text(
+                encoding="utf-8"
+            ),
+            package_version,
+        )
+        self.assertEqual(package_version["__version__"], python_version)
         manifest = ET.parse(
             ROOT / "native" / "windows-modern-context-menu" / "AppxManifest.xml"
         ).getroot()
@@ -148,6 +155,10 @@ print(json.dumps({
         )
         self.assertIn("if (Test-Path -LiteralPath $machinePath)", installer)
         self.assertIn("if (Test-Path -LiteralPath $userPath)", installer)
+        self.assertIn("same_name_package_count", installer)
+        self.assertIn("expected_identity_match_count", installer)
+        self.assertIn("unexpected_same_name_package_count", installer)
+        self.assertIn("Where-Object { $_.Publisher -eq $expectedPublisher }", installer)
         command_source = (
             ROOT / "native" / "windows-modern-context-menu" / "SkillMagnetCommand.cpp"
         ).read_text(encoding="utf-8")

@@ -56,9 +56,23 @@ jobs:
           name: standalone-wheel-${{ runner.os }}
           path: ${{ runner.temp }}/skill-magnet-wheel/*.whl
           if-no-files-found: error
-      - name: Gate candidate SHA and standalone wheel payload
+      - if: runner.os == 'Windows'
+        name: Gate candidate SHA, wheel payload, and signed Explorer field evidence
+        shell: pwsh
+        run: >-
+          python integration/explorer_results_gate.py
+          docs/windows-explorer-leaf-launch-results.md
+          --wheel "$env:SKILL_MAGNET_WHEEL"
+          --invoke-log docs/evidence/windows-explorer-direct-root-0.5.9.log
+          --field-evidence docs/evidence/windows-explorer-direct-root-0.5.9.json
+      - if: runner.os != 'Windows'
+        name: Gate cross-platform candidate SHA and standalone wheel payload
         shell: bash
-        run: python integration/explorer_results_gate.py docs/windows-explorer-leaf-launch-results.md --wheel "${SKILL_MAGNET_WHEEL}"
+        run: >-
+          python integration/explorer_results_gate.py
+          docs/windows-explorer-leaf-launch-results.md
+          --wheel "${SKILL_MAGNET_WHEEL}"
+          --cross-platform-artifact-only
       - if: runner.os == 'Windows'
         shell: pwsh
         run: ./tests/powershell/certificate-state-tests.ps1
@@ -68,8 +82,7 @@ jobs:
         run: |
           $native = python -c "from skill_magnet.platforms import _windows_modern_paths; print(_windows_modern_paths()[0])"
           & (Join-Path $native "build.ps1") `
-            -OutDir (Join-Path $env:RUNNER_TEMP "wheel-native-out") `
-            -SkipContractTest
+            -OutDir (Join-Path $env:RUNNER_TEMP "wheel-native-out")
       - if: runner.os == 'Windows'
         shell: pwsh
         run: ./tests/powershell/windows-release-lifecycle-tests.ps1

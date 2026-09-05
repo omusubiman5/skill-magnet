@@ -8,7 +8,7 @@ Skill Magnetの目的は、GitHub固定commitに保管されたskillをLLMへ単
 
 ## 現在の状態
 
-GitHub中心の手動activation経路は、スキルパックを一つ選ぶUXです。通常右クリックの正規入口は `Skill Magnet` 一つで、対象パックを選び、確認画面でCodex DesktopアプリまたはClaude Codeデスクトップアプリと依頼内容を明示します。Codexを選ぶとCodex Desktopの新規taskへ、Claudeを選ぶとClaude Desktop内の新規Claude Code sessionへ、パック内の全スキルと依頼が渡されます。CLI/TUIやWebブラウザは製品handoff先にしません。skill contentの永続的な正本は該当するユーザー所有GitHub repositoryだけで、Skill Magnetは固定commitをメモリ上で検証します。promptには固定commitの全SKILL.md URLとdigestを渡し、INDEXが存在するpackではINDEXのURLとdigestも渡します。library編集時だけ製品所有の隔離workspaceを使い、実行用にはmaterializeせず、有効化完了後に削除します。両デスクトップアプリには全skillの読了、trigger/boundaryと存在する場合のINDEX関係に基づく必要最小集合の選定、最低1つの具体的適用、実依頼の完了を必須化します。skillの説明・一覧・準備確認だけで終了することを禁止します。Skill MagnetはAPI keyや従量課金APIを使わず、既存のCodex DesktopまたはClaude利用プランへhandoffします。handoff受理は回答完了を意味せず、Skill MagnetはLLM回答を取得・検証したとは主張しません。Windows ExplorerとmacOS Finderは規範policy上のsupported adapterです。
+GitHub中心の手動activation経路は、スキルパックを一つ選ぶUXです。通常右クリックの正規入口は、子メニューを持たない `Skill Magnet` 一つです。これを押して開く共通画面で対象パックを選び、Codex DesktopアプリまたはClaude Codeデスクトップアプリと依頼内容を明示します。Codexを選ぶとCodex Desktopの新規taskへ、Claudeを選ぶとClaude Desktop内の新規Claude Code sessionへ、パック内の全スキルと依頼が渡されます。CLI/TUIやWebブラウザは製品handoff先にしません。skill contentの永続的な正本は該当するユーザー所有GitHub repositoryだけで、Skill Magnetは固定commitをメモリ上で検証します。promptには固定commitの全SKILL.md URLとdigestを渡し、INDEXが存在するpackではINDEXのURLとdigestも渡します。library編集時だけ製品所有の隔離workspaceを使い、実行用にはmaterializeせず、有効化完了後に削除します。両デスクトップアプリには全skillの読了、trigger/boundaryと存在する場合のINDEX関係に基づく必要最小集合の選定、最低1つの具体的適用、実依頼の完了を必須化します。skillの説明・一覧・準備確認だけで終了することを禁止します。Skill MagnetはAPI keyや従量課金APIを使わず、既存のCodex DesktopまたはClaude利用プランへhandoffします。handoff受理は回答完了を意味せず、Skill MagnetはLLM回答を取得・検証したとは主張しません。Windows ExplorerとmacOS Finderは規範policy上のsupported adapterです。
 
 旧MVPの `sync` は `~/.agents/skills` と `~/.claude/skills` への常設コピーを前提とし、現在の製品ポリシーに適合しません。CLIから恒久的に無効化しており、overrideはありません。
 
@@ -26,7 +26,7 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 - 選択したpackとversionをタスクへ明示し、全skillの読了、最低1つの実作業への適用、存在する場合だけINDEX関係の適用をpromptで必須にする。読了や要約だけを実行完了とみなさない。
 - Codex Desktop／Claudeの既存利用プランを使い、API key、従量課金API、追加支払いを製品経路で要求しない。
 - 公式に確認できる経路または必要な証拠がない場合はfail-closedで停止し、保証外であることを明示する。
-- 起動はユーザーの右クリックメニューからの明示選択を条件とし、自動提案・自動配布・自動有効化をしない。
+- 通常のskill実行はユーザーの右クリックメニューからの明示選択を条件とし、自動提案・自動配布・自動有効化をしない。Library Managerでは、利用者が明示した登録・更新・削除だけを同じ復旧可能transactionで自動公開・検証・反映できる。
 - Windows ExplorerとmacOS Finderで同じ選択・確認・起動の意味と安全ポリシーを提供する。
 <!-- product-policy:end -->
 
@@ -44,7 +44,7 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 現行MVPは、以下の確定済みCLIと右クリック統合でこの流れを実装しています。
 
 1. ユーザー所有GitHub保管庫から利用可能なパックと、その目的・版・承認状態を一覧する。
-2. 必要な時にユーザーが右クリックメニューで目的に合うスキルパックを一つ選び、画面でCodex DesktopアプリまたはClaude Codeデスクトップアプリを明示選択する。
+2. 必要な時にユーザーが右クリックの`Skill Magnet`から共通画面を開き、その画面で目的に合うスキルパックとCodex DesktopアプリまたはClaude Codeデスクトップアプリを明示選択する。
 3. GitHub固定commit、対象、承認、全skillと任意のINDEXをメモリ内で検証する。
 4. 選択したpack ID、GitHub URL、commit SHA、全skill ID、instruction digestをタスクへ明示注入する。
 5. 選択したデスクトップアプリで新規taskまたは新規Claude Code sessionを開き、全skillの読了と最低1つの適用を必須とする一つのpromptを渡す。
@@ -54,11 +54,15 @@ GitHub中心の手動activation経路は、スキルパックを一つ選ぶUX�
 
 `dry-run` を通していない有効化は拒否する設計です。
 
-## Skill Library Manager
+## Library Manager
 
-Skill Library Managerは、登録済みのパックとスキルを一覧し、新規登録・更新・削除してGitHubへ公開し、Skill Magnetで使える状態にするための管理画面です。作業途中のファイルはアプリ専用領域へ自動保存されます。利用者が作業用フォルダーやrepository名、内部IDを入力する必要はありません。
+Library Managerは、登録済みのパックとスキルを一覧し、新規登録・更新・削除してユーザー所有GitHub repositoryへ公開し、Skill Magnetで参照できる状態にするための管理画面です。skillをCodex／Claudeのskill directoryへインストールする機能ではありません。作業途中のファイルはアプリ専用領域へ自動保存されます。利用者が作業用フォルダーやrepository名、内部IDを入力する必要はありません。
 
-Windows Explorerでは登録元フォルダーを右クリックして`Skill Magnet` → `このフォルダーのスキルを登録`を選びます。選択したフォルダーがそのまま検証・登録されるため、アプリ内でもう一度選び直す必要はありません。`Library Manager`は登録済みスキルの一覧・更新・削除・GitHub公開に使います。単一スキル、1パック、複数パックを含む親フォルダーのいずれも登録できます。macOS Finderでも選択フォルダーをクイックアクションへ渡します。
+管理画面を開くたびに、設定済みGitHubの検証済みcommit（未設定時は取得したHEAD）から編集用コピーを作ります。skill本文を含むコピーを残すのは未完了transactionの復旧中だけです。成功、送信前の明示破棄、変更のない通常終了では削除し、次回はGitHubから読み直します。状態保存先に`~/.codex/skills`、`~/.agents/skills`、`~/.claude/skills`またはその配下は指定できません。
+
+旧版の固定pathに残った、双方向の所有証明がないlibraryは、内容やGit remoteが一致していても自動所有化・自動編集・自動削除しません。同じ場所へ利用者が置いた手動cloneと区別できないためです。`GitHubから復旧`を明示した場合だけ、元フォルダーを別名バックアップとして保持したうえで検証済みコピーを作ります。マージされず閉じたPRは監視を停止し、同じPRを再度開いて同じtransactionを続行できます。
+
+Windows Explorerでは登録元フォルダーを右クリックして`Skill Magnet`を押し、開いた1画面の`このフォルダーのスキルを登録`を選びます。選択したフォルダーがそのまま検証・登録されるため、アプリ内でもう一度選び直す必要はありません。同じ画面の`Library Manager`は登録済みスキルの一覧・更新・削除・GitHub公開に使います。単一スキル、1パック、複数パックを含む親フォルダーのいずれも登録できます。macOS Finderでも選択フォルダーをクイックアクションへ渡します。
 
 ### 操作ガイド（1画面）
 
@@ -70,7 +74,7 @@ Windows Explorerでは登録元フォルダーを右クリックして`Skill Mag
 
 `新規登録`では作成済みのフォルダーを1つ選びます。スキルフォルダーなら1スキル、直下に複数のスキルフォルダーがあれば1パック、直下に複数のパックフォルダーがあれば全パックを検出します。Skill ID、Pack ID、表示名、目的はフォルダー名、`SKILL.md`、`INDEX.md`から自動取得します。
 
-`選択項目を更新`では一覧でパックまたはスキルを選び、同じIDの更新元フォルダーを選びます。IDが異なるフォルダーは別物への誤更新として拒否します。`選択項目を削除`では一覧の対象を削除します。依存されているスキルと最後のパック／スキルは削除できません。いずれもローカル管理領域で検証してから反映し、失敗時は変更前へ戻します。GitHubへは直ちに送らず、下段の送信確認へ進みます。
+`選択項目を更新`では一覧でパックまたはスキルを選び、同じIDの更新元フォルダーを選びます。IDが異なるフォルダーは別物への誤更新として拒否します。`選択項目を削除`では一覧の対象を削除します。依存されているスキルと最後のパック／スキルは削除できません。登録・更新・削除の操作自体を、その変更だけをGitHubへ公開してSkill Magnetへ反映する明示承認として扱います。検証、専用branchへのpush、PR、自動マージ、remote照合、本体反映を一つのtransactionで進め、途中失敗時は保存済みjournalから再開します。
 
 登録元で必須なのは、各スキルの`SKILL.md`と、そのfrontmatterにある`name`／`description`です。`Trigger`／`Boundary`という見出しや固定の日本語表現は必須ではなく、それらの単語がない標準Skillも登録できます。`acceptance.json`がない場合は、Library Managerが公開用の内部互換メタデータを生成します。同じフォルダーに`test-prompts.json`があれば、そのSHA-256も記録します。同じ内容の登録済みスキル／パックをもう一度選んだ場合は正常な再選択として扱い、上書きせず`登録済み`と表示します。空フォルダー、INDEXが参照するスキルの欠落、重複ID、壊れた関係、登録情報と保存ファイルの不一致は登録前にエラーで停止し、一部だけを登録しません。
 
@@ -78,15 +82,15 @@ Windows Explorerでは登録元フォルダーを右クリックして`Skill Mag
 
 #### 3. 同じ画面でGitHubへ送る
 
-現在使っているスキル保管庫が1つなら、そのGitHub URLを既存設定から自動表示します。初回または別の保管庫へ変える時だけURLを入力します。右クリックの`このフォルダーのスキルを登録`、または画面内の登録・更新・削除を実行すると、検査、専用branchへのpush、PR作成、自動マージ、merge commit検証、本体設定更新、右クリックメニュー再登録までを続けて実行します。追加の段階ボタンはありません。GitHubの必須check待ちは同じtransactionで自動監視し、アプリを閉じても次回起動時に再開します。不足や不正があればGitHubへ送信する前に停止します。差分が0件ならPRを作らず、検証済みremoteをそのまま反映します。反映失敗時は直前の正常な設定へ戻します。
+現在使っているスキル保管庫が1つなら、そのGitHub URLを既存設定から自動表示します。初回または別の保管庫へ変える時だけURLを入力します。右クリックの`このフォルダーのスキルを登録`、または画面内の登録・更新・削除を実行すると、検査、専用branchへのpush、PR作成、自動マージ、merge commit検証、本体設定更新までを続けて実行します。packやskillの内容変更だけでは、単一の右クリックメニューを再登録しません。追加の段階ボタンはありません。GitHubの必須check待ちは同じtransactionで自動監視し、アプリを閉じても次回起動時に再開します。不足や不正があればGitHubへ送信する前に停止します。差分が0件ならPRを作らず、検証済みremoteをそのまま反映します。反映失敗時は直前の正常な設定へ戻します。
 
 途中でGit、Windows、通信などのエラーが起きた場合は、同じtransactionを保存して再試行できます。commit／push／PRというGitHub側の副作用がないと確認できる段階だけ「ローカル作業を破棄」を選べます。送信済み、または送信済みか不明な段階では破棄を禁止し、remote状態を照合して既存branch／PRを再利用します。アプリを閉じても、次回起動時に未完了作業を検出し、新しいtransactionやPRを作らず続きから再開します。公開処理は管理対象ファイルだけを上書きし、GitHubに元からあるREADME、監査資料、テスト資料などを削除しません。削除差分が1件でも検出された場合は送信前に停止します。
 
-右クリックから起動すると、先にLibrary Manager本体と「受付完了」を表示してから登録を始め、処理中の内容を画面上部へ表示します。処理中は入力欄と操作ボタンを無効化します。同じフォルダーを続けて右クリックしても二重登録せず、別フォルダーの並行投入も明示して拒否します。アプリが強制終了してもOSの実行ロックは自動解放されるため、次回起動で利用者自身が再試行できます。
+右クリックから起動すると、先にLibrary Manager本体と「受付完了」を表示し、設定読取、保存済み作業の復旧、folder検査、登録をbackgroundで進めます。処理中の内容を画面上部へ表示し、入力欄と操作ボタンを無効化します。統合画面からLibrary Managerへ切り替わる際は単一実行lockの画面情報も新しいwindowへ引き継ぎます。同じフォルダーを続けて右クリックした場合は生存中のLibrary Managerを前面に戻して二重登録せず、別フォルダーの並行投入は既存処理を保持したまま再試行方法を表示します。アプリが強制終了してもOSの実行ロックは自動解放されるため、次回起動で利用者自身が再試行できます。
 
 ![フォルダー登録とGitHub公開を一つにまとめた画面](docs/images/skill-library-manager-step-1-skill.png)
 
-CLIから直接開く次のcommandも、障害調査やheadless運用の入口として残しています。
+CLIから直接開く次のcommandも、障害調査やheadless運用の入口として残しています。以下のauthoring commandが扱うrepositoryはGitHub公開transactionの編集用入力であり、Codex／Claudeへskillをローカルインストールする経路ではありません。永続正本として有効になるのはremote bytesを再検証したGitHub固定commitだけです。
 
 ```powershell
 python -m skill_magnet library ui
@@ -142,7 +146,7 @@ GUIでは登録・更新・削除の操作自体を、その変更について�
 - [CMA004 Markdown出力への訂正・対応報告](docs/cma004-markdown-output-correction-2026-09-03.md)
 - [標準Skill登録拒否の原因調査](docs/root-cause-standard-skill-rejection-2026-09-03.md) / [対応報告](docs/standard-skill-validation-fix-report-2026-09-03.md)
 
-- [Skill Library Manager要件定義](docs/skill-library-management-requirements.md)
+- [Library Manager要件定義](docs/skill-library-management-requirements.md)
 - [Skill CRUDユーザーニーズ](docs/skill-crud-user-needs.md)
 - [Skill CRUD修正方針](docs/skill-crud-remediation-policy.md)
 - [Skill CRUD実行方針](docs/skill-crud-execution-plan.md)
@@ -174,7 +178,7 @@ GUIでは登録・更新・削除の操作自体を、その変更について�
 
    ```powershell
    python -m pip wheel . --no-deps --wheel-dir .\dist
-   python -m pip install --force-reinstall .\dist\skill_magnet-0.5.8-py3-none-any.whl
+   python -m pip install --force-reinstall .\dist\skill_magnet-0.5.9-py3-none-any.whl
    ```
 
 3. Windowsの右クリックメニューを登録します。このcommandはrepository rootで、そのままcopy/pasteできます。
@@ -185,9 +189,9 @@ GUIでは登録・更新・削除の操作自体を、その変更について�
 
 4. Windowsの確認画面が出た場合は、次節の表と一致するときだけ「はい」を選びます。commandが完了すると、登録結果がJSONで表示されます。
 
-5. Explorerで対象folderそのもの、またはfolder内の何もない場所を通常右クリックします。`その他のオプションを表示`へ進まず、最初のメニューにある`Skill Magnet`から、skill packを使う場合は`Skill Pack: <パック名>`、skill repositoryを管理する場合は`Library Manager`を選びます。接頭辞により、実行対象のパック名と管理機能を区別できます。
+5. Explorerで対象folderそのもの、またはfolder内の何もない場所を通常右クリックします。`その他のオプションを表示`へ進まず、最初のメニューにある`Skill Magnet`を押します。右クリックメニュー内に二段目の子項目はありません。
 
-6. Skill Magnet画面でCodexまたはClaude、依頼内容を入力し、対象pack、含まれる全skill、用途を確認して実行します。CodexならDesktop appの新規taskが開きます。技術情報は既定で閉じた「詳細」にあります。
+6. 開いた1画面で、使用する`Skill Pack: <表示名>`または`Skill: <表示名>`とCodex／Claude、依頼内容を選びます。スキルを管理する場合は同じ画面の`Library Manager`、右クリックしたフォルダーを登録する場合は`このフォルダーのスキルを登録`を押します。CodexならDesktop appの新規taskが開きます。技術情報は既定で閉じた「詳細」にあります。
 
 メニューを登録しただけではskillやAIを自動実行しません。画面で依頼内容を入力して確認するまで処理は始まりません。
 
@@ -206,7 +210,7 @@ GUIでは登録・更新・削除の操作自体を、その変更について�
 
 ### 正常に導入できた状態
 
-Explorerの通常右クリックに`Skill Magnet`が一つだけ表示されます。`その他のオプションを表示`側に同名のclassic入口が重複していてはいけません。
+Explorerの通常右クリックに、押すと1画面が直接開く`Skill Magnet`が一つだけ表示されます。矢印や子メニューを出してはいけません。`その他のオプションを表示`側に同名のclassic入口が重複していてはいけません。
 
 任意のdirectoryで次のread-only commandを実行します。このcommandはwheelに同梱された既定configを使い、状態を表示するだけで登録を変更しません。導入時と異なるcheckoutのconfigを指定しないでください。
 
@@ -226,15 +230,20 @@ python -m skill_magnet context-menu-status --platform windows
   "command_target_signature_valid": true,
   "self_signed_launcher_referenced": false,
   "deprecated_launcher_exists": false,
-  "menu_leaf_count": 2,
-  "menu_action_count": 4,
-  "library_manager_entry_count": 1,
-  "register_folder_entry_count": 1,
+  "native_source_manifest_valid": true,
+  "native_artifact_hashes_valid": true,
+  "dll_native_source_binding_valid": true,
+  "native_build_binding_valid": true,
+  "menu_leaf_count": 0,
+  "menu_action_count": 1,
+  "root_launcher_entry_count": 1,
+  "library_manager_entry_count": 0,
+  "register_folder_entry_count": 0,
   "usable_installed_state": true
 }
 ```
 
-確認するのは、statusの3項目が上記どおりであることと、Explorerの通常右クリックに入口が一つだけあることです。
+確認するのは、上記のmenu項目とnative build bindingがすべて一致し、Explorerの通常右クリックに入口が一つだけあることです。登録済みselection数はconfig依存であり、Explorer action数へ加算しません。現行0.5.9の実Explorer受入と最終件数は、同一buildのfield evidenceが揃うまで`PENDING`です。
 
 ### 確認画面で「いいえ」を押した／登録に失敗した
 
@@ -275,7 +284,7 @@ UACを拒否しても、作業対象projectのfile、skill内容、Codex/Claude�
 | 直前の導入・更新を取り消し、保存済みの導入前状態へ戻す | `python -m skill_magnet rollback-context-menu --platform windows --confirm` |
 | Skill Magnetの登録を削除する意図を明示する | `python -m skill_magnet uninstall-context-menu --platform windows --confirm` |
 
-現行Windows実装では、更新成功時に直前の導入状態をrollback pointとして入れ替えます。`rollback`はその直前版を復元し、`uninstall`は現在版とrollback point、製品所有の証明書・登録をすべて削除します。初回導入直後の`rollback`は導入前状態へ戻ります。
+現行Windows実装では、更新成功時に直前の導入状態をrollback pointとして入れ替えます。`rollback`は、所有path、metadata schema、registry exportのSHA-256、package identity、外部file manifestを破壊的なuninstall／削除より前に全件検証し、欠落・改ざん・予期しないpathがあれば現在状態を変更せず停止します。検証後にだけ直前版を復元します。`uninstall`は現在版とrollback point、製品所有の証明書・登録をすべて削除します。初回導入直後の`rollback`は導入前状態へ戻ります。
 
 削除時にWindowsの確認画面が出ることがあります。これは導入時にSkill Magnetが追加したWindowsの信頼情報を片付けるためです。前述の表と一致するときだけ承認します。完了後にstatusを実行し、導入前に登録がなかった環境では`package_registered`と`usable_installed_state`が`false`、Explorerに`Skill Magnet`がないことを確認します。
 
@@ -308,11 +317,11 @@ secret、API key、password、認証fileの内容は含めないでください�
 
 modernメニューは署名済みMSIX identity packageとExplorer用COM commandを登録します。初回または証明書が未登録のとき、Windows標準の`certutil.exe`を昇格起動し、`Skill Magnet Local`証明書をmachineの`TrustedPeople`へ登録します。cleanupではSkill Magnetが作成した証明書だけを削除します。
 
-installは単一transactionでrollback pointを作り、modernがusableならclassic rootを削除します。modern登録に失敗した場合は部分登録を除去し、rollback pointを復元してerrorで停止します。Explorer用COM DLL、固定メニューmanifest、`SkillMagnetIdentity.exe`はすべてfull MSIXへ収容します。COM DLLはメニューmanifestに固定したAuthenticode-validなPythonを`CREATE_NO_WINDOW`で直接起動します。自己署名のprocess adapterは実行経路に置かず、`SkillMagnetIdentity.exe`はidentity anchor専用でメニュー選択時には実行されません。
+installは単一transactionでrollback pointを作り、modernがusableならclassic rootを削除します。modern登録に失敗した場合は、完全性を破壊前検証したrollback pointだけを使って部分登録を除去・復元し、errorで停止します。Explorer用COM DLL、固定メニューmanifest、native source manifest、`SkillMagnetIdentity.exe`はすべてfull MSIXへ収容します。statusはrepositoryの固定native入力から再計算したsource tree digest、manifest内artifact hash、DLLへ一意に埋め込んだ同digestを照合します。release field gateはさらに署名済みMSIX内payload、package root、外部install rootのbytes一致を要求します。COM DLLはメニューmanifestに固定したAuthenticode-validなPythonを`CREATE_NO_WINDOW`で直接起動します。自己署名のprocess adapterは実行経路に置かず、`SkillMagnetIdentity.exe`はidentity anchor専用でメニュー選択時には実行されません。Appx、module、distribution、runtime tree、wheel/source、native source、DLL、MSIXのいずれかが別世代なら0.5.9の実機証拠として拒否します。
 
 </details>
 
-packの追加・削除・版・含有skillを変更した後は、同じinstall commandを一度だけ実行して静的メニューを更新します。古いメニューはcommitまたはskill集合の不一致でfail-closedになります。Skill Magnet画面のCancelまたはcloseではcontract、evidence、stateを作成しません。
+packの追加・削除・版・含有skillを変更しても、右クリックメニューの再登録は不要です。WindowsとmacOSの右クリックには単一の「Skill Magnet」だけを登録し、起動時に現在の設定からpackとskillを画面へ読み込みます。再登録が必要なのは、導入した実行file、設定fileの場所、native adapter、またはFinder Quick Actionそのものが変わった場合だけです。Skill Magnet画面のCancelまたはcloseではcontract、evidence、stateを作成しません。
 
 ## macOS Quick Start
 

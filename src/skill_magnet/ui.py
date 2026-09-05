@@ -3,9 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
+import sys
+import threading
+import time
 import webbrowser
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 from urllib.parse import quote, urlencode
 
 from .activation import (
@@ -19,6 +24,288 @@ from .activation import (
     validate_task_workspace,
 )
 from .core import SkillMagnetError, normalize_display_text
+
+
+def start_context_background_operation(
+    operation: Callable[[threading.Event], Any],
+    *,
+    name: str,
+    cancel_event: threading.Event | None = None,
+) -> tuple[threading.Event, threading.Thread, dict[str, Any]]:
+    """Run context validation without blocking Tk's event thread.
+
+    The event is deliberately exposed to the window lifecycle even though the
+    current GitHub archive reader can only observe cancellation between bounded
+    network calls.  A daemon worker therefore never keeps a closed Explorer
+    launcher alive, and no Tk object is accessed from the worker thread.
+    """
+
+    event = cancel_event or threading.Event()
+    outcome: dict[str, Any] = {}
+
+    def work() -> None:
+        try:
+            if event.is_set():
+                raise SkillMagnetError("操作は開始前に取り消されました")
+            value = operation(event)
+            if event.is_set():
+                raise SkillMagnetError("操作は取り消されました")
+            outcome["value"] = value
+        except BaseException as exc:
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=work, name=name, daemon=True)
+    worker.start()
+    return event, worker, outcome
+
+
+@dataclass
+class ContextUiLease:
+    """Process-wide lease for the Explorer launcher UI.
+
+    Explorer can dispatch the same command repeatedly while Python is still
+    starting. The OS file lock is released automatically after a crash, so a
+    stale owner record can never make the UI permanently unavailable.
+    """
+
+    path: Path
+    acquired: bool
+    owner: dict[str, Any]
+    handle: Any | None = None
+    owner_path: Path | None = None
+
+    def publish_window(self, *, phase: str, window_handle: int) -> None:
+        """Atomically retarget duplicate launches to the currently visible UI.
+
+        The unified chooser and Library Manager run sequentially in one process
+        while this lease remains held.  Keeping the destroyed chooser's HWND in
+        the owner record makes a repeated Explorer click look unrecoverable even
+        though Library Manager is alive.  Publish every phase transition through
+        the locked record that competing processes already read.
+        """
+
+        if not self.acquired or self.handle is None:
+            raise SkillMagnetError("Context UI lease is not owned by this process")
+        if phase not in {"context_selection", "library_manager"}:
+            raise SkillMagnetError(f"Unknown context UI lease phase: {phase}")
+        if not isinstance(window_handle, int) or window_handle <= 0:
+            raise SkillMagnetError("Visible UI window handle is unavailable")
+        payload = dict(self.owner)
+        payload.update(phase=phase, window_handle=window_handle)
+        encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n"
+        self.handle.seek(1)
+        self.handle.truncate()
+        self.handle.write(encoded)
+        self.handle.flush()
+        os.fsync(self.handle.fileno())
+        if self.owner_path is not None:
+            temporary = self.owner_path.with_name(
+                f".{self.owner_path.name}.{payload['generation']}.tmp"
+            )
+            try:
+                with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+                    json.dump(payload, stream, ensure_ascii=False)
+                    stream.write("\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, self.owner_path)
+            finally:
+                temporary.unlink(missing_ok=True)
+        self.owner = payload
+
+    def release(self) -> None:
+        if not self.acquired:
+            return
+        try:
+            if self.owner_path is not None:
+                try:
+                    self.owner_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        finally:
+            try:
+                if self.handle is not None:
+                    try:
+                        _unlock_context_ui_file(self.handle)
+                    except OSError:
+                        pass
+            finally:
+                if self.handle is not None:
+                    try:
+                        self.handle.close()
+                    except OSError:
+                        pass
+                self.handle = None
+                self.acquired = False
+
+
+def _try_lock_context_ui_file(handle: Any) -> bool:
+    handle.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
+    import fcntl
+
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError):
+        return False
+    return True
+
+
+@dataclass(frozen=True)
+class ContextUiAction:
+    name: str
+
+
+def _unlock_context_ui_file(handle: Any) -> None:
+    handle.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def acquire_context_ui_lease(state_dir: Path, project: Path) -> ContextUiLease:
+    """Allow one root-launcher process and recover automatically after exit."""
+
+    state_dir = state_dir.resolve()
+    state_dir.mkdir(parents=True, exist_ok=True)
+    path = state_dir / "context-launcher.lock"
+    owner_path = state_dir / "context-launcher.owner.json"
+    payload = {
+        "pid": os.getpid(),
+        "project": str(project.resolve()),
+        "generation": os.urandom(16).hex(),
+        "phase": "context_starting",
+        "window_handle": 0,
+    }
+    path.touch(exist_ok=True)
+    handle = path.open("r+b")
+    if path.stat().st_size == 0:
+        handle.write(b"\0")
+        handle.flush()
+    if _try_lock_context_ui_file(handle):
+        handle.seek(1)
+        handle.truncate()
+        handle.write(json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+        owner_path.write_text(
+            json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        return ContextUiLease(path, True, payload, handle, owner_path)
+    owner: dict[str, Any] = {}
+    for _ in range(10):
+        try:
+            with path.open("rb") as reader:
+                reader.seek(1)
+                owner = json.loads(reader.read().decode("utf-8"))
+        except (OSError, ValueError):
+            owner = {}
+        if _try_lock_context_ui_file(handle):
+            handle.seek(1)
+            handle.truncate()
+            handle.write(json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+            owner_path.write_text(
+                json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8"
+            )
+            return ContextUiLease(path, True, payload, handle, owner_path)
+        time.sleep(0.02)
+    owner["same_request"] = bool(
+        os.path.normcase(os.path.normpath(str(payload["project"])))
+        == os.path.normcase(os.path.normpath(str(owner.get("project", ""))))
+    )
+    handle.close()
+    return ContextUiLease(path, False, owner, owner_path=owner_path)
+
+
+def focus_context_ui(owner: dict[str, Any]) -> bool:
+    """Bring the already-running launcher window forward on Windows."""
+
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        pid = int(owner.get("pid", 0))
+        if pid <= 0:
+            return False
+        user32 = ctypes.windll.user32
+        candidates: list[tuple[int, str]] = []
+
+        def top_level(hwnd: int) -> int:
+            try:
+                root_hwnd = int(user32.GetAncestor(hwnd, 2))  # GA_ROOT
+            except (AttributeError, TypeError, ValueError):
+                root_hwnd = 0
+            return root_hwnd or hwnd
+
+        def owned_visible(hwnd: int) -> bool:
+            process_id = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+            return process_id.value == pid and bool(user32.IsWindowVisible(hwnd))
+
+        def title(hwnd: int) -> str:
+            length = int(user32.GetWindowTextLengthW(hwnd))
+            if length <= 0:
+                return ""
+            value = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, value, length + 1)
+            return value.value
+
+        preferred = owner.get("window_handle")
+        if isinstance(preferred, int) and preferred > 0:
+            preferred = top_level(preferred)
+            if owned_visible(preferred):
+                candidates.append((preferred, title(preferred)))
+        callback_type = ctypes.WINFUNCTYPE(
+            wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
+        )
+
+        @callback_type
+        def collect(hwnd: int, _: int) -> bool:
+            process_id = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+            candidate = int(hwnd)
+            if process_id.value == pid and user32.IsWindowVisible(hwnd) and all(
+                existing[0] != candidate for existing in candidates
+            ):
+                candidates.append((candidate, title(candidate)))
+            return True
+
+        user32.EnumWindows(collect, 0)
+        if not candidates:
+            return False
+        phase = str(owner.get("phase", ""))
+        expected_title = "Library Manager" if phase == "library_manager" else "Skill Magnet"
+        candidates.sort(
+            key=lambda candidate: (
+                expected_title.casefold() not in candidate[1].casefold(),
+                candidate[0] != preferred,
+            )
+        )
+        hwnd = candidates[0][0]
+        user32.ShowWindowAsync(hwnd, 9)  # SW_RESTORE
+        user32.SetForegroundWindow(hwnd)
+        # Windows can reject foreground transfer for focus-stealing policy even
+        # after locating and restoring the correct live window.  The duplicate
+        # still must not advise killing that live owner process.
+        return bool(user32.IsWindowVisible(hwnd))
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
 
 
 _CONTEXT_UI_TEXT = {
@@ -141,6 +428,83 @@ def context_ui_request_error(language: str, purpose: str) -> str | None:
     return None if purpose.strip() else context_ui_text(language, "empty_request")
 
 
+def context_selection_choice_map(
+    engine: ActivationEngine,
+) -> dict[str, tuple[str, str | None]]:
+    """Build unique user labels without leaking internal IDs into the selector."""
+
+    candidates: list[tuple[str, str, str | None]] = []
+    for pack in engine.config.packs.values():
+        if pack.selection_kind == "package":
+            candidates.append(
+                (f"Skill Pack: {normalize_display_text(pack.menu_label)}", pack.pack_id, None)
+            )
+        else:
+            candidates.extend(
+                (
+                    f"Skill: {normalize_display_text(pack.skill_display_name(skill))}",
+                    pack.pack_id,
+                    skill,
+                )
+                for skill in pack.skills
+            )
+    counts: dict[str, int] = {}
+    for base, _, _ in candidates:
+        counts[base] = counts.get(base, 0) + 1
+    ordinals: dict[str, int] = {}
+    choices: dict[str, tuple[str, str | None]] = {}
+    reserved = set(counts)
+    for base, candidate_pack, candidate_skill in candidates:
+        ordinals[base] = ordinals.get(base, 0) + 1
+        if counts[base] == 1:
+            label = base
+        else:
+            label = f"{base} （同名 {ordinals[base]}）"
+            collision = 1
+            while label in reserved or label in choices:
+                label = f"{base} （同名 {ordinals[base]}・候補 {collision}）"
+                collision += 1
+        choices[label] = (candidate_pack, candidate_skill)
+    return choices
+
+
+def context_ui_details(language: str, details: dict[str, object]) -> str:
+    """Format verified selection details; placeholders are never release evidence."""
+
+    skill_ids = tuple(str(item) for item in details["skill_ids"])
+    return "\n".join(
+        (
+            context_ui_text(
+                language, "internal_skill_id", skill_id=", ".join(skill_ids)
+            ),
+            context_ui_text(language, "pack_id", pack_id=details["pack_id"]),
+            context_ui_text(
+                language,
+                "included_skills",
+                count=details["skill_count"],
+                skills=", ".join(skill_ids),
+            ),
+            context_ui_text(
+                language, "repository", repository=details["repository_url"]
+            ),
+            context_ui_text(language, "version", version=details["expected_commit"]),
+            context_ui_text(
+                language,
+                "approved",
+                approved_by=details["approved_by"],
+                approved_at=details["approved_at"],
+            ),
+            context_ui_text(
+                language,
+                "digests",
+                skill_ids_digest=details["skill_ids_digest"],
+                instruction_digest=details["instruction_digest"],
+                acceptance_digest=details["acceptance_digest"],
+            ),
+        )
+    )
+
+
 def context_error_message(error: Exception | str, language: str | None = None) -> str:
     language = language or _context_ui_language
     message = str(error)
@@ -148,15 +512,17 @@ def context_error_message(error: Exception | str, language: str | None = None) -
         if language == "en":
             message += (
                 "\n\nUpdate safely: review and approve the new source commit; update the "
-                "configured expected commit and skill digests; reinstall the Explorer "
-                "menu; verify the selected leaf matches; then retry from a clean source HEAD."
+                "configured expected commit and skill digests in Library Manager; close and "
+                "reopen the Skill Magnet selection screen; then retry from a clean source HEAD."
             )
         else:
             message = (
                 "Skillパックの現在のHEADが、承認済みコミットと一致しません。"
                 "\n\n安全に更新するには、新しいsource commitを確認・承認し、設定済みの"
-                "expected commitとSkill digestを更新してExplorerメニューを再インストールし、"
-                "選択したleafが一致することを確認してから、cleanなsource HEADで再試行してください。"
+                "expected commitとSkill digestをLibrary Managerで更新してください。"
+                "その後、Skill Magnetの選択画面を閉じて開き直し、cleanなsource HEADで"
+                "再試行してください。packやskillの内容変更だけでは右クリックメニューの"
+                "再インストールは不要です。"
             )
     elif language != "en":
         message = f"処理を開始できませんでした。\n\n{message}"
@@ -193,7 +559,13 @@ def context_result_surface(result: dict[str, object]) -> dict[str, str]:
     }
 
 
-def context_failure_surface(error: Exception) -> dict[str, str]:
+def context_failure_surface(
+    error: Exception,
+    *,
+    config_path: Path | None = None,
+    state_dir: Path | None = None,
+    platform: str | None = None,
+) -> dict[str, str]:
     """Map typed failures to a Japanese fail-closed result surface."""
     if isinstance(error, _LaunchFailed):
         return {
@@ -235,17 +607,84 @@ def context_failure_surface(error: Exception) -> dict[str, str]:
             "not_completed": "成功として表示していません。保存や変更が行われた範囲は確認できません。",
             "next_action": "保存証拠を確認し、同じ依頼を再実行してください。",
         }
+    message = str(error).strip() or error.__class__.__name__
+    folded = message.casefold()
+    repair_argv = [sys.executable, "-I", "-m", "skill_magnet"]
+    if config_path is not None:
+        repair_argv.extend(("--config", str(config_path.resolve())))
+        if state_dir is not None:
+            repair_argv.extend(("--state-dir", str(state_dir.resolve())))
+    repair_argv.extend(("library", "ui"))
+    repair_command = subprocess.list2cmdline(repair_argv)
+    menu_repair_argv = [sys.executable, "-I", "-m", "skill_magnet"]
+    if config_path is not None:
+        menu_repair_argv.extend(("--config", str(config_path.resolve())))
+    if state_dir is not None:
+        menu_repair_argv.extend(("--state-dir", str(state_dir.resolve())))
+    repair_platform = platform or ("windows" if os.name == "nt" else "macos")
+    menu_repair_argv.extend(
+        ("install-context-menu", "--platform", repair_platform, "--confirm")
+    )
+    menu_repair_command = subprocess.list2cmdline(menu_repair_argv)
+    terminal_name = "Windows Terminal" if repair_platform == "windows" else "Terminal"
+    if "after menu installation" in folded or "reinstall required" in folded:
+        next_action = (
+            f"{terminal_name}で「{menu_repair_command}」を一度実行し、"
+            "完了後に同じ右クリック操作を再試行してください。"
+            "Library Managerも同じSkill Magnet画面から開けます。"
+        )
+    elif "selection screen" in folded or "while confirming" in folded:
+        next_action = (
+            "現在のSkill Magnet画面を閉じ、対象フォルダーを右クリックして"
+            "「Skill Magnet」をもう一度開いてください。現在の設定から選択肢を読み直します。"
+            "packやskillの内容変更だけでは右クリックメニューの再インストールは不要です。"
+        )
+    elif "config" in folded or "json" in folded or "設定" in message:
+        next_action = (
+            f"{terminal_name}で「{repair_command}」を実行して"
+            "Library Managerを開き、GitHub URLと登録内容を修復してから再実行してください。"
+        )
+    elif "library manager" in folded:
+        next_action = (
+            f"{terminal_name}で「{repair_command}」を再実行してください。"
+            "同じ原因が表示される場合は、表示されたパスの書き込み権限または空き容量を"
+            "修復してから再実行してください。"
+        )
+    elif "workspace" in folded or "folder" in folded or "directory" in folded:
+        next_action = (
+            "対象フォルダーそのものを右クリックするか、そのフォルダーを開いた状態で"
+            "余白を右クリックして再実行してください。"
+        )
+    elif "interrupted" in folded or "transaction" in folded or "attempt" in folded:
+        next_action = (
+            "右クリックの「Skill Magnet」を押し、開いた画面の「Library Manager」で"
+            "表示された中断処理を「続きから再開」または「最初からやり直す」で復旧してください。"
+        )
+    else:
+        next_action = (
+            f"{terminal_name}で「{repair_command}」を実行し、"
+            "画面の復旧操作を実行してください。解消しない場合は、この原因文を"
+            "そのまま対応報告へ添付してください。"
+        )
     return {
         "state": "blocked",
         "title": "実行を続けられません",
-        "cause": "安全確認または起動前検証を満たせませんでした。",
+        "cause": message,
         "not_completed": "依頼は完了扱いにしていません。",
-        "next_action": "選択内容と保存証拠を確認し、原因を解消してから再実行してください。",
+        "next_action": next_action,
     }
 
 
-def context_failure_message(error: Exception) -> str:
-    surface = context_failure_surface(error)
+def context_failure_message(
+    error: Exception,
+    *,
+    config_path: Path | None = None,
+    state_dir: Path | None = None,
+    platform: str | None = None,
+) -> str:
+    surface = context_failure_surface(
+        error, config_path=config_path, state_dir=state_dir, platform=platform
+    )
     return "\n\n".join(
         (
             surface["title"],
@@ -493,45 +932,48 @@ def context_selection_details(
     menu_skill_digest: str | None = None,
     menu_instruction_digest: str | None = None,
     menu_acceptance_digest: str | None = None,
+    record_rejections: bool = True,
 ) -> dict[str, object]:
     project = validate_task_workspace(project)
+
+    def reject(reason: str) -> None:
+        if record_rejections:
+            engine.record_rejection(pack_id=pack_id, runtime=runtime, reason=reason)
+
     if pack_id not in engine.config.packs:
-        engine.record_rejection(
-            pack_id=pack_id, runtime=runtime, reason="unknown_pack"
-        )
+        reject("unknown_pack")
         raise SkillMagnetError(f"Unknown skill pack: {pack_id}")
     if runtime not in {"codex", "claude"}:
-        engine.record_rejection(
-            pack_id=pack_id, runtime=runtime, reason="unknown_runtime"
-        )
+        reject("unknown_runtime")
         raise SkillMagnetError(f"Unknown target AI: {runtime}")
     pack = engine.config.packs[pack_id]
     if skill_id is not None and skill_id not in pack.skills:
-        engine.record_rejection(
-            pack_id=pack_id, runtime=runtime, reason="unknown_skill"
-        )
+        reject("unknown_skill")
         raise SkillMagnetError(f"Unknown skill for pack {pack_id}: {skill_id}")
-    skill_digest = hashlib.sha256(
+    pack_membership_digest = hashlib.sha256(
         json.dumps(pack.skills, ensure_ascii=False, separators=(",", ":")).encode(
             "utf-8"
         )
     ).hexdigest()
     if menu_commit is not None and menu_commit != pack.expected_commit:
-        engine.record_rejection(
-            pack_id=pack_id, runtime=runtime, reason="stale_menu_commit"
+        reject("stale_menu_commit")
+        raise SkillMagnetError(
+            "Pack version changed after the selection screen opened; close and reopen Skill Magnet"
         )
-        raise SkillMagnetError("Pack version changed after menu installation; reinstall required")
-    if menu_skill_digest is not None and menu_skill_digest != skill_digest:
-        engine.record_rejection(
-            pack_id=pack_id, runtime=runtime, reason="stale_menu_membership"
+    if menu_skill_digest is not None and menu_skill_digest != pack_membership_digest:
+        reject("stale_menu_membership")
+        raise SkillMagnetError(
+            "Pack membership changed after the selection screen opened; close and reopen Skill Magnet"
         )
-        raise SkillMagnetError("Pack membership changed after menu installation; reinstall required")
     if pack.selection_kind == "package" and skill_id is not None:
-        engine.record_rejection(
-            pack_id=pack_id, runtime=runtime, reason="invalid_package_selection"
-        )
+        reject("invalid_package_selection")
         raise SkillMagnetError(f"Pack {pack_id} must be selected as a complete package")
     selected_skills = (skill_id,) if skill_id is not None else pack.skills
+    selected_skills_digest = hashlib.sha256(
+        json.dumps(selected_skills, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
 
     def selection_digest(filename: str) -> str:
         if skill_id is not None:
@@ -548,15 +990,15 @@ def context_selection_details(
     instruction_digest = selection_digest("SKILL.md")
     acceptance_digest = selection_digest("acceptance.json")
     if menu_instruction_digest is not None and menu_instruction_digest != instruction_digest:
-        engine.record_rejection(
-            pack_id=pack_id, runtime=runtime, reason="stale_menu_instruction"
+        reject("stale_menu_instruction")
+        raise SkillMagnetError(
+            "Skill instructions changed after the selection screen opened; close and reopen Skill Magnet"
         )
-        raise SkillMagnetError("Skill instructions changed after menu installation; reinstall required")
     if menu_acceptance_digest is not None and menu_acceptance_digest != acceptance_digest:
-        engine.record_rejection(
-            pack_id=pack_id, runtime=runtime, reason="stale_menu_acceptance"
+        reject("stale_menu_acceptance")
+        raise SkillMagnetError(
+            "Skill acceptance changed after the selection screen opened; close and reopen Skill Magnet"
         )
-        raise SkillMagnetError("Skill acceptance changed after menu installation; reinstall required")
     return {
         "selection_kind": "skill" if skill_id is not None else "pack",
         "selected_skill_id": skill_id,
@@ -564,7 +1006,8 @@ def context_selection_details(
         "pack_id": pack.pack_id,
         "skill_count": len(selected_skills),
         "skill_ids": selected_skills,
-        "skill_ids_digest": skill_digest,
+        "skill_ids_digest": selected_skills_digest,
+        "pack_membership_digest": pack_membership_digest,
         "instruction_digest": instruction_digest,
         "acceptance_digest": acceptance_digest,
         "runtime": runtime,
@@ -591,16 +1034,19 @@ def confirm_context_selection(
     details: dict[str, object],
     purpose: str,
     confirmed: bool,
+    persist: bool = True,
+    record_rejections: bool = True,
 ) -> LaunchContract | None:
     """Create no state until the user has explicitly accepted the immutable selection."""
     if not confirmed:
         return None
     if not details["verified_runtime"]:
-        engine.record_rejection(
-            pack_id=str(details["pack_id"]),
-            runtime=str(details["runtime"]),
-            reason="unsupported_runtime",
-        )
+        if record_rejections:
+            engine.record_rejection(
+                pack_id=str(details["pack_id"]),
+                runtime=str(details["runtime"]),
+                reason="unsupported_runtime",
+            )
         raise SkillMagnetError(
             f"{str(details['runtime']).title()} has no verified runtime adapter; launch blocked"
         )
@@ -622,20 +1068,26 @@ def confirm_context_selection(
             ),
         )
     except SkillMagnetError:
-        engine.record_rejection(
-            pack_id=str(details["pack_id"]),
-            runtime=str(details["runtime"]),
-            reason="preflight_validation_failed",
-        )
+        if record_rejections:
+            engine.record_rejection(
+                pack_id=str(details["pack_id"]),
+                runtime=str(details["runtime"]),
+                reason="preflight_validation_failed",
+            )
         raise
     if tuple(plan["skill_ids"]) != tuple(details["skill_ids"]):
-        engine.record_rejection(
-            pack_id=str(details["pack_id"]),
-            runtime=str(details["runtime"]),
-            reason="stale_menu_membership",
+        if record_rejections:
+            engine.record_rejection(
+                pack_id=str(details["pack_id"]),
+                runtime=str(details["runtime"]),
+                reason="stale_menu_membership",
+            )
+        raise SkillMagnetError(
+            "Pack membership changed while confirming the selection; close and reopen Skill Magnet"
         )
-        raise SkillMagnetError("Pack membership changed after menu selection; reinstall required")
-    return engine.confirm(plan, confirmed=True)
+    if persist:
+        return engine.confirm(plan, confirmed=True)
+    return engine.prepare_confirmation(plan, confirmed=True)
 
 
 def launch_context_leaf(
@@ -726,16 +1178,17 @@ def show_context_selection(
     menu_skill_digest: str | None = None,
     menu_instruction_digest: str | None = None,
     menu_acceptance_digest: str | None = None,
+    allow_dynamic_selection: bool = False,
     library_manager: Callable[[Path], None] | None = None,
-) -> LaunchContract | None:
+    register_selected: Callable[[Path], None] | None = None,
+    window_ready: Callable[[int], None] | None = None,
+) -> LaunchContract | ContextUiAction | None:
     """Show one pack-first confirmation UI for both OS adapters."""
     import tkinter as tk
     from tkinter import messagebox, ttk
 
     normalized_project = validate_task_workspace(project)
-    root = tk.Tk()
-    root.resizable(True, True)
-    if platform == "windows" and any(
+    if platform == "windows" and not allow_dynamic_selection and any(
         value is None
         for value in (
             pack_id,
@@ -750,12 +1203,13 @@ def show_context_selection(
         )
     if (
         platform == "windows"
+        and not allow_dynamic_selection
         and pack_id is not None
         and engine.config.packs[pack_id].selection_kind == "skill"
         and skill_id is None
     ):
         raise SkillMagnetError("Windows context launch requires an explicit skill")
-    if platform == "windows":
+    if platform == "windows" and not allow_dynamic_selection:
         context_selection_details(
             engine,
             project=project,
@@ -767,19 +1221,9 @@ def show_context_selection(
             menu_instruction_digest=menu_instruction_digest,
             menu_acceptance_digest=menu_acceptance_digest,
         )
-    selection_choices: dict[str, tuple[str, str | None]] = {}
-    for candidate_pack in engine.config.packs.values():
-        if candidate_pack.selection_kind == "package":
-            label = candidate_pack.menu_label
-            if label in selection_choices:
-                label = f"{label} ({candidate_pack.pack_id})"
-            selection_choices[label] = (candidate_pack.pack_id, None)
-            continue
-        for candidate_skill in candidate_pack.skills:
-            label = candidate_pack.skill_display_name(candidate_skill)
-            if label in selection_choices:
-                label = f"{label} ({candidate_pack.menu_label})"
-            selection_choices[label] = (candidate_pack.pack_id, candidate_skill)
+    root = tk.Tk()
+    root.resizable(True, True)
+    selection_choices = context_selection_choice_map(engine)
     selected_pack = tk.StringVar(value=pack_id or "")
     selected_skill = tk.StringVar(value=skill_id or "")
     selected_skill_label = tk.StringVar()
@@ -795,8 +1239,13 @@ def show_context_selection(
     verification_label = tk.StringVar()
     details_text = tk.StringVar()
     details_button_text = tk.StringVar()
-    result: dict[str, LaunchContract] = {}
+    processing_status = tk.StringVar(value="待機中")
+    result: dict[str, LaunchContract | ContextUiAction] = {}
     details_visible = False
+    verified_details: dict[str, object] | None = None
+    active_context_worker: threading.Thread | None = None
+    active_context_cancel: threading.Event | None = None
+    closing = False
 
     def current_language() -> str:
         return "en" if language_choice.get() == "English" else "ja"
@@ -836,11 +1285,19 @@ def show_context_selection(
         skill_box.grid(row=1, column=1, columnspan=3, padx=12, pady=4, sticky="ew")
 
         def choose_skill(_: object = None) -> None:
+            nonlocal verified_details, details_visible
             selected = selection_choices.get(selected_skill_label.get())
             if selected is None:
                 return
             selected_pack.set(selected[0])
             selected_skill.set(selected[1] or "")
+            verified_details = None
+            if details_visible:
+                details_visible = False
+                details_frame.grid_remove()
+                details_button_text.set(
+                    context_ui_text(current_language(), "details_show")
+                )
             refresh_selection()
 
         skill_box.bind("<<ComboboxSelected>>", choose_skill)
@@ -861,7 +1318,8 @@ def show_context_selection(
     ttk.Label(root, textvariable=request_label).grid(
         row=4, column=0, padx=12, sticky="w"
     )
-    ttk.Entry(root, textvariable=purpose, width=48).grid(
+    request_entry = ttk.Entry(root, textvariable=purpose, width=48)
+    request_entry.grid(
         row=4, column=1, columnspan=3, padx=12, pady=4, sticky="w"
     )
     ttk.Label(root, textvariable=verification_label, wraplength=560).grid(
@@ -874,24 +1332,162 @@ def show_context_selection(
     )
 
     def toggle_details() -> None:
-        nonlocal details_visible
-        details_visible = not details_visible
-        if details_visible:
-            details_frame.grid(row=7, column=0, columnspan=4, padx=12, pady=4, sticky="ew")
-        else:
-            details_frame.grid_remove()
-        details_button_text.set(
-            context_ui_text(
-                current_language(), "details_hide" if details_visible else "details_show"
+        nonlocal details_visible, verified_details
+        opening = not details_visible
+        if opening:
+            if not selected_pack.get():
+                messagebox.showerror(
+                    context_ui_text(current_language(), "error_title"),
+                    context_ui_text(current_language(), "select_pack"),
+                    parent=root,
+                )
+                return
+            runtime_value = selected_runtime.get().casefold()
+            if runtime_value not in {"codex", "claude"}:
+                runtime_value = "codex"
+            selection = {
+                "pack_id": selected_pack.get(),
+                "skill_id": selected_skill.get() or None,
+                "runtime": runtime_value,
+            }
+
+            def load_details(_: threading.Event) -> dict[str, object]:
+                return context_selection_details(
+                    engine,
+                    project=project,
+                    pack_id=str(selection["pack_id"]),
+                    skill_id=(
+                        str(selection["skill_id"])
+                        if selection["skill_id"] is not None
+                        else None
+                    ),
+                    runtime=str(selection["runtime"]),
+                    menu_commit=menu_commit,
+                    menu_skill_digest=menu_skill_digest,
+                    menu_instruction_digest=menu_instruction_digest,
+                    menu_acceptance_digest=menu_acceptance_digest,
+                    record_rejections=False,
+                )
+
+            def details_loaded(value: Any) -> None:
+                nonlocal details_visible, verified_details
+                if not isinstance(value, dict):
+                    raise SkillMagnetError("検証結果を読み取れません")
+                verified_details = value
+                details_text.set(context_ui_details(current_language(), verified_details))
+                details_visible = True
+                details_frame.grid(
+                    row=7, column=0, columnspan=4, padx=12, pady=4, sticky="ew"
+                )
+                details_button_text.set(
+                    context_ui_text(current_language(), "details_hide")
+                )
+
+            run_context_background(
+                "検証情報を取得しています…",
+                load_details,
+                details_loaded,
+                name="skill-magnet-context-details",
             )
-        )
+        else:
+            details_visible = False
+            details_frame.grid_remove()
+            details_button_text.set(
+                context_ui_text(current_language(), "details_show")
+            )
 
     details_button = ttk.Button(root, textvariable=details_button_text, command=toggle_details)
     details_button.grid(row=6, column=0, columnspan=4, padx=12, pady=4, sticky="w")
 
     confirm_button = ttk.Button(root)
-    cancel_button = ttk.Button(root, command=root.destroy)
+    cancel_button = ttk.Button(root)
     manager_button = ttk.Button(root, text="Library Manager")
+    register_button = ttk.Button(root, text="このフォルダーのスキルを登録")
+
+    controls = [
+        language_box,
+        runtime_box,
+        request_entry,
+        details_button,
+        confirm_button,
+        cancel_button,
+        manager_button,
+        register_button,
+    ]
+    if pack_id is None:
+        controls.append(skill_box)
+
+    def set_processing(label: str | None) -> None:
+        busy = label is not None
+        processing_status.set(f"処理中：{label}" if busy else "待機中")
+        for control in controls:
+            try:
+                control.configure(
+                    state=(
+                        "normal"
+                        if busy and control is cancel_button
+                        else "disabled"
+                        if busy
+                        else "normal"
+                    )
+                )
+            except tk.TclError:
+                continue
+        if not busy:
+            language_box.configure(state="readonly")
+            runtime_box.configure(state="readonly")
+            if pack_id is None:
+                skill_box.configure(state="readonly")
+        root.update_idletasks()
+
+    def run_context_background(
+        label: str,
+        operation: Callable[[threading.Event], Any],
+        on_success: Callable[[Any], None],
+        *,
+        name: str,
+    ) -> None:
+        """Keep archive validation and contract preparation off Tk's main thread."""
+
+        nonlocal active_context_worker, active_context_cancel
+        if active_context_worker is not None and active_context_worker.is_alive():
+            return
+        cancel_event, worker, outcome = start_context_background_operation(
+            operation, name=name
+        )
+        active_context_cancel = cancel_event
+        active_context_worker = worker
+        set_processing(label)
+
+        def poll() -> None:
+            nonlocal active_context_worker, active_context_cancel
+            if worker.is_alive():
+                if not closing:
+                    root.after(50, poll)
+                return
+            active_context_worker = None
+            active_context_cancel = None
+            if closing:
+                return
+            set_processing(None)
+            error = outcome.get("error")
+            if isinstance(error, BaseException):
+                messagebox.showerror(
+                    context_ui_text(current_language(), "error_title"),
+                    f"{context_ui_text(current_language(), 'operation_failed')}\n\n{error}",
+                    parent=root,
+                )
+                return
+            try:
+                on_success(outcome.get("value"))
+            except Exception as exc:
+                messagebox.showerror(
+                    context_ui_text(current_language(), "error_title"),
+                    f"{context_ui_text(current_language(), 'operation_failed')}\n\n{exc}",
+                    parent=root,
+                )
+
+        root.after(50, poll)
 
     def refresh_selection() -> None:
         if not selected_pack.get():
@@ -908,37 +1504,9 @@ def show_context_selection(
             )
         )
         details_text.set(
-            "\n".join(
-                (
-                    context_ui_text(
-                        current_language(),
-                        "internal_skill_id",
-                        skill_id=", ".join((skill,)) if skill is not None else ", ".join(pack.skills),
-                    ),
-                    context_ui_text(current_language(), "pack_id", pack_id=pack.pack_id),
-                    context_ui_text(
-                        current_language(),
-                        "included_skills",
-                        count=len(pack.skills),
-                        skills=", ".join(pack.skills),
-                    ),
-                    context_ui_text(current_language(), "repository", repository=pack.repo_url),
-                    context_ui_text(current_language(), "version", version=pack.expected_commit),
-                    context_ui_text(
-                        current_language(),
-                        "approved",
-                        approved_by=pack.approved_by,
-                        approved_at=pack.approved_at,
-                    ),
-                    context_ui_text(
-                        current_language(),
-                        "digests",
-                        skill_ids_digest=menu_skill_digest or "-",
-                        instruction_digest=menu_instruction_digest or "-",
-                        acceptance_digest=menu_acceptance_digest or "-",
-                    ),
-                )
-            )
+            context_ui_details(current_language(), verified_details)
+            if verified_details is not None
+            else context_ui_text(current_language(), "details_show")
         )
 
     def apply_language(_: object = None) -> None:
@@ -969,7 +1537,8 @@ def show_context_selection(
 
     def confirm() -> None:
         language = current_language()
-        request_error = context_ui_request_error(language, purpose.get())
+        request_value = purpose.get()
+        request_error = context_ui_request_error(language, request_value)
         if request_error is not None:
             messagebox.showerror(
                 context_ui_text(language, "error_title"),
@@ -992,60 +1561,117 @@ def show_context_selection(
                 parent=root,
             )
             return
-        try:
-            details = context_selection_details(
+        selection = {
+            "language": language,
+            "request": request_value,
+            "runtime": runtime_value,
+            "pack_id": selected_pack.get(),
+            "skill_id": selected_skill.get() or None,
+        }
+
+        def validate_selection(_: threading.Event) -> dict[str, object]:
+            return context_selection_details(
                 engine,
                 project=project,
-                pack_id=selected_pack.get(),
-                skill_id=selected_skill.get() or None,
-                runtime=runtime_value,
+                pack_id=str(selection["pack_id"]),
+                skill_id=(
+                    str(selection["skill_id"])
+                    if selection["skill_id"] is not None
+                    else None
+                ),
+                runtime=str(selection["runtime"]),
                 menu_commit=menu_commit,
                 menu_skill_digest=menu_skill_digest,
                 menu_instruction_digest=menu_instruction_digest,
                 menu_acceptance_digest=menu_acceptance_digest,
+                record_rejections=False,
             )
-        except Exception as exc:
-            messagebox.showerror(
-                context_ui_text(language, "error_title"),
-                f"{context_ui_text(language, 'operation_failed')}\n\n{exc}",
+
+        def selection_validated(value: Any) -> None:
+            if not isinstance(value, dict):
+                raise SkillMagnetError("選択内容の検証結果を読み取れません")
+            detail = context_ui_confirmation(
+                str(selection["language"]), value, str(selection["request"])
+            )
+            if not messagebox.askyesno(
+                context_ui_text(str(selection["language"]), "confirmation_title"),
+                detail,
                 parent=root,
+            ):
+                return
+
+            def create_contract(_: threading.Event) -> LaunchContract | None:
+                return confirm_context_selection(
+                    engine,
+                    platform=platform,
+                    details=value,
+                    purpose=str(selection["request"]),
+                    confirmed=True,
+                    persist=False,
+                    record_rejections=False,
+                )
+
+            def contract_created(contract: Any) -> None:
+                if not isinstance(contract, LaunchContract):
+                    raise SkillMagnetError("依頼の実行契約を作成できませんでした")
+                # This is the only state-changing commit in the confirmation
+                # flow.  It runs on Tk's main thread, so a close event cannot
+                # interleave between the final cancellation check and write.
+                result["contract"] = engine.persist_confirmation(contract)
+                root.destroy()
+
+            run_context_background(
+                "依頼を安全に準備しています…",
+                create_contract,
+                contract_created,
+                name="skill-magnet-context-contract",
             )
-            return
-        detail = context_ui_confirmation(language, details, purpose.get())
-        if not messagebox.askyesno(
-            context_ui_text(language, "confirmation_title"), detail, parent=root
-        ):
-            return
-        try:
-            contract = confirm_context_selection(
-                engine,
-                platform=platform,
-                details=details,
-                purpose=purpose.get(),
-                confirmed=True,
-            )
-        except Exception as exc:
-            messagebox.showerror(
-                context_ui_text(language, "error_title"),
-                f"{context_ui_text(language, 'operation_failed')}\n\n{exc}",
-                parent=root,
-            )
-            return
-        if contract is not None:
-            result["contract"] = contract
-        root.destroy()
+
+        run_context_background(
+            "選択内容を検証しています…",
+            validate_selection,
+            selection_validated,
+            name="skill-magnet-context-validation",
+        )
 
     confirm_button.configure(command=confirm)
     if library_manager is not None:
         def open_library_manager() -> None:
+            set_processing("Library Managerを開いています…")
+            result["action"] = ContextUiAction("library_manager")
             root.destroy()
-            library_manager(project.resolve())
 
         manager_button.configure(command=open_library_manager)
-        manager_button.grid(row=8, column=0, columnspan=4, padx=12, pady=(8, 0))
+        manager_button.grid(row=8, column=0, columnspan=2, padx=12, pady=(8, 0))
+    if register_selected is not None:
+        def open_registration() -> None:
+            set_processing("選択フォルダーを確認しています…")
+            result["action"] = ContextUiAction("register_selected")
+            root.destroy()
+
+        register_button.configure(command=open_registration)
+        register_button.grid(row=8, column=2, columnspan=2, padx=12, pady=(8, 0))
     confirm_button.grid(row=9, column=0, columnspan=2, padx=12, pady=12)
     cancel_button.grid(row=9, column=2, columnspan=2, padx=12, pady=12)
+    ttk.Label(root, textvariable=processing_status, anchor="w").grid(
+        row=10, column=0, columnspan=4, padx=12, pady=(0, 8), sticky="ew"
+    )
+    def close_context_window() -> None:
+        nonlocal closing
+        closing = True
+        if active_context_cancel is not None:
+            active_context_cancel.set()
+        root.destroy()
+
+    cancel_button.configure(command=close_context_window)
     apply_language()
-    root.protocol("WM_DELETE_WINDOW", root.destroy)
+    root.protocol("WM_DELETE_WINDOW", close_context_window)
+    if window_ready is not None:
+        try:
+            root.update_idletasks()
+            window_ready(int(root.winfo_id()))
+        except Exception:
+            root.destroy()
+            raise
     root.mainloop()
-    return result.get("contract")
+    return result.get("contract") or result.get("action")

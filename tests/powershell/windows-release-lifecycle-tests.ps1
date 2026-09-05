@@ -105,6 +105,21 @@ try {
     $installed = $installOutput | ConvertFrom-Json
     Assert-True ([bool]$installed.modern.usable_installed_state) `
         "The real MSIX installation did not become usable."
+    Assert-True ([bool]$installed.modern.registered_identity_matches) `
+        "The registered Appx identity does not match the release contract."
+    Assert-True (
+        [int]$installed.modern.same_name_package_count -eq 1 -and
+        [int]$installed.modern.expected_identity_match_count -eq 1 -and
+        [int]$installed.modern.unexpected_same_name_package_count -eq 0
+    ) "The release is not the only registered package with the Skill Magnet name."
+    Assert-True ([bool]$installed.modern.dependency_matches) `
+        "The Appx desktop dependency contract does not match."
+    Assert-True ([bool]$installed.modern.capability_matches) `
+        "The Appx full-trust capability contract does not match."
+    Assert-True ([bool]$installed.modern.exclusive_visible_entry) `
+        "A classic Skill Magnet registry entry remains beside the modern root."
+    Assert-True (@($installed.modern.classic_owned_roots_present).Count -eq 0) `
+        "Classic or legacy Skill Magnet roots remain after installation."
     $priorMenuHash = (Get-FileHash -Algorithm SHA256 `
         -LiteralPath (Join-Path $installRoot "SkillMagnetMenu.tsv")).Hash
     foreach ($legacyThumbprint in $legacyThumbprints) {
@@ -141,16 +156,33 @@ try {
     $status = $statusOutput | ConvertFrom-Json
     Assert-True ([bool]$status.usable_installed_state) `
         "Installed release status is not usable."
-    Assert-True ([int]$status.menu_leaf_count -eq 3) `
-        "Installed release does not expose the two pack leaves and CMA004 skill leaf."
-    Assert-True ([int]$status.menu_action_count -eq 5) `
-        "Installed release does not expose registration, two packs, CMA004, and Library Manager."
-    Assert-True (($status.menu_selection_kinds -join ',') -eq 'package,package,skill') `
-        "Installed release does not preserve the package/package/skill selection contract."
-    Assert-True ([int]$status.library_manager_entry_count -eq 1) `
-        "Installed release does not expose one Library Manager action."
-    Assert-True ([int]$status.register_folder_entry_count -eq 1) `
-        "Installed release does not expose one selected-folder registration action."
+    Assert-True ([bool]$status.registered_identity_matches) `
+        "Installed package identity is not the expected 0.5.9 release."
+    Assert-True (
+        [int]$status.same_name_package_count -eq 1 -and
+        [int]$status.expected_identity_match_count -eq 1 -and
+        [int]$status.unexpected_same_name_package_count -eq 0
+    ) "Installed status found a duplicate or foreign same-name package."
+    Assert-True ([bool]$status.dependency_matches -and [bool]$status.capability_matches) `
+        "Installed Appx dependency/capability contract is incomplete."
+    Assert-True ([bool]$status.exclusive_visible_entry) `
+        "Installed release is not the only visible Skill Magnet root."
+    Assert-True (@($status.classic_owned_roots_present).Count -eq 0) `
+        "Installed release left product-owned classic registry roots."
+    Assert-True ([int]$status.menu_leaf_count -eq 0) `
+        "Installed release must not expose non-invokable Explorer child leaves."
+    Assert-True ([int]$status.menu_action_count -eq 1) `
+        "Installed release must expose exactly one direct root launcher."
+    Assert-True ([int]$status.root_launcher_entry_count -eq 1) `
+        "Installed release does not expose exactly one root launcher."
+    Assert-True ([int]$status.configured_selection_count -eq 3) `
+        "Installed release does not preserve all three configured UI selections."
+    Assert-True (($status.configured_selection_kinds -join ',') -eq 'package,package,skill') `
+        "Installed release does not preserve the package/package/skill UI selection contract."
+    Assert-True ([int]$status.library_manager_entry_count -eq 0) `
+        "Library Manager must be inside the unified UI, not a non-invokable child leaf."
+    Assert-True ([int]$status.register_folder_entry_count -eq 0) `
+        "Folder registration must be inside the unified UI, not a non-invokable child leaf."
 
     $rollbackOutput = python -m skill_magnet rollback-context-menu `
         --platform windows --confirm | Out-String

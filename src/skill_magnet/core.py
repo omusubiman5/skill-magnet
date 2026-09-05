@@ -252,7 +252,10 @@ class Config:
             pack_id = str(raw.get("id", ""))
             if not SKILL_NAME.fullmatch(pack_id) or pack_id in self.packs:
                 raise SkillMagnetError(f"Invalid or duplicate pack id: {pack_id}")
-            skills = tuple(str(item) for item in raw.get("skills", []))
+            raw_skills = raw.get("skills")
+            if not isinstance(raw_skills, list):
+                raise SkillMagnetError(f"Pack {pack_id} skills must be a list")
+            skills = tuple(str(item) for item in raw_skills)
             if not skills or len(skills) != len(set(skills)):
                 raise SkillMagnetError(f"Pack {pack_id} must list unique skills")
             for skill in skills:

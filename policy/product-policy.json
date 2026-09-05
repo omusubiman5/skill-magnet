@@ -12,7 +12,7 @@
     "選択したpackとversionをタスクへ明示し、全skillの読了、最低1つの実作業への適用、存在する場合だけINDEX関係の適用をpromptで必須にする。読了や要約だけを実行完了とみなさない。",
     "Codex Desktop／Claudeの既存利用プランを使い、API key、従量課金API、追加支払いを製品経路で要求しない。",
     "公式に確認できる経路または必要な証拠がない場合はfail-closedで停止し、保証外であることを明示する。",
-    "起動はユーザーの右クリックメニューからの明示選択を条件とし、自動提案・自動配布・自動有効化をしない。",
+    "通常のskill実行はユーザーの右クリックメニューからの明示選択を条件とし、自動提案・自動配布・自動有効化をしない。Library Managerでは、利用者が明示した登録・更新・削除だけを同じ復旧可能transactionで自動公開・検証・反映できる。",
     "Windows ExplorerとmacOS Finderで同じ選択・確認・起動の意味と安全ポリシーを提供する。"
   ],
   "source_of_truth": {
@@ -104,8 +104,13 @@
   "library_manager_ui": {
     "entrypoint": "skill_magnet_context_menu",
     "selected_folder_prefill": true,
-    "automatic_publish": false,
-    "automatic_activation": false
+    "mutation_trigger": "explicit_register_update_or_delete",
+    "automatic_publish": true,
+    "automatic_merge": true,
+    "automatic_activation": true,
+    "automatic_scope": "only_the_confirmed_library_mutation",
+    "requires_recoverable_transaction_before_mutation": true,
+    "stage_buttons_required": false
   },
   "skill_use_handoff": {
     "target_applications": ["codex_desktop", "claude_code_desktop"],
