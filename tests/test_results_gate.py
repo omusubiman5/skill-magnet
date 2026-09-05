@@ -2350,6 +2350,10 @@ Update-FieldOwnerRevision $generation 8 $ownerRevisions
         }
         unknown_phase["phase"] = "recovery_starting"
         invalid.append(unknown_phase)
+        for starting_phase in ("context_starting", "library_manager_starting"):
+            starting_with_surface = clone()
+            starting_with_surface["phase"] = starting_phase
+            invalid.append(starting_with_surface)
 
         for candidate in invalid:
             payload = json.dumps(candidate, separators=(",", ":")).encode()
