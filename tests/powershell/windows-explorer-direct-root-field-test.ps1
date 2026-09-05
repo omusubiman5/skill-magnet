@@ -573,8 +573,10 @@ public static class SkillMagnetFieldInput {
         string receiptPath, string expectedReceiptSha256,
         string expectedProcessInstanceId, string expectedGeneration,
         long expectedRevision, string expectedSemanticId,
+        string expectedSemanticNameSha256,
         bool requireImmutableChild, string expectedChildRuntimeKey,
-        int expectedChildControlType, double expectedChildX, double expectedChildY,
+        int expectedChildControlType, string expectedChildClassName,
+        double expectedChildX, double expectedChildY,
         double expectedChildWidth, double expectedChildHeight,
         bool expectedChildEnabled, bool expectedChildOffscreen,
         string expectedRowRuntimeKey, int expectedRowControlType,
@@ -583,6 +585,10 @@ public static class SkillMagnetFieldInput {
         FileStream initialReceipt = null;
         FileStream finalReceipt = null;
         try {
+        if (!FixedToken(expectedUiaNameSha256, 64) ||
+            (requireImmutableChild &&
+                (String.IsNullOrEmpty(expectedChildRuntimeKey) ||
+                 expectedChildClassName == null))) return false;
         byte[] initialReceiptBytes = ReadPinnedReceipt(receiptPath, out initialReceipt);
         POINT cursor;
         if (!GetCursorPos(out cursor) || cursor.X != x || cursor.Y != y) return false;
@@ -605,6 +611,7 @@ public static class SkillMagnetFieldInput {
                 StringComparison.Ordinal)) return false;
         string initialUiaRuntimeKey = RuntimeKey(initialUia);
         int initialUiaControlType = initialUia.Current.ControlType.Id;
+        string initialUiaClassName = initialUia.Current.ClassName;
         System.Windows.Rect initialUiaRectangle = initialUia.Current.BoundingRectangle;
         bool initialUiaEnabled = initialUia.Current.IsEnabled;
         bool initialUiaOffscreen = initialUia.Current.IsOffscreen;
@@ -612,6 +619,8 @@ public static class SkillMagnetFieldInput {
             !String.Equals(initialUiaRuntimeKey, expectedChildRuntimeKey,
                 StringComparison.Ordinal) ||
             initialUiaControlType != expectedChildControlType ||
+            !String.Equals(initialUiaClassName, expectedChildClassName,
+                StringComparison.Ordinal) ||
             !SameRectangle(initialUiaRectangle, new System.Windows.Rect(
                 expectedChildX, expectedChildY, expectedChildWidth, expectedChildHeight)) ||
             initialUiaEnabled != expectedChildEnabled ||
@@ -623,7 +632,7 @@ public static class SkillMagnetFieldInput {
         if (!String.IsNullOrEmpty(receiptPath) && !ReceiptMatches(
             initialReceiptBytes, expectedReceiptSha256, expectedProcessInstanceId,
             expectedGeneration, expectedRevision, expectedSemanticId,
-            expectedUiaNameSha256)) return false;
+            expectedSemanticNameSha256)) return false;
         if (initialReceipt != null) { initialReceipt.Dispose(); initialReceipt = null; }
         Action fault = TestAfterInitialValidation;
         if (fault != null) fault();
@@ -651,6 +660,8 @@ public static class SkillMagnetFieldInput {
             !String.Equals(RuntimeKey(finalUia), initialUiaRuntimeKey,
                 StringComparison.Ordinal) ||
             finalUia.Current.ControlType.Id != initialUiaControlType ||
+            !String.Equals(finalUia.Current.ClassName, initialUiaClassName,
+                StringComparison.Ordinal) ||
             !SameRectangle(finalUia.Current.BoundingRectangle, initialUiaRectangle) ||
             finalUia.Current.IsEnabled != initialUiaEnabled ||
             finalUia.Current.IsOffscreen != initialUiaOffscreen ||
@@ -658,6 +669,8 @@ public static class SkillMagnetFieldInput {
                 !String.Equals(RuntimeKey(finalUia), expectedChildRuntimeKey,
                     StringComparison.Ordinal) ||
                 finalUia.Current.ControlType.Id != expectedChildControlType ||
+                !String.Equals(finalUia.Current.ClassName, expectedChildClassName,
+                    StringComparison.Ordinal) ||
                 !SameRectangle(finalUia.Current.BoundingRectangle, new System.Windows.Rect(
                     expectedChildX, expectedChildY, expectedChildWidth, expectedChildHeight)) ||
                 finalUia.Current.IsEnabled != expectedChildEnabled ||
@@ -671,7 +684,7 @@ public static class SkillMagnetFieldInput {
             (!String.IsNullOrEmpty(receiptPath) && !ReceiptMatches(
                 finalReceiptBytes, expectedReceiptSha256, expectedProcessInstanceId,
                 expectedGeneration, expectedRevision, expectedSemanticId,
-                expectedUiaNameSha256))) return false;
+                expectedSemanticNameSha256))) return false;
         mouse_event(down, 0, 0, 0, UIntPtr.Zero);
         mouse_event(up, 0, 0, 0, UIntPtr.Zero);
         return true;
@@ -986,6 +999,45 @@ function Get-Pattern($Element, $Pattern) {
     return $null
 }
 
+function New-UiaPointSnapshot($Element) {
+    Assert-Field ($null -ne $Element) "UIAutomation point snapshot is missing."
+    $rectangle = $Element.Current.BoundingRectangle
+    [pscustomobject]@{
+        runtime_key = Get-UiaRuntimeKey $Element
+        control_type = [int]$Element.Current.ControlType.Id
+        class_name = [string]$Element.Current.ClassName
+        name_sha256 = Get-Utf8Sha256 ([string]$Element.Current.Name)
+        x = [double]$rectangle.X
+        y = [double]$rectangle.Y
+        width = [double]$rectangle.Width
+        height = [double]$rectangle.Height
+        enabled = [bool]$Element.Current.IsEnabled
+        offscreen = [bool]$Element.Current.IsOffscreen
+        hwnd = [int64]$Element.Current.NativeWindowHandle
+        process_id = [int]$Element.Current.ProcessId
+    }
+}
+
+function Test-UiaPointSnapshot($Element, $Snapshot) {
+    if ($null -eq $Element -or $null -eq $Snapshot) { return $false }
+    $rectangle = $Element.Current.BoundingRectangle
+    return (
+        (Get-UiaRuntimeKey $Element) -ceq [string]$Snapshot.runtime_key -and
+        [int]$Element.Current.ControlType.Id -eq [int]$Snapshot.control_type -and
+        [string]$Element.Current.ClassName -ceq [string]$Snapshot.class_name -and
+        (Get-Utf8Sha256 ([string]$Element.Current.Name)) -ceq
+            [string]$Snapshot.name_sha256 -and
+        [double]$rectangle.X -eq [double]$Snapshot.x -and
+        [double]$rectangle.Y -eq [double]$Snapshot.y -and
+        [double]$rectangle.Width -eq [double]$Snapshot.width -and
+        [double]$rectangle.Height -eq [double]$Snapshot.height -and
+        [bool]$Element.Current.IsEnabled -eq [bool]$Snapshot.enabled -and
+        [bool]$Element.Current.IsOffscreen -eq [bool]$Snapshot.offscreen -and
+        [int64]$Element.Current.NativeWindowHandle -eq [int64]$Snapshot.hwnd -and
+        [int]$Element.Current.ProcessId -eq [int]$Snapshot.process_id
+    )
+}
+
 function New-ExplorerRowSnapshot($Element, [int]$X, [int]$Y) {
     $rectangle = $Element.Current.BoundingRectangle
     $point = [SkillMagnetFieldInput+POINT]::new()
@@ -1007,6 +1059,7 @@ function New-ExplorerRowSnapshot($Element, [int]$X, [int]$Y) {
         child_hwnd = [int64]$hitHwnd
         child_runtime_key = Get-UiaRuntimeKey $hit
         child_control_type = [int]$hit.Current.ControlType.Id
+        child_class_name = [string]$hit.Current.ClassName
         child_name_sha256 = Get-Utf8Sha256 ([string]$hit.Current.Name)
         child_x = [double]$hitRectangle.X
         child_y = [double]$hitRectangle.Y
@@ -1093,6 +1146,8 @@ function Invoke-CheckedExplorerPhysicalClick(
             $firstHwnd -eq [IntPtr]([int64]$ExpectedRowSnapshot.child_hwnd) -and
             (Get-UiaRuntimeKey $firstUia) -ceq [string]$ExpectedRowSnapshot.child_runtime_key -and
             [int]$firstUia.Current.ControlType.Id -eq [int]$ExpectedRowSnapshot.child_control_type -and
+            [string]$firstUia.Current.ClassName -ceq
+                [string]$ExpectedRowSnapshot.child_class_name -and
             (Get-Utf8Sha256 ([string]$firstUia.Current.Name)) -ceq
                 [string]$ExpectedRowSnapshot.child_name_sha256 -and
             [double]$firstRectangle.X -eq [double]$ExpectedRowSnapshot.child_x -and
@@ -1106,6 +1161,11 @@ function Invoke-CheckedExplorerPhysicalClick(
             "Explorer click point is not inside the immutable expected UIAutomation row."
     }
     $runtimeKey = Get-UiaRuntimeKey $firstUia
+    $firstControlType = [int]$firstUia.Current.ControlType.Id
+    $firstClassName = [string]$firstUia.Current.ClassName
+    $firstRectangle = $firstUia.Current.BoundingRectangle
+    $firstEnabled = [bool]$firstUia.Current.IsEnabled
+    $firstOffscreen = [bool]$firstUia.Current.IsOffscreen
     $nameSha256 = if ($null -ne $ExpectedRowSnapshot) {
         [string]$ExpectedRowSnapshot.child_name_sha256
     } else { Get-Utf8Sha256 ([string]$firstUia.Current.Name) }
@@ -1134,15 +1194,20 @@ function Invoke-CheckedExplorerPhysicalClick(
     $rowControlType = 0
     $rowNameSha256 = ""
     $rowX = $rowY = $rowWidth = $rowHeight = [double]0
-    $requireImmutableChild = $null -ne $ExpectedRowSnapshot
-    $childRuntimeKey = ""
-    $childControlType = 0
-    $childX = $childY = $childWidth = $childHeight = [double]0
-    $childEnabled = $true
-    $childOffscreen = $false
+    $requireImmutableChild = $true
+    $childRuntimeKey = $runtimeKey
+    $childControlType = $firstControlType
+    $childClassName = $firstClassName
+    $childX = [double]$firstRectangle.X
+    $childY = [double]$firstRectangle.Y
+    $childWidth = [double]$firstRectangle.Width
+    $childHeight = [double]$firstRectangle.Height
+    $childEnabled = $firstEnabled
+    $childOffscreen = $firstOffscreen
     if ($null -ne $ExpectedRowSnapshot) {
         $childRuntimeKey = [string]$ExpectedRowSnapshot.child_runtime_key
         $childControlType = [int]$ExpectedRowSnapshot.child_control_type
+        $childClassName = [string]$ExpectedRowSnapshot.child_class_name
         $childX = [double]$ExpectedRowSnapshot.child_x
         $childY = [double]$ExpectedRowSnapshot.child_y
         $childWidth = [double]$ExpectedRowSnapshot.child_width
@@ -1163,8 +1228,8 @@ function Invoke-CheckedExplorerPhysicalClick(
     Assert-Field ([SkillMagnetFieldInput]::CheckedClickCurrent(
         $X, $Y, $expectedHwnd, $rootHandle, $rootPid,
         [string]$identity.executable_path, [long]$identity.start_time_utc_ticks,
-        $false, $nameSha256, "", "", "", "", [long]0, "",
-        $requireImmutableChild, $childRuntimeKey, $childControlType,
+        $false, $nameSha256, "", "", "", "", [long]0, "", "",
+        $requireImmutableChild, $childRuntimeKey, $childControlType, $childClassName,
         $childX, $childY, $childWidth, $childHeight, $childEnabled, $childOffscreen,
         $rowRuntimeKey, $rowControlType, $rowNameSha256,
         $rowX, $rowY, $rowWidth, $rowHeight, $RightClick
@@ -2079,6 +2144,16 @@ function Invoke-FieldUiSurfaceWidget(
         $firstHit = [SkillMagnetFieldInput]::WindowFromPoint($point)
         Assert-Field ($firstHit -eq $widgetHandle) `
             "Receipt-bound '$Id' center is covered or does not hit its exact widget HWND."
+        $uiaPoint = [System.Windows.Point]::new([double]$x, [double]$y)
+        $firstUia = [System.Windows.Automation.AutomationElement]::FromPoint($uiaPoint)
+        $uiaSnapshot = New-UiaPointSnapshot $firstUia
+        Assert-Field (
+            [int64]$uiaSnapshot.hwnd -eq [int64]$widget.hwnd -and
+            [int]$uiaSnapshot.process_id -eq $ExpectedProcessId -and
+            [string]$uiaSnapshot.class_name -ceq "TkChild" -and
+            [bool]$uiaSnapshot.enabled -and -not [bool]$uiaSnapshot.offscreen -and
+            (Test-FieldScreenRectangle (Get-UiaScreenRectangle $firstUia) $widget.screen 0)
+        ) "Receipt-bound '$Id' first UIAutomation hit does not match its live Tk child."
         Assert-Field ([SkillMagnetFieldInput]::SetCursorPos($x, $y)) `
             "Could not move the cursor to receipt-bound '$Id'."
         $fresh = Wait-FieldUiSurface $ExpectedProcessId $ExpectedPhase $TopLevelWindow
@@ -2101,15 +2176,9 @@ function Invoke-FieldUiSurfaceWidget(
         $secondHit = [SkillMagnetFieldInput]::WindowFromPoint($point)
         Assert-Field ($secondHit -eq $widgetHandle) `
             "Receipt-bound '$Id' hit-test changed before click."
-        $uiaPoint = [System.Windows.Point]::new([double]$x, [double]$y)
         $uiaHit = [System.Windows.Automation.AutomationElement]::FromPoint($uiaPoint)
         Assert-Field (
-            $null -ne $uiaHit -and
-            [int64]$uiaHit.Current.NativeWindowHandle -eq [int64]$widget.hwnd -and
-            [int]$uiaHit.Current.ProcessId -eq $ExpectedProcessId -and
-            (Get-Utf8Sha256 ([string]$uiaHit.Current.Name)) -ceq $expectedWidgetTextSha256 -and
-            [string]$uiaHit.Current.ClassName -ceq "TkChild" -and
-            [bool]$uiaHit.Current.IsEnabled -and -not [bool]$uiaHit.Current.IsOffscreen -and
+            (Test-UiaPointSnapshot $uiaHit $uiaSnapshot) -and
             (Test-FieldScreenRectangle (Get-UiaScreenRectangle $uiaHit) $widget.screen 0)
         ) "Receipt-bound '$Id' UIAutomation hit-test does not match its live Tk child."
         $pointPid = [uint32]0
@@ -2136,27 +2205,25 @@ function Invoke-FieldUiSurfaceWidget(
             [SkillMagnetFieldInput]::GetForegroundWindow() -eq $windowHandle -and
             $clickHit -eq $widgetHandle -and
             [SkillMagnetFieldInput]::GetAncestor($clickHit, 2) -eq $windowHandle -and
-            $null -ne $clickUia -and
-            [int64]$clickUia.Current.NativeWindowHandle -eq [int64]$widget.hwnd -and
-            [int]$clickUia.Current.ProcessId -eq $ExpectedProcessId -and
-            (Get-Utf8Sha256 ([string]$clickUia.Current.Name)) -ceq
-                $expectedWidgetTextSha256 -and
-            [string]$clickUia.Current.ClassName -ceq "TkChild" -and
-            [bool]$clickUia.Current.IsEnabled -and -not [bool]$clickUia.Current.IsOffscreen
+            (Test-UiaPointSnapshot $clickUia $uiaSnapshot)
         ) "Receipt-bound '$Id' changed after final receipt validation; no mouse input was sent."
         Assert-Field (Test-FieldProcessIdentity $identity) `
             "Receipt-bound process identity changed immediately before '$Id'."
         Assert-Field ([SkillMagnetFieldInput]::CheckedClickCurrent(
             $x, $y, $widgetHandle, $windowHandle, [uint32]$ExpectedProcessId,
             [string]$identity.executable_path, [long]$identity.start_time_utc_ticks,
-            $true, $expectedWidgetTextSha256,
+            $true, [string]$uiaSnapshot.name_sha256,
             [string]$script:FieldContextOwnerPath,
             [string]$finalReceipt.owner_sha256,
             [string]$finalReceipt.owner.process_instance_id,
             [string]$ExpectedGeneration,
             [long]$finalReceipt.surface.revision,
-            [string]$Id, $false, "", 0, [double]0, [double]0,
-            [double]0, [double]0, $true, $false,
+            [string]$Id, $expectedWidgetTextSha256,
+            $true, [string]$uiaSnapshot.runtime_key,
+            [int]$uiaSnapshot.control_type, [string]$uiaSnapshot.class_name,
+            [double]$uiaSnapshot.x, [double]$uiaSnapshot.y,
+            [double]$uiaSnapshot.width, [double]$uiaSnapshot.height,
+            [bool]$uiaSnapshot.enabled, [bool]$uiaSnapshot.offscreen,
             "", 0, "", [double]0, [double]0,
             [double]0, [double]0, $false
         )) "Receipt-bound '$Id' cursor/hit identity changed; no mouse input was sent."

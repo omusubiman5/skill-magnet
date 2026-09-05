@@ -11,6 +11,7 @@ import hashlib
 import io
 import json
 import struct
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -2174,9 +2175,11 @@ try {{
             "expectedGeneration",
             "expectedRevision",
             "expectedSemanticId",
+            "expectedSemanticNameSha256",
             "requireImmutableChild",
             "expectedChildRuntimeKey",
             "expectedChildControlType",
+            "expectedChildClassName",
             "expectedChildWidth",
             "expectedChildEnabled",
             "expectedChildOffscreen",
@@ -2395,7 +2398,7 @@ try {{
     $hwndResult = [SkillMagnetFieldInput]::CheckedClickCurrent(
         $point.X, $point.Y, $button.Handle, $root.Handle, [uint32]$process.Id,
         $exe, [long]$ticks, $true, $nameSha,
-        "", "", "", "", [long]0, "", $false, "", 0,
+        "", "", "", "", [long]0, "", "", $false, "", 0, "",
         [double]0, [double]0, [double]0, [double]0, $true, $false, "", 0, "",
         [double]0, [double]0, [double]0, [double]0, $false
     )
@@ -2422,7 +2425,8 @@ try {{
     $receiptResult = [SkillMagnetFieldInput]::CheckedClickCurrent(
         $point.X, $point.Y, $button.Handle, $root.Handle, [uint32]$process.Id,
         $exe, [long]$ticks, $true, $nameSha, $receiptPath, $receiptSha,
-        $processInstance, $generation, [long]1, "guarded", $false, "", 0,
+        $processInstance, $generation, [long]1, "guarded", $nameSha,
+        $false, "", 0, "",
         [double]0, [double]0, [double]0, [double]0, $true, $false, "", 0, "",
         [double]0, [double]0, [double]0, [double]0, $false
     )
@@ -2436,7 +2440,8 @@ try {{
     $uiaResult = [SkillMagnetFieldInput]::CheckedClickCurrent(
         $point.X, $point.Y, $button.Handle, $root.Handle, [uint32]$process.Id,
         $exe, [long]$ticks, $true, $nameSha, $receiptPath, $receiptSha,
-        $processInstance, $generation, [long]1, "guarded", $false, "", 0,
+        $processInstance, $generation, [long]1, "guarded", $nameSha,
+        $false, "", 0, "",
         [double]0, [double]0, [double]0, [double]0, $true, $false, "", 0, "",
         [double]0, [double]0, [double]0, [double]0, $false
     )
@@ -2563,8 +2568,8 @@ function Run-Fault([string]$Kind, [int]$Offset) {{
             $point.X, $point.Y, $button.Handle, $root.Handle, [uint32]$process.Id,
             [IO.Path]::GetFullPath($process.MainModule.FileName),
             [long]$process.StartTime.ToUniversalTime().Ticks,
-            $true, (Sha "guarded-child"), "", "", "", "", [long]0, "",
-            $false, "", 0, [double]0, [double]0,
+            $true, (Sha "guarded-child"), "", "", "", "", [long]0, "", "",
+            $false, "", 0, "", [double]0, [double]0,
             [double]0, [double]0, $true, $false,
             $rowRuntime, [int]$rowUia.Current.ControlType.Id, (Sha $rowUia.Current.Name),
             [double]$rowRect.X, [double]$rowRect.Y,
@@ -2604,6 +2609,84 @@ $observations | ConvertTo-Json -Compress
         self.assertTrue(completed.stdout.strip(), repr((completed.stdout, completed.stderr)))
         observation = json.loads(completed.stdout.strip())
         self.assertTrue(all(observation.values()), observation)
+
+    @unittest.skipUnless(os.name == "nt", "requires real Windows Tk/UIAutomation")
+    def test_native_click_guard_splits_tk_uia_name_from_receipt_semantics(self) -> None:
+        collector = (ROOT / "tests" / "powershell" /
+                     "windows-explorer-direct-root-field-test.ps1").read_text(encoding="utf-8-sig")
+        csharp = collector.split(') -TypeDefinition @"', 1)[1].split('"@', 1)[0]
+        encoded_csharp = base64.b64encode(csharp.encode()).decode()
+        server_source = r'''
+import json, os, pathlib, sys, tkinter as tk
+from tkinter import ttk
+state, command, ack, clicked = map(pathlib.Path, sys.argv[1:5])
+root=tk.Tk(); root.title("Skill Magnet Tk probe"); root.geometry("500x410+700+120"); root.attributes("-topmost", True)
+button=ttk.Button(root,text="Library Manager",command=lambda: clicked.write_text("1")); button.place(x=40,y=50,width=180,height=42)
+combo=ttk.Combobox(root,values=("one","two")); combo.place(x=40,y=110,width=180,height=30)
+entry=ttk.Entry(root); entry.place(x=40,y=155,width=180,height=30)
+label=ttk.Label(root,text="status"); label.place(x=40,y=200,width=180,height=30)
+tree=ttk.Treeview(root); tree.place(x=40,y=245,width=180,height=70)
+text=tk.Text(root); text.place(x=260,y=245,width=180,height=70)
+root.update_idletasks(); root.update()
+widgets=[]
+for widget in (button,combo,entry,label,tree,text):
+ widgets.append({"hwnd":widget.winfo_id(),"left":widget.winfo_rootx(),"top":widget.winfo_rooty(),"width":widget.winfo_width(),"height":widget.winfo_height(),"x":widget.winfo_rootx()+widget.winfo_width()//2,"y":widget.winfo_rooty()+widget.winfo_height()//2})
+state.write_text(json.dumps({"pid":os.getpid(),"root":root.winfo_id(),"button":button.winfo_id(),"x":button.winfo_rootx()+90,"y":button.winfo_rooty()+21,"widgets":widgets}))
+def poll():
+ global button
+ if command.exists():
+  mode=command.read_text()
+  if mode=="move": button.place_configure(x=45)
+  elif mode=="disable": button.state(["disabled"])
+  elif mode=="name": button.configure(text="Changed semantic name")
+  elif mode=="swap":
+   button.destroy(); ttk.Label(root,text="spacer").place(x=0,y=0)
+   button=ttk.Button(root,text="Library Manager"); button.place(x=40,y=50,width=180,height=42)
+  root.update_idletasks(); ack.write_text("ok"); command.unlink(missing_ok=True)
+ root.after(10,poll)
+root.after(10,poll); root.mainloop()
+'''
+        probe_source = rf'''
+param($StatePath,$ReceiptPath,$CommandPath,$AckPath,$Mode)
+$OutputEncoding=[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes
+$source=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("{encoded_csharp}"))
+Add-Type -ReferencedAssemblies @("UIAutomationClient","UIAutomationTypes","WindowsBase") -TypeDefinition $source
+function Sha([string]$Text){{$b=[Text.UTF8Encoding]::new($false).GetBytes($Text);[BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($b)).Replace("-","").ToLowerInvariant()}}
+$s=Get-Content $StatePath -Raw|ConvertFrom-Json; $p=Get-Process -Id ([int]$s.pid
+); $button=[IntPtr]([int64]$s.button); $root=[SkillMagnetFieldInput]::GetAncestor($button,2)
+[SkillMagnetFieldInput]::FocusWindow($root)|Out-Null; [SkillMagnetFieldInput]::SetCursorPos([int]$s.x,[int]$s.y)|Out-Null; Start-Sleep -Milliseconds 100
+$uia=[Windows.Automation.AutomationElement]::FromPoint([Windows.Point]::new([double]$s.x,[double]$s.y)); $r=$uia.Current.BoundingRectangle
+$rolesOk=$true; foreach($w in $s.widgets){{$e=[Windows.Automation.AutomationElement]::FromPoint([Windows.Point]::new([double]$w.x,[double]$w.y));$q=$e.Current.BoundingRectangle;$rolesOk=$rolesOk-and([int64]$e.Current.NativeWindowHandle-eq[int64]$w.hwnd)-and([int]$e.Current.ProcessId-eq[int]$s.pid)-and([int]$e.Current.ControlType.Id-eq[Windows.Automation.ControlType]::Pane.Id)-and([string]$e.Current.ClassName-ceq"TkChild")-and([string]$e.Current.Name-ceq"")-and([string]::Join(".",$e.GetRuntimeId()).Length-gt 0)-and([double]$q.X-eq[double]$w.left)-and([double]$q.Y-eq[double]$w.top)-and([double]$q.Width-eq[double]$w.width)-and([double]$q.Height-eq[double]$w.height)-and([bool]$e.Current.IsEnabled)-and(-not[bool]$e.Current.IsOffscreen)}}
+$runtime=[string]::Join(".",$uia.GetRuntimeId()); $actual=Sha ([string]$uia.Current.Name); $semantic=Sha "Library Manager"; $pi="a"*32; $gen="b"*32
+$receipt=@{{process_instance_id=$pi;generation=$gen;revision=1;ui_surface=@{{widgets=@(@{{id="library_manager";text_sha256=$semantic;viewable=$true;state=@{{enabled=$true}}}})}}}}|ConvertTo-Json -Depth 5 -Compress
+$bytes=[Text.UTF8Encoding]::new($false).GetBytes($receipt); [IO.File]::WriteAllBytes($ReceiptPath,$bytes)
+$receiptSha=[BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes)).Replace("-","").ToLowerInvariant()
+if($Mode-ne"success"){{[SkillMagnetFieldInput]::TestAfterInitialValidation=[Action]{{if($Mode-eq"name"){{[IO.File]::WriteAllText($ReceiptPath,$receipt.Replace($semantic,(Sha "Changed semantic name")),[Text.UTF8Encoding]::new($false))}}elseif($Mode-eq"disable"){{[IO.File]::WriteAllText($ReceiptPath,$receipt.Replace('"enabled":true','"enabled":false'),[Text.UTF8Encoding]::new($false))}};[IO.File]::WriteAllText($CommandPath,$Mode);$d=[DateTime]::UtcNow.AddSeconds(3);while(!(Test-Path $AckPath)-and[DateTime]::UtcNow-lt$d){{Start-Sleep -Milliseconds 10}}}}}}
+try{{$result=[SkillMagnetFieldInput]::CheckedClickCurrent([int]$s.x,[int]$s.y,$button,$root,[uint32]$s.pid,[IO.Path]::GetFullPath($p.MainModule.FileName),[long]$p.StartTime.ToUniversalTime().Ticks,$true,$actual,$ReceiptPath,$receiptSha,$pi,$gen,[long]1,"library_manager",$semantic,$true,$runtime,[int]$uia.Current.ControlType.Id,[string]$uia.Current.ClassName,[double]$r.X,[double]$r.Y,[double]$r.Width,[double]$r.Height,[bool]$uia.Current.IsEnabled,[bool]$uia.Current.IsOffscreen,"",0,"",0,0,0,0,$false);[pscustomobject]@{{result=$result;roles_ok=$rolesOk;actual_name=[string]$uia.Current.Name;actual_sha=$actual;semantic_sha=$semantic;class_name=[string]$uia.Current.ClassName}}|ConvertTo-Json -Compress}}finally{{[SkillMagnetFieldInput]::TestAfterInitialValidation=$null}}
+'''
+        observations = {}
+        with tempfile.TemporaryDirectory() as temporary:
+            temp = Path(temporary); server_file=temp/"server.py"; probe_file=temp/"probe.ps1"
+            server_file.write_text(server_source, encoding="utf-8"); probe_file.write_text(probe_source, encoding="utf-8-sig")
+            for index, mode in enumerate(("success", "move", "disable", "name", "swap")):
+                case=temp/f"case-{index}"; case.mkdir(); state=case/"state"; command=case/"command"; ack=case/"ack"; clicked=case/"clicked"
+                server=subprocess.Popen([sys.executable,str(server_file),str(state),str(command),str(ack),str(clicked)],cwd=ROOT)
+                try:
+                    for _ in range(100):
+                        if state.exists(): break
+                        time.sleep(.05)
+                    self.assertTrue(state.exists())
+                    done=subprocess.run(["powershell.exe","-NoProfile","-STA","-File",str(probe_file),str(state),str(case/"receipt"),str(command),str(ack),mode],cwd=ROOT,capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=20)
+                    self.assertEqual(done.returncode,0,done.stderr); observations[mode]=json.loads(done.stdout.strip()); time.sleep(.1)
+                    self.assertEqual(clicked.exists(),mode=="success",observations[mode])
+                finally:
+                    server.terminate(); server.wait(timeout=5)
+        empty_sha=hashlib.sha256(b"").hexdigest(); self.assertTrue(observations["success"]["result"])
+        self.assertEqual(observations["success"]["actual_name"],""); self.assertEqual(observations["success"]["actual_sha"],empty_sha)
+        self.assertNotEqual(empty_sha,observations["success"]["semantic_sha"]); self.assertEqual(observations["success"]["class_name"],"TkChild")
+        self.assertTrue(observations["success"]["roles_ok"], observations)
+        for mode in ("move","disable","name","swap"): self.assertFalse(observations[mode]["result"],observations)
 
     @unittest.skipUnless(os.name == "nt", "requires real Windows UIAutomation")
     def test_selected_row_lineage_is_kept_between_left_and_right_clicks(self) -> None:
@@ -3057,7 +3140,9 @@ finally {{
         self.assertIn("$expectedTextById", click)
         self.assertIn("$widget.text_sha256 -ceq $expectedWidgetTextSha256", click)
         self.assertIn("$freshWidget.text_sha256 -ceq $expectedWidgetTextSha256", click)
-        self.assertIn("Get-Utf8Sha256 ([string]$uiaHit.Current.Name)", click)
+        self.assertIn("Test-UiaPointSnapshot $uiaHit $uiaSnapshot", click)
+        self.assertIn("$expectedWidgetTextSha256", click)
+        self.assertIn("[string]$uiaSnapshot.name_sha256", click)
         self.assertIn("$widget.screen", click)
         self.assertNotIn("fallback", click.casefold())
 
