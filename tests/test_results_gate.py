@@ -163,6 +163,92 @@ class ExplorerResultsGateTest(unittest.TestCase):
         configured_label_digest = _ordered_selector_label_sha256(configured_choices)
         selected_label_digest = _text_sha256(configured_labels[0])
         configured_remote = _configured_repository_url(config_payload)
+
+        def ui_receipt_evidence(
+            role: str,
+            phase: str,
+            widget_id: str,
+            claim_field: str,
+            claim_sha256: str,
+            ordinal: int,
+        ) -> dict[str, object]:
+            generation = f"{ordinal:032x}"
+            published = f"2026-09-05T00:00:{ordinal:02d}Z"
+            state = (
+                {
+                    "language_sha256": "1" * 64,
+                    "selection_mode_sha256": "2" * 64,
+                    "processing": False,
+                    "details_visible": False,
+                }
+                if phase == "context_selection"
+                else {"processing": False, "register_selected": True}
+            )
+            widget: dict[str, object] = {
+                "id": widget_id,
+                "role": "button" if claim_field == "text_sha256" else "entry",
+                "state": {"configured": "normal", "enabled": True},
+                "viewable": True,
+                "hwnd": 500 + ordinal,
+                "client": {"x": 1, "y": 2, "width": 3, "height": 4},
+                "screen": {"x": 1, "y": 2, "width": 3, "height": 4},
+                claim_field: claim_sha256,
+            }
+            surface: dict[str, object] = {
+                "schema_version": 1,
+                "generation": generation,
+                "pid": 5000 + ordinal,
+                "phase": phase,
+                "window": {
+                    "hwnd": 400 + ordinal,
+                    "title_sha256": "3" * 64,
+                    "client": {"x": 1, "y": 2, "width": 3, "height": 4},
+                    "screen": {"x": 1, "y": 2, "width": 3, "height": 4},
+                },
+                "state": state,
+                "widgets": [widget],
+                "revision": ordinal,
+                "published_at_utc": published,
+            }
+            receipt: dict[str, object] = {
+                "schema_version": 2,
+                "owner_kind": "context_launcher",
+                "pid": 5000 + ordinal,
+                "process_instance_id": f"{ordinal + 16:032x}",
+                "process_started_at_unix_ns": ordinal,
+                "target_sha256": "4" * 64,
+                "generation": generation,
+                "phase": phase,
+                "window_handle": 400 + ordinal,
+                "revision": ordinal,
+                "published_at_utc": published,
+                "ui_surface": surface,
+            }
+            canonical = lambda value: json.dumps(
+                value, ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")
+            return {
+                "role": role,
+                "phase": phase,
+                "process_instance_id": receipt["process_instance_id"],
+                "generation": generation,
+                "revision": ordinal,
+                "claim_widget_id": widget_id,
+                "claim_field": claim_field,
+                "claim_sha256": claim_sha256,
+                "receipt_sha256": hashlib.sha256(canonical(receipt)).hexdigest(),
+                "surface_sha256": hashlib.sha256(canonical(surface)).hexdigest(),
+                "receipt": receipt,
+            }
+
+        ui_receipts = [
+            ui_receipt_evidence("selected_manager_click", "context_selection", "library_manager", "text_sha256", _text_sha256("Library Manager"), 1),
+            ui_receipt_evidence("manager_remote", "library_manager", "configured_remote", "value_sha256", _text_sha256(configured_remote), 2),
+            ui_receipt_evidence("background_selection", "context_selection", "selection_choice", "values_sha256", configured_label_digest, 3),
+            ui_receipt_evidence("registration_click", "context_selection", "register_selected", "text_sha256", _text_sha256("このフォルダーのスキルを登録"), 4),
+            ui_receipt_evidence("registration_source", "library_manager", "registration_source", "value_sha256", "5" * 64, 5),
+            ui_receipt_evidence("runtime_projectless", "context_selection", "project", "text_sha256", _text_sha256("作業対象フォルダー: 指定なし（デスクトップアプリが新規タスク用領域を自動作成）"), 6),
+        ]
         command = subprocess.list2cmdline(
             [
                 sys.executable,
@@ -747,6 +833,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
                 "sha256": transcript_digest,
                 "bytes_base64": base64.b64encode(transcript_payload).decode("ascii"),
             },
+            "ui_receipts": ui_receipts,
             "selector_contract": {
                 "choice_map_sha256": _selector_choice_map_sha256(configured_choices),
                 "ordered_label_sha256": configured_label_digest,
@@ -1996,6 +2083,9 @@ class ExplorerResultsGateTest(unittest.TestCase):
         missing_required = clone()
         del missing_required["ui_surface"]["window"]["screen"]  # type: ignore[index]
         invalid.append(missing_required)
+        missing_selection_surface = clone()
+        del missing_selection_surface["ui_surface"]
+        invalid.append(missing_selection_surface)
 
         for candidate in invalid:
             payload = json.dumps(candidate, separators=(",", ":")).encode()
@@ -2277,6 +2367,79 @@ finally {{
             ):
                 errors = validate_field_bundle(ledger, bundle_path, invoke_log, ROOT)
             self.assertTrue(any("marker is missing or duplicated" in error for error in errors), errors)
+
+    def test_field_bundle_main_path_validates_every_ui_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            ledger, bundle_path, invoke_log, _, _ = self._field_fixture(Path(temporary))
+            with mock.patch(
+                "integration.explorer_results_gate._verify_windows_field_attestation",
+                return_value=[],
+            ), mock.patch(
+                "integration.explorer_results_gate._validate_ui_owner_receipt_schema",
+                wraps=_validate_ui_owner_receipt_schema,
+            ) as validator:
+                errors = validate_field_bundle(ledger, bundle_path, invoke_log, ROOT)
+            self.assertEqual(errors, [])
+            self.assertEqual(validator.call_count, 6)
+
+    def test_field_bundle_rejects_missing_ui_receipts_and_missing_surface(self) -> None:
+        for label, mutation, expected in (
+            (
+                "missing receipts",
+                lambda bundle: bundle.pop("ui_receipts"),
+                "ui_receipts must contain exactly six",
+            ),
+            (
+                "selection receipt missing surface",
+                lambda bundle: bundle["ui_receipts"][0]["receipt"].pop("ui_surface"),
+                "owner must contain ui_surface",
+            ),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                ledger, bundle_path, invoke_log, bundle, _ = self._field_fixture(Path(temporary))
+                mutation(bundle)
+                self._rewrite_bundle(bundle_path, bundle, ledger)
+                with mock.patch(
+                    "integration.explorer_results_gate._verify_windows_field_attestation",
+                    return_value=[],
+                ):
+                    errors = validate_field_bundle(ledger, bundle_path, invoke_log, ROOT)
+                self.assertTrue(any(expected in error for error in errors), errors)
+
+    def test_field_bundle_rejects_ui_receipt_extra_and_digest_tampering(self) -> None:
+        mutations = (
+            (
+                "extra nested key",
+                lambda entry: entry["receipt"].__setitem__("private_token", "secret"),
+                "receipt schema mismatch",
+            ),
+            (
+                "receipt digest",
+                lambda entry: entry.__setitem__("receipt_sha256", "0" * 64),
+                "receipt_sha256 mismatch",
+            ),
+            (
+                "claim",
+                lambda entry: entry.__setitem__("claim_sha256", "0" * 64),
+                "claim does not match",
+            ),
+            (
+                "role phase",
+                lambda entry: entry.__setitem__("phase", "library_manager"),
+                "phase does not match role",
+            ),
+        )
+        for label, mutate, expected in mutations:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                ledger, bundle_path, invoke_log, bundle, _ = self._field_fixture(Path(temporary))
+                mutate(bundle["ui_receipts"][0])
+                self._rewrite_bundle(bundle_path, bundle, ledger)
+                with mock.patch(
+                    "integration.explorer_results_gate._verify_windows_field_attestation",
+                    return_value=[],
+                ):
+                    errors = validate_field_bundle(ledger, bundle_path, invoke_log, ROOT)
+                self.assertTrue(any(expected in error for error in errors), errors)
 
     def test_field_bundle_rejects_rehashed_msix_payload_tampering(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

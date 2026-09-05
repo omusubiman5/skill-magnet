@@ -209,6 +209,11 @@ function Convert-FieldScalar($Value) {
     [string]$Value
 }
 
+function Get-CanonicalJsonSha256($Value, [int]$Depth = 30) {
+    $json = $Value | ConvertTo-Json -Depth $Depth -Compress
+    Get-BytesSha256 ([Text.UTF8Encoding]::new($false).GetBytes($json))
+}
+
 function New-AttestationPayload([System.Collections.IDictionary]$Bundle) {
     $selected = @($Bundle.explorer_observations | Where-Object source -eq "selected_item")[0]
     $background = @($Bundle.explorer_observations | Where-Object source -eq "background_site")[0]
@@ -220,6 +225,7 @@ function New-AttestationPayload([System.Collections.IDictionary]$Bundle) {
         @("field_status", $Bundle.field_status),
         @("observed_at_utc", $Bundle.observed_at_utc),
         @("collector_sha256", $Bundle.collector_sha256),
+        @("ui_receipts_sha256", (Get-CanonicalJsonSha256 $Bundle.ui_receipts)),
         @("python_runtime.module_version", $Bundle.python_runtime.module_version),
         @("python_runtime.distribution_version", $Bundle.python_runtime.distribution_version),
         @("python_runtime.distribution_name", $Bundle.python_runtime.distribution_name),
@@ -915,6 +921,7 @@ function Inspect-UnifiedGui(
     $observation = @{
         element = $gui
         ui_surface = $surface
+        ui_owner_receipt = $receipt.owner
         ui_surface_generation = [string]$receipt.owner.generation
         ui_surface_sha256 = [string]$receipt.receipt_sha256
         selection_choice_values_sha256 = [string]$selectionContract.values_sha256
@@ -1171,6 +1178,8 @@ if phase not in {"context_starting", "context_selection", "library_manager"}:
 exact_int(owner["window_handle"], "owner.window_handle")
 exact_int(owner["revision"], "owner.revision", True)
 text(owner["published_at_utc"], "owner.published_at_utc")
+if "ui_surface" not in owner and phase != "context_starting":
+    raise ValueError(phase + " owner must contain ui_surface")
 if "ui_surface" in owner:
     if phase not in {"context_selection", "library_manager"}:
         raise ValueError("starting owner must not contain ui_surface")
@@ -1664,11 +1673,15 @@ function Invoke-FieldUiSurfaceWidget(
             ) "Receipt-bound '$Id' did not transition to a new '$ExpectedNextPhase' window."
             return [ordered]@{
                 widget = $widget
+                click_owner_receipt = $finalReceipt.owner
                 next_window = $nextWindow
                 next_surface = $nextReceipt.surface
             }
         }
-        return [ordered]@{ widget = $widget }
+        return [ordered]@{
+            widget = $widget
+            click_owner_receipt = $finalReceipt.owner
+        }
     }
     throw "UI receipt changed repeatedly before '$Id'; no mouse input was sent."
 }
@@ -1914,6 +1927,7 @@ function Inspect-LibraryManager(
         element = $manager
         element_snapshot = Get-UiaElementSnapshot $manager
         ui_surface = $surface
+        ui_owner_receipt = $receipt.owner
         ui_surface_generation = [string]$receipt.owner.generation
         configured_remote_sha256 = $expectedRemoteSha256
         configured_remote_visible = $remoteVisible
@@ -1926,6 +1940,39 @@ function Inspect-LibraryManager(
         delete_button_text_sha256 = [string]$buttonTextHashes.delete
         reload_button_text_sha256 = [string]$buttonTextHashes.reload
         registration_source_sha256 = [string]$sourceWidget.value_sha256
+    }
+}
+
+function New-UiReceiptEvidence(
+    [string]$Role,
+    $Observation,
+    [string]$ClaimWidgetId,
+    [string]$ClaimField
+) {
+    Assert-Field ($ClaimField -in @("text_sha256", "value_sha256", "values_sha256")) `
+        "Receipt claim field is not an approved digest field."
+    $receipt = if ($Observation.PSObject.Properties.Name -contains "click_owner_receipt") {
+        $Observation.click_owner_receipt
+    } else {
+        $Observation.ui_owner_receipt
+    }
+    Assert-NoRawReceiptDisplayValues $receipt
+    $widget = Get-FieldUiSurfaceWidget $receipt.ui_surface $ClaimWidgetId
+    $claim = [string]$widget.$ClaimField
+    Assert-Field ($claim -match '^[0-9a-f]{64}$') `
+        "Receipt claim digest is missing for role '$Role'."
+    [ordered]@{
+        role = $Role
+        phase = [string]$receipt.phase
+        process_instance_id = [string]$receipt.process_instance_id
+        generation = [string]$receipt.generation
+        revision = [int64]$receipt.revision
+        claim_widget_id = $ClaimWidgetId
+        claim_field = $ClaimField
+        claim_sha256 = $claim
+        receipt_sha256 = Get-CanonicalJsonSha256 $receipt
+        surface_sha256 = Get-CanonicalJsonSha256 $receipt.ui_surface
+        receipt = $receipt
     }
 }
 
@@ -2629,7 +2676,7 @@ try {
     # control must be visible, and closing without a mutation must leave all
     # persistent product surfaces byte-equivalent.
     $managerStateBefore = Get-PersistentMutationSnapshot $configPath $stateRoot
-    Invoke-FieldUiSurfaceWidget `
+    $selectedManagerClick = Invoke-FieldUiSurfaceWidget `
         $selectedSequence.process_id "context_selection" $selectedGui.element `
         $selectedGui.ui_surface_generation "library_manager" `
         (Get-FieldTargetSha256 $selectedFolder) `
@@ -2847,7 +2894,7 @@ try {
         [int]$registrationGui.element.Current.ProcessId -eq $registrationSequence.process_id
     ) "Registration selector does not belong to the native child process."
     $registrationGuiSnapshot = Get-UiaElementSnapshot $registrationGui.element
-    Invoke-FieldUiSurfaceWidget `
+    $registrationClick = Invoke-FieldUiSurfaceWidget `
         $registrationSequence.process_id "context_selection" $registrationGui.element `
         $registrationGui.ui_surface_generation "register_selected" `
         (Get-FieldTargetSha256 $selectedFolder) `
@@ -3221,6 +3268,22 @@ print(json.dumps(result, separators=(",", ":")))
         Assert-Field ($observation.library_manager_button_count -eq 1) "Library Manager button count is not one."
         Assert-Field ($observation.register_button_count -eq 1) "Register-folder button count is not one."
     }
+    $uiReceipts = @(
+        New-UiReceiptEvidence `
+            "selected_manager_click" $selectedManagerClick "library_manager" "text_sha256"
+        New-UiReceiptEvidence `
+            "manager_remote" $managerGui "configured_remote" "value_sha256"
+        New-UiReceiptEvidence `
+            "background_selection" $backgroundGui "selection_choice" "values_sha256"
+        New-UiReceiptEvidence `
+            "registration_click" $registrationClick "register_selected" "text_sha256"
+        New-UiReceiptEvidence `
+            "registration_source" $registrationManager "registration_source" "value_sha256"
+        New-UiReceiptEvidence `
+            "runtime_projectless" $runtimeGui "project" "text_sha256"
+    )
+    Assert-Field ($uiReceipts.Count -eq 6) `
+        "Field evidence must contain all six receipt-bound UI decisions."
     $releaseVersion = ([string]$status.version) -replace '\.0$', ''
     Assert-Field ($releaseVersion -match '^\d+\.\d+\.\d+$') `
         "Installed package version cannot be converted to a release version."
@@ -3306,6 +3369,7 @@ print(json.dumps(result, separators=(",", ":")))
             sha256 = $transcriptDigest
             bytes_base64 = [Convert]::ToBase64String($transcriptBytes)
         }
+        ui_receipts = $uiReceipts
         selector_contract = [ordered]@{
             choice_map_sha256 = [string]$selectionContract.choice_map_sha256
             ordered_label_sha256 = Get-CanonicalStringArraySha256 @(

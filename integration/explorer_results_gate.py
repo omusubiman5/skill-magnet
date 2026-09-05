@@ -92,6 +92,8 @@ def _validate_ui_owner_receipt_schema(value: object) -> None:
     exact_int(owner["revision"], "owner.revision", positive=True)
     text(owner["published_at_utc"], "owner.published_at_utc")
     if "ui_surface" not in owner:
+        if phase != "context_starting":
+            raise ValueError(f"{phase} owner must contain ui_surface")
         return
     if phase not in {"context_selection", "library_manager"}:
         raise ValueError("starting owner must not contain ui_surface")
@@ -2132,6 +2134,16 @@ def _field_attestation_payload(bundle: dict[str, object]) -> bytes:
         ("field_status", bundle.get("field_status")),
         ("observed_at_utc", bundle.get("observed_at_utc")),
         ("collector_sha256", bundle.get("collector_sha256")),
+        (
+            "ui_receipts_sha256",
+            hashlib.sha256(
+                json.dumps(
+                    bundle.get("ui_receipts"),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+        ),
     ]
     runtime = (
         bundle.get("python_runtime")
@@ -2424,6 +2436,7 @@ def validate_field_bundle(
         "artifacts",
         "hashes",
         "uia_transcript",
+        "ui_receipts",
         "selector_contract",
         "explorer_observations",
         "library_manager_observation",
@@ -2912,6 +2925,101 @@ def validate_field_bundle(
         errors.append(
             "field bundle selector contract does not exactly match configured labels/internal IDs"
         )
+
+    ui_receipts = bundle.get("ui_receipts")
+    receipt_entry_keys = {
+        "role", "phase", "process_instance_id", "generation", "revision",
+        "claim_widget_id", "claim_field", "claim_sha256", "receipt_sha256",
+        "surface_sha256", "receipt",
+    }
+    role_contract = {
+        "selected_manager_click": (
+            "context_selection", "library_manager", "text_sha256",
+            _text_sha256("Library Manager"),
+        ),
+        "manager_remote": (
+            "library_manager", "configured_remote", "value_sha256",
+            _text_sha256(configured_remote),
+        ),
+        "background_selection": (
+            "context_selection", "selection_choice", "values_sha256",
+            expected_selector_contract["ordered_label_sha256"],
+        ),
+        "registration_click": (
+            "context_selection", "register_selected", "text_sha256",
+            _text_sha256("このフォルダーのスキルを登録"),
+        ),
+        "registration_source": (
+            "library_manager", "registration_source", "value_sha256", None,
+        ),
+        "runtime_projectless": (
+            "context_selection", "project", "text_sha256",
+            _text_sha256(
+                "作業対象フォルダー: 指定なし（デスクトップアプリが新規タスク用領域を自動作成）"
+            ),
+        ),
+    }
+    seen_roles: set[str] = set()
+    if not isinstance(ui_receipts, list) or len(ui_receipts) != len(role_contract):
+        errors.append("field bundle ui_receipts must contain exactly six required receipts")
+        receipt_entries = ui_receipts if isinstance(ui_receipts, list) else []
+    else:
+        receipt_entries = ui_receipts
+    for index, entry in enumerate(receipt_entries):
+        label = f"field bundle ui_receipts[{index}]"
+        if not isinstance(entry, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        receipt = entry.get("receipt")
+        # This is deliberately unconditional for every object entry: no metadata
+        # failure may bypass the exact-schema consumer gate.
+        try:
+            _validate_ui_owner_receipt_schema(receipt)
+        except ValueError as error:
+            errors.append(f"{label} receipt schema mismatch: {error}")
+        if set(entry) != receipt_entry_keys:
+            errors.append(f"{label} keys do not match the exact contract")
+        role = entry.get("role")
+        if not isinstance(role, str) or role not in role_contract:
+            errors.append(f"{label} role is not permitted")
+            continue
+        if role in seen_roles:
+            errors.append(f"{label} role is duplicated")
+        seen_roles.add(role)
+        expected_phase, widget_id, claim_field, expected_claim = role_contract[role]
+        if entry.get("phase") != expected_phase:
+            errors.append(f"{label} phase does not match role {role}")
+        if entry.get("claim_widget_id") != widget_id or entry.get("claim_field") != claim_field:
+            errors.append(f"{label} claim target does not match role {role}")
+        claim_sha = entry.get("claim_sha256")
+        if not isinstance(claim_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", claim_sha):
+            errors.append(f"{label} claim_sha256 must be lowercase 64-hex")
+        elif expected_claim is not None and claim_sha != expected_claim:
+            errors.append(f"{label} claim does not match the verified field claim")
+        if isinstance(receipt, dict):
+            for key in ("phase", "process_instance_id", "generation", "revision"):
+                if entry.get(key) != receipt.get(key):
+                    errors.append(f"{label} {key} does not bind its receipt")
+            receipt_digest = hashlib.sha256(
+                json.dumps(receipt, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            surface = receipt.get("ui_surface")
+            surface_digest = hashlib.sha256(
+                json.dumps(surface, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            if entry.get("receipt_sha256") != receipt_digest:
+                errors.append(f"{label} receipt_sha256 mismatch")
+            if entry.get("surface_sha256") != surface_digest:
+                errors.append(f"{label} surface_sha256 mismatch")
+            if isinstance(surface, dict) and isinstance(surface.get("widgets"), list):
+                matches = [
+                    widget for widget in surface["widgets"]
+                    if isinstance(widget, dict) and widget.get("id") == widget_id
+                ]
+                if len(matches) != 1 or matches[0].get(claim_field) != claim_sha:
+                    errors.append(f"{label} claim does not bind its receipt widget")
+    if seen_roles != set(role_contract):
+        errors.append("field bundle ui_receipts required role set mismatch")
 
     dll_payload = artifact_payloads.get("command_dll")
     if dll_payload is not None:
