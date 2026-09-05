@@ -2322,7 +2322,8 @@ try {{
     $hwndResult = [SkillMagnetFieldInput]::CheckedClickCurrent(
         $point.X, $point.Y, $button.Handle, $root.Handle, [uint32]$process.Id,
         $exe, [long]$ticks, $true, $nameSha,
-        "", "", "", "", [long]0, "", $false
+        "", "", "", "", [long]0, "", "", 0, "",
+        [double]0, [double]0, [double]0, [double]0, $false
     )
     [SkillMagnetFieldInput]::TestAfterInitialValidation = $null
     [SkillMagnetFieldInput]::FocusWindow($root.Handle) | Out-Null
@@ -2347,7 +2348,8 @@ try {{
     $receiptResult = [SkillMagnetFieldInput]::CheckedClickCurrent(
         $point.X, $point.Y, $button.Handle, $root.Handle, [uint32]$process.Id,
         $exe, [long]$ticks, $true, $nameSha, $receiptPath, $receiptSha,
-        $processInstance, $generation, [long]1, "guarded", $false
+        $processInstance, $generation, [long]1, "guarded", "", 0, "",
+        [double]0, [double]0, [double]0, [double]0, $false
     )
     [SkillMagnetFieldInput]::TestAfterInitialValidation = $null
     [IO.File]::WriteAllBytes($receiptPath, $receiptBytes)
@@ -2359,7 +2361,8 @@ try {{
     $uiaResult = [SkillMagnetFieldInput]::CheckedClickCurrent(
         $point.X, $point.Y, $button.Handle, $root.Handle, [uint32]$process.Id,
         $exe, [long]$ticks, $true, $nameSha, $receiptPath, $receiptSha,
-        $processInstance, $generation, [long]1, "guarded", $false
+        $processInstance, $generation, [long]1, "guarded", "", 0, "",
+        [double]0, [double]0, [double]0, [double]0, $false
     )
     [SkillMagnetFieldInput]::TestAfterInitialValidation = $null
     [SkillMagnetFieldInput]::FocusWindow($competitor.Handle) | Out-Null
@@ -2406,6 +2409,123 @@ finally {{
         self.assertFalse(observation["uia_result"])
         self.assertEqual(observation["click_count"], 0)
 
+    @unittest.skipUnless(os.name == "nt", "requires real Windows UIAutomation")
+    def test_native_click_guard_rejects_row_and_child_identity_faults(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        csharp = collector.split(') -TypeDefinition @"', 1)[1].split('"@', 1)[0]
+        encoded_csharp = base64.b64encode(csharp.encode("utf-8")).decode("ascii")
+        probe = rf'''
+$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("{encoded_csharp}"))
+Add-Type -ReferencedAssemblies @(
+    "UIAutomationClient", "UIAutomationTypes", "WindowsBase"
+) -TypeDefinition $source
+function Sha([string]$Text) {{
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Text)
+    [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes)).Replace("-", "").ToLowerInvariant()
+}}
+function Run-Fault([string]$Kind, [int]$Offset) {{
+    $root = [Windows.Forms.Form]::new()
+    $root.Text = "root-$Kind"
+    $root.StartPosition = "Manual"
+    $root.SetDesktopBounds(80, 80 + $Offset, 360, 180)
+    $row = [Windows.Forms.Panel]::new()
+    $row.Text = "expected-row"
+    $row.SetBounds(20, 30, 260, 80)
+    $button = [Windows.Forms.Button]::new()
+    $button.Text = "guarded-child"
+    $button.SetBounds(30, 20, 170, 40)
+    $row.Controls.Add($button)
+    $root.Controls.Add($row)
+    $competitor = [Windows.Forms.Form]::new()
+    $competitor.Text = "competitor-$Kind"
+    $competitor.StartPosition = "Manual"
+    $competitor.SetDesktopBounds(500, 80 + $Offset, 300, 180)
+    $script:clickCount += 0
+    $button.Add_Click({{ $script:clickCount += 1 }})
+    try {{
+        $root.Show(); $competitor.Show(); [Windows.Forms.Application]::DoEvents()
+        $point = $button.PointToScreen([Drawing.Point]::new(60, 20))
+        $process = [Diagnostics.Process]::GetCurrentProcess()
+        $childUia = [Windows.Automation.AutomationElement]::FromHandle($button.Handle)
+        $rowUia = [Windows.Automation.AutomationElement]::FromHandle($row.Handle)
+        $rowRect = $rowUia.Current.BoundingRectangle
+        $rowRuntime = [string]::Join(".", $rowUia.GetRuntimeId())
+        [SkillMagnetFieldInput]::SetCursorPos($point.X, $point.Y) | Out-Null
+        [SkillMagnetFieldInput]::FocusWindow($root.Handle) | Out-Null
+        [SkillMagnetFieldInput]::TestAfterInitialValidation = [Action]{{
+            switch ($Kind) {{
+                "reparent" {{ $competitor.Controls.Add($button) }}
+                "same_name_row_swap" {{
+                    $root.Controls.Remove($row)
+                    $newRow = [Windows.Forms.Panel]::new()
+                    $newRow.Text = "expected-row"
+                    $newRow.SetBounds(20, 30, 260, 80)
+                    $newButton = [Windows.Forms.Button]::new()
+                    $newButton.Text = "guarded-child"
+                    $newButton.SetBounds(30, 20, 170, 40)
+                    $newRow.Controls.Add($newButton); $root.Controls.Add($newRow)
+                }}
+                "empty_name" {{ $button.Text = "" }}
+                "bounds_change" {{ $row.SetBounds(21, 30, 260, 80) }}
+                "runtime_swap" {{
+                    $row.Controls.Remove($button)
+                    $newButton = [Windows.Forms.Button]::new()
+                    $newButton.Text = "guarded-child"
+                    $newButton.SetBounds(30, 20, 170, 40)
+                    $row.Controls.Add($newButton)
+                }}
+            }}
+            [Windows.Forms.Application]::DoEvents()
+        }}
+        $result = [SkillMagnetFieldInput]::CheckedClickCurrent(
+            $point.X, $point.Y, $button.Handle, $root.Handle, [uint32]$process.Id,
+            [IO.Path]::GetFullPath($process.MainModule.FileName),
+            [long]$process.StartTime.ToUniversalTime().Ticks,
+            $true, (Sha "guarded-child"), "", "", "", "", [long]0, "",
+            $rowRuntime, [int]$rowUia.Current.ControlType.Id, (Sha $rowUia.Current.Name),
+            [double]$rowRect.X, [double]$rowRect.Y,
+            [double]$rowRect.Width, [double]$rowRect.Height, $false
+        )
+        return -not $result
+    }}
+    finally {{
+        [SkillMagnetFieldInput]::TestAfterInitialValidation = $null
+        $competitor.Close(); $root.Close()
+    }}
+}}
+$script:clickCount = 0
+$observations = [ordered]@{{}}
+$index = 0
+foreach ($kind in @("reparent", "same_name_row_swap", "empty_name", "bounds_change", "runtime_swap")) {{
+    $observations[$kind] = Run-Fault $kind ($index * 4)
+    $index += 1
+}}
+$observations["mouse_zero"] = $script:clickCount -eq 0
+$observations | ConvertTo-Json -Compress
+'''
+        with tempfile.TemporaryDirectory() as temporary:
+            probe_path = Path(temporary) / "row-child-guard-probe.ps1"
+            probe_path.write_text(probe, encoding="utf-8-sig")
+            completed = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-STA", "-File", str(probe_path)],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=60,
+                check=False,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        observation = json.loads(completed.stdout.strip())
+        self.assertTrue(all(observation.values()), observation)
+
     def test_explorer_physical_clicks_share_the_final_identity_gate(self) -> None:
         collector = (
             ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
@@ -2424,6 +2544,8 @@ finally {{
             "Get-UiaRuntimeKey $finalUia",
             "Get-Utf8Sha256 ([string]$finalUia.Current.Name)",
             "CheckedClickCurrent",
+            "Test-UiaSelfOrDescendantOf $firstUia $ExpectedElement",
+            "Test-UiaSelfOrDescendantOf $finalUia $ExpectedElement",
             "no mouse input was sent",
         ):
             self.assertIn(required, gate)
@@ -2435,6 +2557,138 @@ finally {{
         self.assertEqual(menu.count("Invoke-CheckedExplorerPhysicalClick"), 3)
         self.assertNotIn("LeftClick", menu)
         self.assertNotIn("RightClick", menu)
+
+    def test_invoke_log_reader_does_not_block_native_append_writes(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        reader = collector[
+            collector.index("function Read-InvokeLines") :
+            collector.index("function Parse-InvokeLine")
+        ]
+        native_reader = collector[
+            collector.index("public static class SkillMagnetStableLog") :
+            collector.index('"@', collector.index("public static class SkillMagnetStableLog"))
+        ]
+        self.assertIn("FileShare.ReadWrite | FileShare.Delete", native_reader)
+        self.assertIn("GetFileInformationByHandle", native_reader)
+        self.assertIn("$snapshot = [SkillMagnetStableLog]::Read($full)", reader)
+        self.assertNotIn("ReadAllText", reader)
+
+    @unittest.skipUnless(os.name == "nt", "requires Windows file identities")
+    def test_invoke_log_reader_rejects_partial_truncate_rotation_and_read_growth(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        csharp = collector.split(') -TypeDefinition @"', 1)[1].split('"@', 1)[0]
+        reader_function = collector[
+            collector.index("function Read-InvokeLines") :
+            collector.index("function Parse-InvokeLine")
+        ]
+        encoded_csharp = base64.b64encode(csharp.encode("utf-8")).decode("ascii")
+        encoded_reader = base64.b64encode(reader_function.encode("utf-8")).decode("ascii")
+        probe = rf'''
+$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("{encoded_csharp}"))
+Add-Type -ReferencedAssemblies @(
+    "UIAutomationClient", "UIAutomationTypes", "WindowsBase"
+) -TypeDefinition $source
+$readerSource = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("{encoded_reader}"))
+. ([ScriptBlock]::Create($readerSource))
+function Write-Utf16([string]$Path, [string]$Text) {{
+    [IO.File]::WriteAllBytes($Path, [Text.Encoding]::Unicode.GetBytes($Text))
+}}
+function Append-Utf16([string]$Path, [string]$Text) {{
+    $bytes = [Text.Encoding]::Unicode.GetBytes($Text)
+    $stream = [IO.FileStream]::new(
+        $Path, [IO.FileMode]::Append, [IO.FileAccess]::Write,
+        [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+    )
+    try {{ $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) }}
+    finally {{ $stream.Dispose() }}
+}}
+$root = Join-Path ([IO.Path]::GetTempPath()) ("skill-magnet-log-test-" + [guid]::NewGuid().ToString("N"))
+[IO.Directory]::CreateDirectory($root) | Out-Null
+try {{
+    $script:InvokeLogSnapshots = @{{}}
+    $path = Join-Path $root "invoke.log"
+    Write-Utf16 $path "one`r`n"
+    $initial = @(Read-InvokeLines $path).Count -eq 1
+    Append-Utf16 $path "part"
+    $partialHeld = @(Read-InvokeLines $path).Count -eq 1
+    Append-Utf16 $path "ial`r`n"
+    $partialCompleted = @(Read-InvokeLines $path).Count -eq 2
+    Append-Utf16 $path "terminal"
+    $partialTerminalHeld = @(Read-InvokeLines $path).Count -eq 2
+    Append-Utf16 $path "`r`n"
+    $partialTerminalCompleted = @(Read-InvokeLines $path).Count -eq 3
+
+    $truncateRejected = $false
+    Write-Utf16 $path "x`r`n"
+    try {{ Read-InvokeLines $path | Out-Null }} catch {{ $truncateRejected = $true }}
+
+    $script:InvokeLogSnapshots = @{{}}
+    Write-Utf16 $path "rotation-base`r`n"
+    Read-InvokeLines $path | Out-Null
+    Move-Item -LiteralPath $path -Destination ($path + ".old")
+    Write-Utf16 $path "rotation-new`r`n"
+    $rotationRejected = $false
+    try {{ Read-InvokeLines $path | Out-Null }} catch {{ $rotationRejected = $true }}
+
+    $growthPath = Join-Path $root "growth.log"
+    Write-Utf16 $growthPath "growth-base`r`n"
+    [SkillMagnetStableLog]::TestAfterReadBeforeFinalIdentity = [Action]{{
+        Append-Utf16 $growthPath "growth`r`n"
+    }}
+    $growth = [SkillMagnetStableLog]::Read($growthPath)
+    [SkillMagnetStableLog]::TestAfterReadBeforeFinalIdentity = $null
+    $growthRejected = -not $growth.Stable -and $growth.Error -eq "changed_during_read"
+
+    $swapPath = Join-Path $root "swap.log"
+    Write-Utf16 $swapPath "swap-base`r`n"
+    [SkillMagnetStableLog]::TestAfterReadBeforeFinalIdentity = [Action]{{
+        Move-Item -LiteralPath $swapPath -Destination ($swapPath + ".old")
+        Write-Utf16 $swapPath "swap-new`r`n"
+    }}
+    $swap = [SkillMagnetStableLog]::Read($swapPath)
+    [SkillMagnetStableLog]::TestAfterReadBeforeFinalIdentity = $null
+    $swapRejected = -not $swap.Stable
+
+    [pscustomobject]@{{
+        initial = $initial
+        partial_held = $partialHeld
+        partial_completed = $partialCompleted
+        partial_terminal_held = $partialTerminalHeld
+        partial_terminal_completed = $partialTerminalCompleted
+        truncate_rejected = $truncateRejected
+        rotation_rejected = $rotationRejected
+        growth_rejected = $growthRejected
+        path_swap_rejected = $swapRejected
+    }} | ConvertTo-Json -Compress
+}}
+finally {{
+    [SkillMagnetStableLog]::TestAfterReadBeforeFinalIdentity = $null
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}}
+'''
+        with tempfile.TemporaryDirectory() as temporary:
+            probe_path = Path(temporary) / "stable-log-probe.ps1"
+            probe_path.write_text(probe, encoding="utf-8-sig")
+            completed = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-File", str(probe_path)],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                check=False,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        observation = json.loads(completed.stdout.strip())
+        self.assertTrue(all(observation.values()), observation)
 
     def test_field_collector_clicks_only_fixed_semantic_ids_from_live_receipt(self) -> None:
         collector = (

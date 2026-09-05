@@ -523,6 +523,60 @@ public static class SkillMagnetFieldInput {
         }
         catch { return false; }
     }
+    private static string RuntimeKey(AutomationElement element) {
+        if (element == null) return null;
+        try { return String.Join(".", element.GetRuntimeId()); }
+        catch { return null; }
+    }
+    private static bool SameRectangle(System.Windows.Rect left, System.Windows.Rect right) {
+        return left.X == right.X && left.Y == right.Y &&
+            left.Width == right.Width && left.Height == right.Height;
+    }
+    private static AutomationElement FindAncestor(
+        AutomationElement element, string expectedRuntimeKey) {
+        if (element == null || String.IsNullOrEmpty(expectedRuntimeKey)) return null;
+        AutomationElement current = element;
+        TreeWalker walker = TreeWalker.RawViewWalker;
+        for (int depth = 0; depth < 32 && current != null; depth++) {
+            if (String.Equals(RuntimeKey(current), expectedRuntimeKey,
+                StringComparison.Ordinal)) return current;
+            try { current = walker.GetParent(current); }
+            catch { return null; }
+        }
+        return null;
+    }
+    private static bool UiaChainContainsHwnd(AutomationElement element, IntPtr expectedRoot) {
+        AutomationElement current = element;
+        TreeWalker walker = TreeWalker.RawViewWalker;
+        for (int depth = 0; depth < 64 && current != null; depth++) {
+            try {
+                if (current.Current.NativeWindowHandle == expectedRoot.ToInt32()) return true;
+                current = walker.GetParent(current);
+            }
+            catch { return false; }
+        }
+        return false;
+    }
+    private static bool RowMatches(
+        AutomationElement child, IntPtr root, uint expectedProcessId,
+        string expectedRowRuntimeKey, int expectedRowControlType,
+        string expectedRowNameSha256, double expectedRowX, double expectedRowY,
+        double expectedRowWidth, double expectedRowHeight) {
+        if (String.IsNullOrEmpty(expectedRowRuntimeKey)) return true;
+        try {
+            AutomationElement row = FindAncestor(child, expectedRowRuntimeKey);
+            if (row == null || row.Current.ProcessId != (int)expectedProcessId ||
+                row.Current.ControlType.Id != expectedRowControlType ||
+                !String.Equals(Sha256(row.Current.Name), expectedRowNameSha256,
+                    StringComparison.Ordinal) ||
+                !SameRectangle(row.Current.BoundingRectangle, new System.Windows.Rect(
+                    expectedRowX, expectedRowY, expectedRowWidth, expectedRowHeight)) ||
+                !row.Current.IsEnabled || row.Current.IsOffscreen ||
+                !UiaChainContainsHwnd(row, root)) return false;
+            return true;
+        }
+        catch { return false; }
+    }
     public static Action TestAfterInitialValidation;
     public static bool CheckedClickCurrent(
         int x, int y, IntPtr widget, IntPtr root, uint expectedProcessId,
@@ -530,7 +584,10 @@ public static class SkillMagnetFieldInput {
         bool requireUiaHandle, string expectedUiaNameSha256,
         string receiptPath, string expectedReceiptSha256,
         string expectedProcessInstanceId, string expectedGeneration,
-        long expectedRevision, string expectedSemanticId, bool rightClick) {
+        long expectedRevision, string expectedSemanticId,
+        string expectedRowRuntimeKey, int expectedRowControlType,
+        string expectedRowNameSha256, double expectedRowX, double expectedRowY,
+        double expectedRowWidth, double expectedRowHeight, bool rightClick) {
         FileStream initialReceipt = null;
         FileStream finalReceipt = null;
         try {
@@ -554,6 +611,15 @@ public static class SkillMagnetFieldInput {
             (requireUiaHandle && initialUia.Current.NativeWindowHandle != widget.ToInt32()) ||
             !String.Equals(Sha256(initialUia.Current.Name), expectedUiaNameSha256,
                 StringComparison.Ordinal)) return false;
+        string initialUiaRuntimeKey = RuntimeKey(initialUia);
+        int initialUiaControlType = initialUia.Current.ControlType.Id;
+        System.Windows.Rect initialUiaRectangle = initialUia.Current.BoundingRectangle;
+        bool initialUiaEnabled = initialUia.Current.IsEnabled;
+        bool initialUiaOffscreen = initialUia.Current.IsOffscreen;
+        if (String.IsNullOrEmpty(initialUiaRuntimeKey) || !RowMatches(
+            initialUia, root, expectedProcessId, expectedRowRuntimeKey,
+            expectedRowControlType, expectedRowNameSha256, expectedRowX, expectedRowY,
+            expectedRowWidth, expectedRowHeight)) return false;
         if (!String.IsNullOrEmpty(receiptPath) && !ReceiptMatches(
             initialReceiptBytes, expectedReceiptSha256, expectedProcessInstanceId,
             expectedGeneration, expectedRevision, expectedSemanticId,
@@ -582,6 +648,15 @@ public static class SkillMagnetFieldInput {
                 expectedStartTimeUtcTicks) || finalUia == null ||
             finalUia.Current.ProcessId != (int)expectedProcessId ||
             !finalUia.Current.IsEnabled || finalUia.Current.IsOffscreen ||
+            !String.Equals(RuntimeKey(finalUia), initialUiaRuntimeKey,
+                StringComparison.Ordinal) ||
+            finalUia.Current.ControlType.Id != initialUiaControlType ||
+            !SameRectangle(finalUia.Current.BoundingRectangle, initialUiaRectangle) ||
+            finalUia.Current.IsEnabled != initialUiaEnabled ||
+            finalUia.Current.IsOffscreen != initialUiaOffscreen ||
+            !RowMatches(finalUia, root, expectedProcessId, expectedRowRuntimeKey,
+                expectedRowControlType, expectedRowNameSha256, expectedRowX, expectedRowY,
+                expectedRowWidth, expectedRowHeight) ||
             (requireUiaHandle && finalUia.Current.NativeWindowHandle != widget.ToInt32()) ||
             !String.Equals(Sha256(finalUia.Current.Name), expectedUiaNameSha256,
                 StringComparison.Ordinal) ||
@@ -598,6 +673,111 @@ public static class SkillMagnetFieldInput {
             if (initialReceipt != null) initialReceipt.Dispose();
             if (finalReceipt != null) finalReceipt.Dispose();
         }
+    }
+}
+public sealed class SkillMagnetLogSnapshot {
+    public string Text;
+    public string Identity;
+    public long Length;
+    public long LastWriteUtcTicks;
+    public bool Complete;
+    public bool Stable;
+    public string Error;
+}
+public static class SkillMagnetStableLog {
+    public static Action TestAfterReadBeforeFinalIdentity;
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BY_HANDLE_FILE_INFORMATION {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandle(
+        IntPtr handle, out BY_HANDLE_FILE_INFORMATION information);
+    private static bool Info(FileStream stream, out BY_HANDLE_FILE_INFORMATION information) {
+        return GetFileInformationByHandle(
+            stream.SafeFileHandle.DangerousGetHandle(), out information);
+    }
+    private static string Identity(BY_HANDLE_FILE_INFORMATION value) {
+        return value.VolumeSerialNumber.ToString("x8") + ":" +
+            value.FileIndexHigh.ToString("x8") + value.FileIndexLow.ToString("x8");
+    }
+    private static long Size(BY_HANDLE_FILE_INFORMATION value) {
+        return ((long)value.FileSizeHigh << 32) | value.FileSizeLow;
+    }
+    private static long WriteTicks(BY_HANDLE_FILE_INFORMATION value) {
+        long fileTime = ((long)value.LastWriteTime.dwHighDateTime << 32) |
+            (uint)value.LastWriteTime.dwLowDateTime;
+        return fileTime;
+    }
+    public static SkillMagnetLogSnapshot Read(string path) {
+        SkillMagnetLogSnapshot result = new SkillMagnetLogSnapshot();
+        try {
+            string full = Path.GetFullPath(path);
+            FileAttributes attributes = File.GetAttributes(full);
+            if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0) {
+                result.Error = "not_regular"; return result;
+            }
+            byte[] bytes;
+            BY_HANDLE_FILE_INFORMATION before;
+            BY_HANDLE_FILE_INFORMATION after;
+            using (FileStream stream = new FileStream(
+                full, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete)) {
+                if (!Info(stream, out before)) { result.Error = "identity_unavailable"; return result; }
+                long length = Size(before);
+                if (length < 0 || length > 16 * 1024 * 1024 || (length % 2) != 0) {
+                    result.Error = "invalid_length"; return result;
+                }
+                bytes = new byte[(int)length];
+                int offset = 0;
+                while (offset < bytes.Length) {
+                    int count = stream.Read(bytes, offset, bytes.Length - offset);
+                    if (count <= 0) { result.Error = "short_read"; return result; }
+                    offset += count;
+                }
+                Action fault = TestAfterReadBeforeFinalIdentity;
+                if (fault != null) fault();
+                if (!Info(stream, out after)) { result.Error = "identity_unavailable"; return result; }
+            }
+            if (!String.Equals(Identity(before), Identity(after), StringComparison.Ordinal) ||
+                Size(before) != Size(after) || WriteTicks(before) != WriteTicks(after)) {
+                result.Error = "changed_during_read"; return result;
+            }
+            attributes = File.GetAttributes(full);
+            if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0) {
+                result.Error = "path_changed"; return result;
+            }
+            BY_HANDLE_FILE_INFORMATION reopened;
+            using (FileStream stream = new FileStream(
+                full, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete)) {
+                if (!Info(stream, out reopened)) { result.Error = "identity_unavailable"; return result; }
+            }
+            if (!String.Equals(Identity(before), Identity(reopened), StringComparison.Ordinal) ||
+                Size(before) != Size(reopened) || WriteTicks(before) != WriteTicks(reopened)) {
+                result.Error = "path_identity_changed"; return result;
+            }
+            result.Text = new UnicodeEncoding(false, false, true).GetString(bytes);
+            result.Identity = Identity(before);
+            result.Length = Size(before);
+            result.LastWriteUtcTicks = WriteTicks(before);
+            result.Complete = result.Length == 0 || result.Text.EndsWith("\r\n", StringComparison.Ordinal);
+            result.Stable = true;
+            return result;
+        }
+        catch (DecoderFallbackException) { result.Error = "invalid_utf16"; return result; }
+        catch (IOException) { result.Error = "io_error"; return result; }
+        catch (UnauthorizedAccessException) { result.Error = "access_denied"; return result; }
+        catch { result.Error = "unexpected_error"; return result; }
     }
 }
 "@
@@ -659,6 +839,22 @@ function Get-Pattern($Element, $Pattern) {
     return $null
 }
 
+function Test-UiaSelfOrDescendantOf($Element, $ExpectedAncestor) {
+    if ($null -eq $Element -or $null -eq $ExpectedAncestor) { return $false }
+    $expectedKey = Get-UiaRuntimeKey $ExpectedAncestor
+    if (-not $expectedKey) { return $false }
+    $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
+    $current = $Element
+    for ($depth = 0; $depth -lt 32 -and $null -ne $current; $depth++) {
+        try {
+            if ((Get-UiaRuntimeKey $current) -ceq $expectedKey) { return $true }
+            $current = $walker.GetParent($current)
+        }
+        catch { return $false }
+    }
+    return $false
+}
+
 function Open-ExplorerFolder([string]$Path) {
     $resolved = (Resolve-Path -LiteralPath $Path).Path
     Start-Process explorer.exe -ArgumentList @("/n,", $resolved) | Out-Null
@@ -714,11 +910,11 @@ function Invoke-CheckedExplorerPhysicalClick(
         [int]$firstUia.Current.ProcessId -eq [int]$rootPid
     ) "Explorer click point is not bound to the expected HWND/PID/root."
     if ($null -ne $ExpectedElement) {
+        $expectedNameSha256 = Get-Utf8Sha256 ([string]$ExpectedElement.Current.Name)
         Assert-Field (
-            (Get-UiaRuntimeKey $firstUia) -ceq (Get-UiaRuntimeKey $ExpectedElement) -and
-            (Get-Utf8Sha256 ([string]$firstUia.Current.Name)) -ceq
-                (Get-Utf8Sha256 ([string]$ExpectedElement.Current.Name))
-        ) "Explorer click point does not hit the exact expected UIAutomation element."
+            (Test-UiaSelfOrDescendantOf $firstUia $ExpectedElement) -and
+            (Get-Utf8Sha256 ([string]$ExpectedElement.Current.Name)) -ceq $expectedNameSha256
+        ) "Explorer click point is not inside the exact expected UIAutomation item."
     }
     $runtimeKey = Get-UiaRuntimeKey $firstUia
     $nameSha256 = Get-Utf8Sha256 ([string]$firstUia.Current.Name)
@@ -739,10 +935,33 @@ function Invoke-CheckedExplorerPhysicalClick(
         (Get-UiaRuntimeKey $finalUia) -ceq $runtimeKey -and
         (Get-Utf8Sha256 ([string]$finalUia.Current.Name)) -ceq $nameSha256
     ) "Explorer HWND/PID/process/UIA target changed; no mouse input was sent."
+    if ($null -ne $ExpectedElement) {
+        Assert-Field (
+            (Test-UiaSelfOrDescendantOf $finalUia $ExpectedElement) -and
+            (Get-Utf8Sha256 ([string]$ExpectedElement.Current.Name)) -ceq
+                $expectedNameSha256
+        ) "Explorer expected UIAutomation item changed; no mouse input was sent."
+    }
+    $rowRuntimeKey = ""
+    $rowControlType = 0
+    $rowNameSha256 = ""
+    $rowX = $rowY = $rowWidth = $rowHeight = [double]0
+    if ($null -ne $ExpectedElement) {
+        $rowRectangle = $ExpectedElement.Current.BoundingRectangle
+        $rowRuntimeKey = Get-UiaRuntimeKey $ExpectedElement
+        $rowControlType = [int]$ExpectedElement.Current.ControlType.Id
+        $rowNameSha256 = Get-Utf8Sha256 ([string]$ExpectedElement.Current.Name)
+        $rowX = [double]$rowRectangle.X
+        $rowY = [double]$rowRectangle.Y
+        $rowWidth = [double]$rowRectangle.Width
+        $rowHeight = [double]$rowRectangle.Height
+    }
     Assert-Field ([SkillMagnetFieldInput]::CheckedClickCurrent(
         $X, $Y, $firstHwnd, $rootHandle, $rootPid,
         [string]$identity.executable_path, [long]$identity.start_time_utc_ticks,
-        $false, $nameSha256, "", "", "", "", [long]0, "", $RightClick
+        $false, $nameSha256, "", "", "", "", [long]0, "",
+        $rowRuntimeKey, $rowControlType, $rowNameSha256,
+        $rowX, $rowY, $rowWidth, $rowHeight, $RightClick
     )) "Explorer target changed at the final input boundary; no mouse input was sent."
 }
 
@@ -1688,7 +1907,8 @@ function Invoke-FieldUiSurfaceWidget(
             [string]$finalReceipt.owner.process_instance_id,
             [string]$ExpectedGeneration,
             [long]$finalReceipt.surface.revision,
-            [string]$Id, $false
+            [string]$Id, "", 0, "", [double]0, [double]0,
+            [double]0, [double]0, $false
         )) "Receipt-bound '$Id' cursor/hit identity changed; no mouse input was sent."
         if ($ExpectedNextPhase -and $ExpectedNextTitlePrefix) {
             $nextWindow = Wait-VisibleWindowByPrefix `
@@ -2065,9 +2285,47 @@ function Wait-MissingSkillRecoveryDialog([int]$ExpectedProcessId, [int]$Seconds 
 }
 
 function Read-InvokeLines([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @() }
-    @([IO.File]::ReadAllText($Path, [Text.Encoding]::Unicode) -split "`r?`n" |
-        Where-Object { $_ })
+    $full = [IO.Path]::GetFullPath($Path)
+    if ($null -eq $script:InvokeLogSnapshots) { $script:InvokeLogSnapshots = @{} }
+    $baseline = $script:InvokeLogSnapshots[$full]
+    if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
+        if ($null -ne $baseline) { throw "Invoke log disappeared after observation." }
+        return @()
+    }
+    $snapshot = [SkillMagnetStableLog]::Read($full)
+    if (-not $snapshot.Stable) {
+        if ($snapshot.Error -in @("changed_during_read", "short_read", "io_error")) {
+            if ($null -eq $baseline) { return @() }
+            return @($baseline.text -split "`r?`n" | Where-Object { $_ })
+        }
+        throw "Invoke log stable read failed: $($snapshot.Error)"
+    }
+    if (-not $snapshot.Complete) {
+        if ($null -eq $baseline) { return @() }
+        return @($baseline.text -split "`r?`n" | Where-Object { $_ })
+    }
+    if ($null -ne $baseline) {
+        if ([string]$snapshot.Identity -cne [string]$baseline.identity) {
+            throw "Invoke log identity changed after observation."
+        }
+        if ([long]$snapshot.Length -lt [long]$baseline.length) {
+            throw "Invoke log was truncated after observation."
+        }
+        if (-not ([string]$snapshot.Text).StartsWith(
+            [string]$baseline.text, [StringComparison]::Ordinal
+        )) { throw "Invoke log content was replaced after observation." }
+        if ([long]$snapshot.Length -eq [long]$baseline.length -and
+            [long]$snapshot.LastWriteUtcTicks -ne [long]$baseline.last_write_utc_ticks) {
+            throw "Invoke log timestamp changed without an append."
+        }
+    }
+    $script:InvokeLogSnapshots[$full] = @{
+        identity = [string]$snapshot.Identity
+        length = [long]$snapshot.Length
+        last_write_utc_ticks = [long]$snapshot.LastWriteUtcTicks
+        text = [string]$snapshot.Text
+    }
+    @([string]$snapshot.Text -split "`r?`n" | Where-Object { $_ })
 }
 
 function Parse-InvokeLine([string]$Line) {
