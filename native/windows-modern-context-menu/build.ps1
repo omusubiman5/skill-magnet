@@ -13,8 +13,27 @@ $devShell = Join-Path $install "Common7\Tools\Microsoft.VisualStudio.DevShell.dl
 Import-Module $devShell
 Enter-VsDevShell -VsInstallPath $install -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64" | Out-Null
 
+$generatedOutputs = @(
+    "ContractTest.exe",
+    "ContractTest.obj",
+    "SkillMagnetCommand.dll",
+    "SkillMagnetCommand.exp",
+    "SkillMagnetCommand.lib",
+    "SkillMagnetCommand.obj",
+    "SkillMagnetIdentity.exe",
+    "SkillMagnetIdentity.obj",
+    "SkillMagnetLauncher.exe",
+    "SkillMagnetMenu.tsv",
+    "SkillMagnetNativeSource.h",
+    "SkillMagnetNativeSource.json"
+)
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
-Remove-Item -LiteralPath (Join-Path $OutDir "SkillMagnetLauncher.exe") -Force -ErrorAction SilentlyContinue
+foreach ($name in $generatedOutputs) {
+    $generatedPath = Join-Path $OutDir $name
+    if (Test-Path -LiteralPath $generatedPath) {
+        Remove-Item -LiteralPath $generatedPath -Force -ErrorAction Stop
+    }
+}
 $sourceInputs = @(
     "AppxManifest.xml",
     "ContractTest.cpp",

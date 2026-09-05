@@ -4539,13 +4539,14 @@ class ActivationEndToEndTest(unittest.TestCase):
 
     def test_windows_product_install_runs_native_contract_test(self) -> None:
         root = self.root / "policy-safe-modern-install"
-        output = (
+        source_output = (
             Path(__file__).resolve().parents[1]
             / "native"
             / "windows-modern-context-menu"
             / "out"
         )
         calls: list[list[str]] = []
+        build_outputs: list[Path] = []
 
         def fake_run(args: list[str], **_: object) -> SimpleNamespace:
             calls.append(args)
@@ -4554,9 +4555,15 @@ class ActivationEndToEndTest(unittest.TestCase):
                     returncode=1, stdout="", stderr="__REGISTRY_KEY_NOT_FOUND__"
                 )
             if any(str(item).endswith("build.ps1") for item in args):
+                output = type(self.root)(str(args[args.index("-OutDir") + 1]))
+                build_outputs.append(output)
                 output.mkdir(exist_ok=True)
-                for name in ("SkillMagnetCommand.dll", "SkillMagnetIdentity.exe"):
-                    (output / name).touch()
+                for name in (
+                    "SkillMagnetCommand.dll",
+                    "SkillMagnetIdentity.exe",
+                    "SkillMagnetNativeSource.json",
+                ):
+                    shutil.copy2(source_output / name, output / name)
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
             if any(str(item).endswith("build-package.ps1") for item in args):
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -4584,6 +4591,171 @@ class ActivationEndToEndTest(unittest.TestCase):
             call for call in calls if any(str(item).endswith("build.ps1") for item in call)
         )
         self.assertNotIn("-SkipContractTest", build_call)
+        self.assertEqual(len(build_outputs), 1)
+        self.assertNotEqual(build_outputs[0], source_output)
+        self.assertFalse(build_outputs[0].exists())
+
+    def test_installed_wheel_build_is_temporary_and_repairs_known_package_residue(
+        self,
+    ) -> None:
+        package_root = self.root / "installed" / "site-packages" / "skill_magnet"
+        native_root = package_root / "_native" / "windows-modern-context-menu"
+        shutil.copytree(
+            Path(__file__).resolve().parents[1]
+            / "native"
+            / "windows-modern-context-menu",
+            native_root,
+            ignore=shutil.ignore_patterns("out", "__pycache__", "*.pyc"),
+        )
+        legacy_output = native_root / "out"
+        legacy_output.mkdir()
+        (legacy_output / "SkillMagnetCommand.lib").write_bytes(b"stale build output")
+        root = self.root / "installed-wheel-context-menu"
+        calls: list[list[str]] = []
+        build_outputs: list[Path] = []
+
+        def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+            calls.append(args)
+            if args[:2] == ["reg", "query"]:
+                return SimpleNamespace(
+                    returncode=1, stdout="", stderr="__REGISTRY_KEY_NOT_FOUND__"
+                )
+            if any(str(item).endswith("build.ps1") for item in args):
+                output = type(self.root)(str(args[args.index("-OutDir") + 1]))
+                build_outputs.append(output)
+                output.mkdir(exist_ok=True)
+                source_manifest = _windows_native_source_manifest(native_root)
+                source_digest = str(source_manifest["source_tree_sha256"])
+                artifacts = {
+                    "SkillMagnetCommand.dll": (
+                        b"test-dll\0"
+                        + (
+                            "skill-magnet-native-source-v1:" + source_digest
+                        ).encode("utf-16-le")
+                    ),
+                    "SkillMagnetIdentity.exe": b"test-identity",
+                }
+                for name, payload in artifacts.items():
+                    (output / name).write_bytes(payload)
+                source_manifest["artifacts"] = [
+                    {
+                        "path": name,
+                        "size": len(payload),
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                    }
+                    for name, payload in artifacts.items()
+                ]
+                (output / "SkillMagnetNativeSource.json").write_text(
+                    json.dumps(source_manifest, separators=(",", ":")) + "\n",
+                    encoding="utf-8",
+                )
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if any(str(item).endswith("build-package.ps1") for item in args):
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            action = args[args.index("-Action") + 1]
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "installed": action != "uninstall",
+                        "name": "SkillMagnet.ContextMenu",
+                        "version": "0.5.9.0",
+                        "architecture": "X64",
+                        "publisher": "CN=Skill Magnet Local",
+                        "install_location": str(root),
+                    }
+                ),
+                stderr="",
+            )
+
+        with (
+            mock.patch("skill_magnet.platforms.os.name", "nt"),
+            mock.patch("skill_magnet.platforms._PACKAGE_ROOT", package_root),
+        ):
+            result = install_windows_modern_context_menu(
+                self.config_path, install_root=root, run=fake_run, build=True
+            )
+        self.assertTrue(result["usable_installed_state"])
+        self.assertTrue(result["packaged_native_build_residue_removed"])
+        self.assertFalse(legacy_output.exists())
+        self.assertEqual(len(build_outputs), 1)
+        self.assertFalse(build_outputs[0].is_relative_to(package_root))
+        self.assertFalse(build_outputs[0].exists())
+
+    def test_installed_wheel_preserves_unknown_package_residue_and_fails_closed(
+        self,
+    ) -> None:
+        package_root = self.root / "unknown-residue" / "site-packages" / "skill_magnet"
+        native_root = package_root / "_native" / "windows-modern-context-menu"
+        shutil.copytree(
+            Path(__file__).resolve().parents[1]
+            / "native"
+            / "windows-modern-context-menu",
+            native_root,
+            ignore=shutil.ignore_patterns("out", "__pycache__", "*.pyc"),
+        )
+        output = native_root / "out"
+        output.mkdir()
+        foreign = output / "user-data.txt"
+        foreign.write_text("preserve", encoding="utf-8")
+        calls: list[list[str]] = []
+
+        def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+            calls.append(args)
+            return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+        with (
+            mock.patch("skill_magnet.platforms.os.name", "nt"),
+            mock.patch("skill_magnet.platforms._PACKAGE_ROOT", package_root),
+            self.assertRaisesRegex(SafetyError, "unknown files"),
+        ):
+            install_windows_modern_context_menu(
+                self.config_path,
+                install_root=self.root / "must-not-be-created",
+                run=fake_run,
+                build=True,
+            )
+        self.assertEqual(calls, [])
+        self.assertEqual(foreign.read_text(encoding="utf-8"), "preserve")
+
+    def test_installed_wheel_build_failure_leaves_no_package_or_temporary_output(
+        self,
+    ) -> None:
+        package_root = self.root / "failed-build" / "site-packages" / "skill_magnet"
+        native_root = package_root / "_native" / "windows-modern-context-menu"
+        shutil.copytree(
+            Path(__file__).resolve().parents[1]
+            / "native"
+            / "windows-modern-context-menu",
+            native_root,
+            ignore=shutil.ignore_patterns("out", "__pycache__", "*.pyc"),
+        )
+        legacy_output = native_root / "out"
+        legacy_output.mkdir()
+        (legacy_output / "ContractTest.obj").write_bytes(b"stale")
+        build_outputs: list[Path] = []
+
+        def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+            output = type(self.root)(str(args[args.index("-OutDir") + 1]))
+            build_outputs.append(output)
+            (output / "partial.obj").write_bytes(b"partial")
+            return SimpleNamespace(returncode=1, stdout="compile failed", stderr="")
+
+        with (
+            mock.patch("skill_magnet.platforms.os.name", "nt"),
+            mock.patch("skill_magnet.platforms._PACKAGE_ROOT", package_root),
+            self.assertRaisesRegex(SkillMagnetError, "compile failed"),
+        ):
+            install_windows_modern_context_menu(
+                self.config_path,
+                install_root=self.root / "failed-build-context-menu",
+                run=fake_run,
+                build=True,
+            )
+        self.assertFalse(legacy_output.exists())
+        self.assertEqual(len(build_outputs), 1)
+        self.assertFalse(build_outputs[0].exists())
+        self.assertFalse((self.root / "failed-build-context-menu").exists())
 
     def test_windows_modern_install_removes_deprecated_blocked_launcher(self) -> None:
         root = self.root / "remove-blocked-launcher"

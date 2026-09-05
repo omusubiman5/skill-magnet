@@ -869,6 +869,26 @@ class ExplorerResultsGateTest(unittest.TestCase):
                 wheel_payload_sha256(changed_wheel),
             )
 
+    def test_release_runtime_digest_excludes_generated_native_output_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            package = repository / "src" / "skill_magnet"
+            native = repository / "native" / "windows-modern-context-menu"
+            package.mkdir(parents=True)
+            native.mkdir(parents=True)
+            (package / "__init__.py").write_text("VERSION = 1\n", encoding="utf-8")
+            (native / "build.ps1").write_text("source\n", encoding="utf-8")
+            (repository / "skill-magnet.json").write_text("{}\n", encoding="utf-8")
+            expected = _release_runtime_payload_sha256(repository)
+
+            generated = native / "out"
+            generated.mkdir()
+            (generated / "SkillMagnetCommand.dll").write_bytes(b"generated")
+            self.assertEqual(_release_runtime_payload_sha256(repository), expected)
+
+            (native / "build.ps1").write_text("changed\n", encoding="utf-8")
+            self.assertNotEqual(_release_runtime_payload_sha256(repository), expected)
+
     def test_field_evidence_hash_and_both_explorer_sources_are_required(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             evidence = Path(temporary) / "invoke.log"
@@ -1503,6 +1523,22 @@ class ExplorerResultsGateTest(unittest.TestCase):
             pre_input.index("$releaseRuntimeDigest"),
             pre_input.index("$selectionProbe = @'"),
         )
+
+    def test_field_collector_hashes_unowned_physical_runtime_files_fail_closed(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        runtime_probe = collector[
+            collector.index("$runtimeProbe = @'") : collector.index("$releaseRuntimeProbe = @'")
+        ]
+        physical_hash = runtime_probe[
+            runtime_probe.index("digest = hashlib.sha256()") : runtime_probe.index(
+                "print(json.dumps"
+            )
+        ]
+        self.assertIn('path for path in root.rglob("*")', physical_hash)
+        self.assertNotIn("distribution.files", physical_hash)
+        self.assertNotIn('blocked_names = {".git", "out"', physical_hash)
 
     def test_field_collector_preserves_preexisting_ui_and_owner_generation(self) -> None:
         collector = (

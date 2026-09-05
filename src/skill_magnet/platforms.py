@@ -10,6 +10,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import uuid
 import xml.etree.ElementTree as ET
 from xml.parsers.expat import ExpatError
@@ -515,6 +516,22 @@ _WINDOWS_NATIVE_ARTIFACTS = (
     "SkillMagnetCommand.dll",
     "SkillMagnetIdentity.exe",
 )
+_WINDOWS_NATIVE_BUILD_OUTPUTS = frozenset(
+    {
+        "ContractTest.exe",
+        "ContractTest.obj",
+        "SkillMagnetCommand.dll",
+        "SkillMagnetCommand.exp",
+        "SkillMagnetCommand.lib",
+        "SkillMagnetCommand.obj",
+        "SkillMagnetIdentity.exe",
+        "SkillMagnetIdentity.obj",
+        "SkillMagnetLauncher.exe",
+        "SkillMagnetMenu.tsv",
+        "SkillMagnetNativeSource.h",
+        "SkillMagnetNativeSource.json",
+    }
+)
 _WINDOWS_MODERN_COM_CLSID = "13E2A9DD-4378-4F9D-A385-973C61B19E63"
 _WINDOWS_MODERN_COM_CLASS = (
     _WINDOWS_MODERN_COM_CLSID,
@@ -718,6 +735,79 @@ def _validate_windows_managed_tree(root: Path, *, label: str) -> None:
                 raise SafetyError(
                     f"Cannot verify {label}; nothing was changed: {path}"
                 ) from exc
+
+
+def _packaged_windows_native_root(native_root: Path) -> bool:
+    """Return whether native sources live inside the imported wheel package."""
+
+    packaged = _PACKAGE_ROOT / "_native" / "windows-modern-context-menu"
+    return os.path.normcase(os.path.abspath(native_root)) == os.path.normcase(
+        os.path.abspath(packaged)
+    )
+
+
+def _remove_packaged_windows_native_build_residue(native_root: Path) -> bool:
+    """Remove only legacy product build outputs accidentally left in site-packages.
+
+    Older releases compiled into ``skill_magnet/_native/.../out``.  pip does not
+    own generated files, so force-reinstall cannot remove them.  Inspect the
+    complete subtree before unlinking anything and refuse unknown content.
+    """
+
+    if not _packaged_windows_native_root(native_root):
+        return False
+    output = native_root / "out"
+    if not os.path.lexists(output):
+        return False
+    _validate_windows_managed_tree(
+        output, label="legacy packaged Windows native build output"
+    )
+    items = sorted(
+        output.rglob("*"), key=lambda path: path.relative_to(output).as_posix()
+    )
+    unexpected = []
+    files: list[Path] = []
+    for path in items:
+        name = path.relative_to(output).as_posix()
+        if (
+            "/" in name
+            or not path.is_file()
+            or name not in _WINDOWS_NATIVE_BUILD_OUTPUTS
+        ):
+            unexpected.append(name + ("/" if path.is_dir() else ""))
+        else:
+            files.append(path)
+    if unexpected:
+        raise SafetyError(
+            "Legacy packaged Windows native build output contains unknown files; "
+            "nothing was removed. Move the reported file outside the Skill Magnet "
+            "package and retry: "
+            + ", ".join(unexpected)
+        )
+    for path in files:
+        # Recheck immediately before each unlink so a swapped link/junction is
+        # removed as a link at worst and is never traversed.
+        if _is_link(path) or not path.is_file():
+            raise SafetyError(
+                "Legacy packaged Windows native build output changed during "
+                f"cleanup; retry the operation: {path}"
+            )
+    for path in files:
+        try:
+            path.unlink()
+        except OSError as exc:
+            raise SkillMagnetError(
+                "Cannot remove a legacy packaged Windows native build output. "
+                f"Close processes using it and retry: {path}"
+            ) from exc
+    try:
+        output.rmdir()
+    except OSError as exc:
+        raise SkillMagnetError(
+            "Cannot finish legacy packaged Windows native build cleanup. "
+            f"Close processes using this directory and retry: {output}"
+        ) from exc
+    return True
 
 
 def _windows_modern_paths(install_root: Path | None = None) -> tuple[Path, Path, Path]:
@@ -1296,105 +1386,137 @@ def install_windows_modern_context_menu(
         raise SkillMagnetError("Windows modern context menu can only be installed on Windows")
     native_root, root, script = _windows_modern_paths(install_root)
     _validate_windows_managed_tree(root, label="Windows context-menu install tree")
-    output = native_root / "out"
-    if build:
-        build_result = run(
-            [
-                _powershell_executable(),
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(native_root / "build.ps1"),
-                "-OutDir",
-                str(output),
-            ],
-            capture_output=True,
-            text=True,
-            errors="replace",
-        )
-        if build_result.returncode != 0:
-            detail = (build_result.stderr or build_result.stdout or "unknown build error").strip()
-            raise SkillMagnetError(f"Windows modern context-menu build failed: {detail}")
-    required = (
-        output / "SkillMagnetCommand.dll",
-        output / "SkillMagnetIdentity.exe",
-        output / "SkillMagnetNativeSource.json",
-    )
-    if not all(path.is_file() for path in required):
-        raise SkillMagnetError("Windows modern context-menu build outputs are missing")
-    output_binding = _windows_native_build_binding(native_root, output)
-    if not output_binding["native_build_binding_valid"]:
+    if _packaged_windows_native_root(native_root) and not build:
         raise SkillMagnetError(
-            "Windows native build does not match this release source; "
-            "nothing was registered. Rebuild the native context menu."
+            "An installed wheel cannot reuse native build output from its package "
+            "directory; rerun with native build enabled."
         )
-
-    root.mkdir(parents=True, exist_ok=True)
-    # Remove the 0.3.0 process adapter before registering the new contract.
-    # Smart App Control can block that self-signed executable with error 4551.
-    (root / "SkillMagnetLauncher.exe").unlink(missing_ok=True)
-    shutil.copy2(required[0], root / required[0].name)
-    shutil.copy2(required[1], root / required[1].name)
-    shutil.copy2(required[2], root / required[2].name)
-    shutil.copy2(native_root / "AppxManifest.xml", root / "AppxManifest.xml")
-    (root / "SkillMagnetMenu.tsv").write_text(
-        render_windows_modern_menu_manifest(config), encoding="utf-8", newline="\n"
+    removed_packaged_build_residue = (
+        _remove_packaged_windows_native_build_residue(native_root) if build else False
     )
-    assets = root / "Assets"
-    assets.mkdir(exist_ok=True)
-    for name in ("StoreLogo.png", "Square150x150Logo.png", "Square44x44Logo.png"):
-        (assets / name).write_bytes(_TRANSPARENT_PNG)
-
-    if build:
-        package_build = run(
-            [
-                _powershell_executable(),
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(native_root / "build-package.ps1"),
-                "-ExternalLocation",
-                str(root),
-            ],
-            capture_output=True,
-            text=True,
-            errors="replace",
+    temporary_build: tempfile.TemporaryDirectory[str] | None = None
+    output = native_root / "out"
+    try:
+        if build:
+            temporary_build = tempfile.TemporaryDirectory(
+                prefix="skill-magnet-native-build-"
+            )
+            output = type(native_root)(temporary_build.name)
+            build_result = run(
+                [
+                    _powershell_executable(),
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(native_root / "build.ps1"),
+                    "-OutDir",
+                    str(output),
+                ],
+                capture_output=True,
+                text=True,
+                errors="replace",
+            )
+            if build_result.returncode != 0:
+                detail = (
+                    build_result.stderr
+                    or build_result.stdout
+                    or "unknown build error"
+                ).strip()
+                raise SkillMagnetError(
+                    f"Windows modern context-menu build failed: {detail}"
+                )
+        required = (
+            output / "SkillMagnetCommand.dll",
+            output / "SkillMagnetIdentity.exe",
+            output / "SkillMagnetNativeSource.json",
         )
-        if package_build.returncode != 0:
-            detail = (package_build.stderr or package_build.stdout or "unknown package build error").strip()
-            raise SkillMagnetError(f"Windows signed identity package build failed: {detail}")
+        if not all(path.is_file() for path in required):
+            raise SkillMagnetError("Windows modern context-menu build outputs are missing")
+        output_binding = _windows_native_build_binding(native_root, output)
+        if not output_binding["native_build_binding_valid"]:
+            raise SkillMagnetError(
+                "Windows native build does not match this release source; "
+                "nothing was registered. Rebuild the native context menu."
+            )
 
-    install_status = _package_action("install", script, install_root=root, run=run)
-    if not install_status.get("installed"):
-        raise SkillMagnetError("Windows modern context-menu package did not register")
-    status = windows_modern_context_menu_status(
-        install_root=root,
-        config=config,
-        run=run,
-        require_exclusive_entry=False,
-    )
-    if not status.get("usable_installed_state"):
-        raise SkillMagnetError("Windows modern context-menu installed state is incomplete")
-    status.update(
-        {
-            "platform": "windows",
-            "integration": "windows_11_modern_context_menu",
-            "external_location": str(root),
-            "contexts": ["Directory", r"Directory\Background"],
-            "reinstall_required_after_pack_change": False,
-            # status is intentionally read back after registration, but that
-            # command cannot reconstruct which historical trust entries the
-            # install transaction removed. Preserve the transaction evidence.
-            "legacy_certificate_thumbprints_removed": list(
-                install_status.get("legacy_certificate_thumbprints_removed", [])
-            ),
-        }
-    )
-    return status
+        root.mkdir(parents=True, exist_ok=True)
+        # Remove the 0.3.0 process adapter before registering the new contract.
+        # Smart App Control can block that self-signed executable with error 4551.
+        (root / "SkillMagnetLauncher.exe").unlink(missing_ok=True)
+        shutil.copy2(required[0], root / required[0].name)
+        shutil.copy2(required[1], root / required[1].name)
+        shutil.copy2(required[2], root / required[2].name)
+        shutil.copy2(native_root / "AppxManifest.xml", root / "AppxManifest.xml")
+        (root / "SkillMagnetMenu.tsv").write_text(
+            render_windows_modern_menu_manifest(config), encoding="utf-8", newline="\n"
+        )
+        assets = root / "Assets"
+        assets.mkdir(exist_ok=True)
+        for name in ("StoreLogo.png", "Square150x150Logo.png", "Square44x44Logo.png"):
+            (assets / name).write_bytes(_TRANSPARENT_PNG)
+
+        if build:
+            package_build = run(
+                [
+                    _powershell_executable(),
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(native_root / "build-package.ps1"),
+                    "-ExternalLocation",
+                    str(root),
+                ],
+                capture_output=True,
+                text=True,
+                errors="replace",
+            )
+            if package_build.returncode != 0:
+                detail = (
+                    package_build.stderr
+                    or package_build.stdout
+                    or "unknown package build error"
+                ).strip()
+                raise SkillMagnetError(
+                    f"Windows signed identity package build failed: {detail}"
+                )
+
+        install_status = _package_action("install", script, install_root=root, run=run)
+        if not install_status.get("installed"):
+            raise SkillMagnetError("Windows modern context-menu package did not register")
+        status = windows_modern_context_menu_status(
+            install_root=root,
+            config=config,
+            run=run,
+            require_exclusive_entry=False,
+        )
+        if not status.get("usable_installed_state"):
+            raise SkillMagnetError("Windows modern context-menu installed state is incomplete")
+        status.update(
+            {
+                "platform": "windows",
+                "integration": "windows_11_modern_context_menu",
+                "external_location": str(root),
+                "contexts": ["Directory", r"Directory\Background"],
+                "reinstall_required_after_pack_change": False,
+                "packaged_native_build_residue_removed": (
+                    removed_packaged_build_residue
+                ),
+                # status is intentionally read back after registration, but that
+                # command cannot reconstruct which historical trust entries the
+                # install transaction removed. Preserve the transaction evidence.
+                "legacy_certificate_thumbprints_removed": list(
+                    install_status.get("legacy_certificate_thumbprints_removed", [])
+                ),
+            }
+        )
+        return status
+    finally:
+        if temporary_build is not None:
+            temporary_build.cleanup()
 
 
 def uninstall_windows_modern_context_menu(

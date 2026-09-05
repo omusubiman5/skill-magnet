@@ -229,6 +229,33 @@ print(json.dumps({
         )
         self.assertEqual(residue, [])
 
+    def test_native_build_removes_all_previous_product_outputs(self) -> None:
+        build_script = (
+            ROOT / "native" / "windows-modern-context-menu" / "build.ps1"
+        ).read_text(encoding="utf-8-sig")
+        generated_outputs = {
+            "ContractTest.exe",
+            "ContractTest.obj",
+            "SkillMagnetCommand.dll",
+            "SkillMagnetCommand.exp",
+            "SkillMagnetCommand.lib",
+            "SkillMagnetCommand.obj",
+            "SkillMagnetIdentity.exe",
+            "SkillMagnetIdentity.obj",
+            "SkillMagnetLauncher.exe",
+            "SkillMagnetMenu.tsv",
+            "SkillMagnetNativeSource.h",
+            "SkillMagnetNativeSource.json",
+        }
+        for name in generated_outputs:
+            self.assertIn(f'"{name}"', build_script)
+        self.assertIn("foreach ($name in $generatedOutputs)", build_script)
+        self.assertIn("if (Test-Path -LiteralPath $generatedPath)", build_script)
+        self.assertIn(
+            "Remove-Item -LiteralPath $generatedPath -Force -ErrorAction Stop",
+            build_script,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
