@@ -1115,6 +1115,132 @@ payload = base64.b64decode("__FIELD_OWNER_BASE64__", validate=True)
 value = json.loads(payload.decode("utf-8"), object_pairs_hook=unique_object)
 if not isinstance(value, dict):
     raise ValueError("owner receipt root must be an object")
+
+OWNER_KEYS = {
+    "schema_version", "owner_kind", "pid", "process_instance_id",
+    "process_started_at_unix_ns", "target_sha256", "generation", "phase",
+    "window_handle", "revision", "published_at_utc",
+}
+SURFACE_KEYS = {
+    "schema_version", "generation", "pid", "phase", "window", "state",
+    "widgets", "revision", "published_at_utc",
+}
+RECT_KEYS = {"x", "y", "width", "height"}
+WIDGET_REQUIRED = {"id", "role", "state", "viewable", "hwnd", "client", "screen"}
+WIDGET_OPTIONAL = {"text_sha256", "value_sha256", "values_sha256"}
+
+def exact_object(item, keys, label):
+    if not isinstance(item, dict) or set(item) != keys:
+        raise ValueError(label + " keys do not match the exact receipt schema")
+    return item
+
+def exact_int(item, label, positive=False):
+    if type(item) is not int or (positive and item <= 0):
+        raise ValueError(label + " must be an exact integer")
+    return item
+
+def exact_bool(item, label):
+    if type(item) is not bool:
+        raise ValueError(label + " must be an exact boolean")
+
+def text(item, label, pattern=None):
+    import re
+    if not isinstance(item, str) or (pattern and not re.fullmatch(pattern, item)):
+        raise ValueError(label + " must be a valid string")
+    return item
+
+def rectangle(item, label):
+    item = exact_object(item, RECT_KEYS, label)
+    for key in RECT_KEYS:
+        exact_int(item[key], label + "." + key)
+
+owner_keys = OWNER_KEYS | ({"ui_surface"} if "ui_surface" in value else set())
+owner = exact_object(value, owner_keys, "owner")
+if exact_int(owner["schema_version"], "owner.schema_version") != 2:
+    raise ValueError("owner.schema_version must be 2")
+if text(owner["owner_kind"], "owner.owner_kind") != "context_launcher":
+    raise ValueError("owner.owner_kind must be context_launcher")
+exact_int(owner["pid"], "owner.pid", True)
+text(owner["process_instance_id"], "owner.process_instance_id", r"[0-9a-f]{32}")
+exact_int(owner["process_started_at_unix_ns"], "owner.process_started_at_unix_ns", True)
+text(owner["target_sha256"], "owner.target_sha256", r"[0-9a-f]{64}")
+text(owner["generation"], "owner.generation", r"[0-9a-f]{32}")
+phase = text(owner["phase"], "owner.phase")
+if phase not in {"context_starting", "context_selection", "library_manager"}:
+    raise ValueError("owner.phase is unsupported")
+exact_int(owner["window_handle"], "owner.window_handle")
+exact_int(owner["revision"], "owner.revision", True)
+text(owner["published_at_utc"], "owner.published_at_utc")
+if "ui_surface" in owner:
+    if phase not in {"context_selection", "library_manager"}:
+        raise ValueError("starting owner must not contain ui_surface")
+    surface = exact_object(owner["ui_surface"], SURFACE_KEYS, "ui_surface")
+    if exact_int(surface["schema_version"], "ui_surface.schema_version") != 1:
+        raise ValueError("ui_surface.schema_version must be 1")
+    if surface["generation"] != owner["generation"]:
+        raise ValueError("ui_surface.generation mismatch")
+    if type(surface["pid"]) is not int or surface["pid"] != owner["pid"]:
+        raise ValueError("ui_surface.pid mismatch")
+    if not isinstance(surface["phase"], str) or surface["phase"] != phase:
+        raise ValueError("ui_surface.phase mismatch")
+    if type(surface["revision"]) is not int or surface["revision"] != owner["revision"]:
+        raise ValueError("ui_surface.revision mismatch")
+    if (not isinstance(surface["published_at_utc"], str) or
+            surface["published_at_utc"] != owner["published_at_utc"]):
+        raise ValueError("ui_surface publication mismatch")
+    window = exact_object(
+        surface["window"], {"hwnd", "title_sha256", "client", "screen"}, "window"
+    )
+    if type(window["hwnd"]) is not int or window["hwnd"] != owner["window_handle"]:
+        raise ValueError("window.hwnd mismatch")
+    text(window["title_sha256"], "window.title_sha256", r"[0-9a-f]{64}")
+    rectangle(window["client"], "window.client")
+    rectangle(window["screen"], "window.screen")
+    if phase == "context_selection":
+        state = exact_object(
+            surface["state"],
+            {"language_sha256", "selection_mode_sha256", "processing", "details_visible"},
+            "state",
+        )
+        text(state["language_sha256"], "state.language_sha256", r"[0-9a-f]{64}")
+        text(state["selection_mode_sha256"], "state.selection_mode_sha256", r"[0-9a-f]{64}")
+        exact_bool(state["processing"], "state.processing")
+        exact_bool(state["details_visible"], "state.details_visible")
+    else:
+        state = surface["state"]
+        if not isinstance(state, dict) or set(state) not in (
+                {"processing", "register_selected"},
+                {"processing", "register_selected", "stage_sha256"}):
+            raise ValueError("state keys do not match library_manager schema")
+        exact_bool(state["processing"], "state.processing")
+        exact_bool(state["register_selected"], "state.register_selected")
+        if "stage_sha256" in state:
+            text(state["stage_sha256"], "state.stage_sha256", r"[0-9a-f]{64}")
+    widgets = surface["widgets"]
+    if not isinstance(widgets, list):
+        raise ValueError("widgets must be an array")
+    for index, widget in enumerate(widgets):
+        label = "widgets[" + str(index) + "]"
+        if not isinstance(widget, dict):
+            raise ValueError(label + " must be an object")
+        keys = set(widget)
+        if not (WIDGET_REQUIRED <= keys <= WIDGET_REQUIRED | WIDGET_OPTIONAL):
+            raise ValueError(label + " keys do not match exact schema")
+        text(widget["id"], label + ".id")
+        text(widget["role"], label + ".role")
+        exact_bool(widget["viewable"], label + ".viewable")
+        exact_int(widget["hwnd"], label + ".hwnd", True)
+        rectangle(widget["client"], label + ".client")
+        rectangle(widget["screen"], label + ".screen")
+        widget_state = exact_object(
+            widget["state"], {"configured", "enabled"}, label + ".state"
+        )
+        text(widget_state["configured"], label + ".state.configured")
+        exact_bool(widget_state["enabled"], label + ".state.enabled")
+        if widget["id"] == "request" and keys & WIDGET_OPTIONAL:
+            raise ValueError("request widget must not contain content digests")
+        for key in keys & WIDGET_OPTIONAL:
+            text(widget[key], label + "." + key, r"[0-9a-f]{64}")
 print(json.dumps(value, ensure_ascii=True, separators=(",", ":")))
 '@
     $validatorProgram = $validator.Replace("__FIELD_OWNER_BASE64__", $encoded)

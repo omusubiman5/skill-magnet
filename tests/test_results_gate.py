@@ -26,6 +26,7 @@ from integration.explorer_results_gate import (
     _release_runtime_payload_sha256,
     _selector_choice_map_sha256,
     _text_sha256,
+    _validate_ui_owner_receipt_schema,
     main,
     parse_ledger,
     validate_consistency,
@@ -1865,6 +1866,152 @@ class ExplorerResultsGateTest(unittest.TestCase):
         self.assertIn("ReceiptMatches(", between)
         self.assertIn("ProcessMatches(", between)
         self.assertIn("finalUia.Current.Name", between)
+
+    def test_ui_receipt_consumers_reject_unknown_nested_keys_and_wrong_types(self) -> None:
+        digest = "a" * 64
+        generation = "b" * 32
+        published = "2026-09-05T00:00:00Z"
+        receipt: dict[str, object] = {
+            "schema_version": 2,
+            "owner_kind": "context_launcher",
+            "pid": 123,
+            "process_instance_id": "c" * 32,
+            "process_started_at_unix_ns": 1,
+            "target_sha256": digest,
+            "generation": generation,
+            "phase": "context_selection",
+            "window_handle": 100,
+            "revision": 2,
+            "published_at_utc": published,
+            "ui_surface": {
+                "schema_version": 1,
+                "generation": generation,
+                "pid": 123,
+                "phase": "context_selection",
+                "window": {
+                    "hwnd": 100,
+                    "title_sha256": digest,
+                    "client": {"x": 1, "y": 2, "width": 3, "height": 4},
+                    "screen": {"x": 1, "y": 2, "width": 3, "height": 4},
+                },
+                "state": {
+                    "language_sha256": digest,
+                    "selection_mode_sha256": digest,
+                    "processing": False,
+                    "details_visible": False,
+                },
+                "widgets": [
+                    {
+                        "id": "request",
+                        "role": "entry",
+                        "state": {"configured": "normal", "enabled": True},
+                        "viewable": True,
+                        "hwnd": 101,
+                        "client": {"x": 1, "y": 2, "width": 3, "height": 4},
+                        "screen": {"x": 1, "y": 2, "width": 3, "height": 4},
+                    }
+                ],
+                "revision": 2,
+                "published_at_utc": published,
+            },
+        }
+
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        marker = "$validator = @'\n"
+        start = collector.index(marker) + len(marker)
+        validator = collector[start : collector.index("\n'@", start)]
+
+        def clone() -> dict[str, object]:
+            return json.loads(json.dumps(receipt))
+
+        def gate_read(payload: bytes) -> None:
+            value = results_gate._strict_json_loads(payload, label="test UI receipt")
+            _validate_ui_owner_receipt_schema(value)
+
+        def field_read(payload: bytes) -> None:
+            encoded = base64.b64encode(payload).decode("ascii")
+            program = validator.replace("__FIELD_OWNER_BASE64__", encoded)
+            with mock.patch("sys.stdout", io.StringIO()):
+                exec(compile(program, "field-ui-owner-validator", "exec"), {})
+
+        valid_payload = json.dumps(receipt, separators=(",", ":")).encode()
+        gate_read(valid_payload)
+        field_read(valid_payload)
+        manager = clone()
+        manager["phase"] = "library_manager"
+        manager["ui_surface"]["phase"] = "library_manager"  # type: ignore[index]
+        manager["ui_surface"]["state"] = {  # type: ignore[index]
+            "processing": False,
+            "register_selected": True,
+        }
+        for state in (
+            manager["ui_surface"]["state"],  # type: ignore[index]
+            {
+                "processing": True,
+                "register_selected": False,
+                "stage_sha256": digest,
+            },
+        ):
+            manager["ui_surface"]["state"] = state  # type: ignore[index]
+            manager_payload = json.dumps(manager, separators=(",", ":")).encode()
+            gate_read(manager_payload)
+            field_read(manager_payload)
+        starting = {key: value for key, value in clone().items() if key != "ui_surface"}
+        starting["phase"] = "context_starting"
+        starting["window_handle"] = 0
+        starting_payload = json.dumps(starting, separators=(",", ":")).encode()
+        gate_read(starting_payload)
+        field_read(starting_payload)
+
+        invalid: list[dict[str, object]] = []
+        owner_extra = clone()
+        owner_extra["private_token"] = "secret"
+        invalid.append(owner_extra)
+        surface_extra = clone()
+        surface_extra["ui_surface"]["request_digest"] = digest  # type: ignore[index]
+        invalid.append(surface_extra)
+        window_extra = clone()
+        window_extra["ui_surface"]["window"]["private_token"] = "secret"  # type: ignore[index]
+        invalid.append(window_extra)
+        state_extra = clone()
+        state_extra["ui_surface"]["state"]["request_digest"] = digest  # type: ignore[index]
+        invalid.append(state_extra)
+        widget_extra = clone()
+        widget_extra["ui_surface"]["widgets"][0]["private_token"] = "secret"  # type: ignore[index]
+        invalid.append(widget_extra)
+        widget_state_extra = clone()
+        widget_state_extra["ui_surface"]["widgets"][0]["state"]["request_digest"] = digest  # type: ignore[index]
+        invalid.append(widget_state_extra)
+        rect_extra = clone()
+        rect_extra["ui_surface"]["window"]["client"]["private_token"] = 1  # type: ignore[index]
+        invalid.append(rect_extra)
+        wrong_type = clone()
+        wrong_type["ui_surface"]["widgets"][0]["viewable"] = 1  # type: ignore[index]
+        invalid.append(wrong_type)
+        request_digest = clone()
+        request_digest["ui_surface"]["widgets"][0]["text_sha256"] = digest  # type: ignore[index]
+        invalid.append(request_digest)
+        missing_required = clone()
+        del missing_required["ui_surface"]["window"]["screen"]  # type: ignore[index]
+        invalid.append(missing_required)
+
+        for candidate in invalid:
+            payload = json.dumps(candidate, separators=(",", ":")).encode()
+            with self.subTest(keys=list(candidate)):
+                with self.assertRaises(ValueError):
+                    gate_read(payload)
+                with self.assertRaises(ValueError):
+                    field_read(payload)
+
+        duplicate = valid_payload.replace(
+            b'"schema_version":2', b'"schema_version":2,"schema_version":2', 1
+        )
+        with self.assertRaises(ValueError):
+            gate_read(duplicate)
+        with self.assertRaises(ValueError):
+            field_read(duplicate)
 
     @unittest.skipUnless(os.name == "nt", "requires real Windows HWND behavior")
     def test_native_click_guard_sends_no_mouse_after_post_validation_swaps(self) -> None:

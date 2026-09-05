@@ -286,8 +286,8 @@ class UiSurfaceOwnerIdentity:
 class UiWidgetSpec:
     """A stable, user-visible widget entry for the recovery receipt.
 
-    Display values are opt-in and are always represented only by a digest and
-    length.  In particular, the request entry has no value at all, so user
+    Display values are opt-in and are always represented only by a digest.
+    In particular, the request entry has no value at all, so user
     instructions can never be copied into the process-owner record.
     """
 
@@ -2184,8 +2184,7 @@ def show_context_selection(
             value=lambda: selected_runtime.get(),
             values=("Codex", "Claude"),
         ),
-        # Request text is intentionally absent.  Only presence and length are
-        # recorded in state below so a recovery receipt cannot disclose it.
+        # Request text and all metadata derived from it are intentionally absent.
         UiWidgetSpec("request", request_entry, "entry"),
         UiWidgetSpec(
             "details", details_button, "button", text=lambda: details_button_text.get()
