@@ -3669,9 +3669,19 @@ class ActivationEndToEndTest(unittest.TestCase):
             )
             record = json.loads(owner_path.read_text(encoding="utf-8"))
             selector = surface["widgets"][0]
+            request = surface["widgets"][1]
             self.assertEqual(selector["value_count"], 2)
             self.assertNotIn("value", selector)
             self.assertNotIn("values", selector)
+            for private_field in (
+                "text",
+                "value",
+                "values",
+                "text_sha256",
+                "value_sha256",
+                "values_sha256",
+            ):
+                self.assertNotIn(private_field, request)
             self.assertEqual(surface["generation"], record["generation"])
             self.assertEqual(surface["revision"], record["revision"])
             self.assertEqual(surface["window"]["hwnd"], record["window_handle"])

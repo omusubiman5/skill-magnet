@@ -1731,7 +1731,10 @@ class ExplorerResultsGateTest(unittest.TestCase):
         self.assertIn("duplicate JSON key", strict_read)
         self.assertIn("object_pairs_hook=unique_object", strict_read)
         self.assertIn("Get-BytesSha256 $beforeBytes", strict_read)
-        self.assertIn("sys.stdin.read()", strict_read)
+        self.assertIn('"__FIELD_OWNER_BASE64__"', strict_read)
+        self.assertIn('$validator.Replace("__FIELD_OWNER_BASE64__", $encoded)', strict_read)
+        self.assertIn("$script:FieldExpectedExecutablePath -I -", strict_read)
+        self.assertNotIn("-I -c", strict_read)
         self.assertNotIn("sys.argv[1]", strict_read)
         for required in (
             "$owner.schema_version",
@@ -1771,7 +1774,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
         for required in (
             "$allowedIds",
             "Test-FieldProcessIdentity",
-            "SetForegroundWindow",
+            "FocusWindow",
             "GetForegroundWindow",
             "$firstHit -eq $widgetHandle",
             "SetCursorPos",
@@ -1797,6 +1800,25 @@ class ExplorerResultsGateTest(unittest.TestCase):
             click.index("AutomationElement]::FromPoint"),
             click.index("CheckedClickCurrent"),
         )
+
+    def test_field_collector_uses_foreground_thread_attachment(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        native_input = collector[
+            collector.index("public static class SkillMagnetFieldInput") :
+            collector.index("function Get-VisibleNamedElements")
+        ]
+        for required in (
+            "AttachThreadInput",
+            "GetCurrentThreadId",
+            "ShowWindow(hWnd, 9)",
+            "BringWindowToTop(hWnd)",
+            "GetForegroundWindow() == hWnd",
+        ):
+            self.assertIn(required, native_input)
+        self.assertGreaterEqual(collector.count("FocusWindow($handle)"), 1)
+        self.assertGreaterEqual(collector.count("FocusWindow($windowHandle)"), 1)
 
     def test_field_collector_clicks_only_fixed_semantic_ids_from_live_receipt(self) -> None:
         collector = (

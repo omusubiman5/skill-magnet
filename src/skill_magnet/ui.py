@@ -422,7 +422,6 @@ def build_tk_ui_surface(
             enabled = bool(widget.instate(("!disabled",)))
         except Exception:
             enabled = configured_state != "disabled"
-        display_text = _surface_value(spec.text) or ""
         entry: dict[str, Any] = {
             "id": spec.identifier,
             "role": spec.role,
@@ -437,11 +436,13 @@ def build_tk_ui_surface(
             },
             "screen": screen,
         }
-        if spec.hash_text:
-            entry["text_sha256"] = _surface_sha256(display_text)
-            entry["text_length"] = len(display_text)
-        else:
-            entry["text"] = display_text
+        if spec.text is not None:
+            display_text = _surface_value(spec.text) or ""
+            if spec.hash_text:
+                entry["text_sha256"] = _surface_sha256(display_text)
+                entry["text_length"] = len(display_text)
+            else:
+                entry["text"] = display_text
         selected_value = _surface_value(spec.value)
         if selected_value is not None:
             if spec.hash_value:

@@ -357,6 +357,11 @@ public static class SkillMagnetFieldInput {
     public struct POINT { public int X; public int Y; }
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern bool BringWindowToTop(IntPtr hWnd);
+    [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int command);
+    [DllImport("user32.dll")] private static extern bool AttachThreadInput(
+        uint sourceThreadId, uint targetThreadId, bool attach);
+    [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(
         IntPtr hWnd, out uint processId);
@@ -379,6 +384,29 @@ public static class SkillMagnetFieldInput {
         StringBuilder text = new StringBuilder(length + 1);
         GetWindowText(hWnd, text, text.Capacity);
         return text.ToString();
+    }
+    public static bool FocusWindow(IntPtr hWnd) {
+        if (!IsWindow(hWnd)) return false;
+        IntPtr foreground = GetForegroundWindow();
+        uint ignored;
+        uint foregroundThread = foreground == IntPtr.Zero
+            ? 0 : GetWindowThreadProcessId(foreground, out ignored);
+        uint targetThread = GetWindowThreadProcessId(hWnd, out ignored);
+        uint currentThread = GetCurrentThreadId();
+        bool attachedForeground = foregroundThread != 0 && foregroundThread != currentThread
+            && AttachThreadInput(currentThread, foregroundThread, true);
+        bool attachedTarget = targetThread != 0 && targetThread != currentThread
+            && targetThread != foregroundThread && AttachThreadInput(currentThread, targetThread, true);
+        try {
+            ShowWindow(hWnd, 9); // SW_RESTORE
+            BringWindowToTop(hWnd);
+            SetForegroundWindow(hWnd);
+            return GetForegroundWindow() == hWnd;
+        }
+        finally {
+            if (attachedTarget) AttachThreadInput(currentThread, targetThread, false);
+            if (attachedForeground) AttachThreadInput(currentThread, foregroundThread, false);
+        }
     }
     public static void LeftClick(int x, int y) {
         SetCursorPos(x, y); mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
@@ -483,7 +511,7 @@ function Open-ExplorerFolder([string]$Path) {
 
 function Get-ExplorerElement($Window) {
     $handle = [IntPtr]([int64]$Window.HWND)
-    Assert-Field ([SkillMagnetFieldInput]::SetForegroundWindow($handle)) `
+    Assert-Field ([SkillMagnetFieldInput]::FocusWindow($handle)) `
         "Could not foreground the Explorer field-test window."
     Start-Sleep -Milliseconds 250
     [System.Windows.Automation.AutomationElement]::FromHandle($handle)
@@ -861,14 +889,15 @@ def unique_object(pairs):
         result[key] = value
     return result
 
-payload = base64.b64decode(sys.stdin.read().strip(), validate=True)
+payload = base64.b64decode("__FIELD_OWNER_BASE64__", validate=True)
 value = json.loads(payload.decode("utf-8"), object_pairs_hook=unique_object)
 if not isinstance(value, dict):
     raise ValueError("owner receipt root must be an object")
 print(json.dumps(value, ensure_ascii=True, separators=(",", ":")))
 '@
-    $validatedJson = $encoded |
-        & $script:FieldExpectedExecutablePath -I -c $validator | Out-String
+    $validatorProgram = $validator.Replace("__FIELD_OWNER_BASE64__", $encoded)
+    $validatedJson = $validatorProgram |
+        & $script:FieldExpectedExecutablePath -I - | Out-String
     Assert-Field ($LASTEXITCODE -eq 0) `
         "Context UI owner receipt is not strict duplicate-free UTF-8 JSON."
     [ordered]@{
@@ -1184,7 +1213,7 @@ function Invoke-FieldUiSurfaceWidget(
         $identity = $script:FieldOwnedProcessIdentities[[string]$ExpectedProcessId]
         Assert-Field ($null -ne $identity -and (Test-FieldProcessIdentity $identity)) `
             "Receipt-bound process identity changed before '$Id'."
-        Assert-Field ([SkillMagnetFieldInput]::SetForegroundWindow($windowHandle)) `
+        Assert-Field ([SkillMagnetFieldInput]::FocusWindow($windowHandle)) `
             "Could not foreground the receipt-bound window before '$Id'."
         Start-Sleep -Milliseconds 100
         Assert-Field ([SkillMagnetFieldInput]::GetForegroundWindow() -eq $windowHandle) `
@@ -1690,7 +1719,11 @@ function Wait-NativeSequence(
         }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
-    throw "Native sequence timed out for $Source; observed_events=$lastObserved."
+    $finalLines = @(Read-InvokeLines $Path)
+    throw (
+        "Native sequence timed out for $Source; observed_events=$lastObserved; " +
+        "after_line_count=$AfterLineCount; final_line_count=$($finalLines.Count)."
+    )
 }
 
 function Assert-BusyMessageAndClose([int]$ExpectedProcessId) {
