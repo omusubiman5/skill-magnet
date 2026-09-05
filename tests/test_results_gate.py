@@ -1160,7 +1160,54 @@ class ExplorerResultsGateTest(unittest.TestCase):
         self.assertIn("Get-UiaRuntimeKey", context)
         self.assertIn("$rootByRuntime.ContainsKey", context)
         self.assertIn("$openedMenu.pre_existing_root_keys.ContainsKey", context)
+        self.assertIn("$rootDeadline = [DateTime]::UtcNow.AddSeconds(5)", context)
+        self.assertIn("Start-Sleep -Milliseconds 100", context)
         self.assertIn("exactly one newly visible Skill Magnet root", context)
+
+    def test_field_collector_scopes_every_product_window_to_native_process(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        named_elements = collector[
+            collector.index("function Get-VisibleNamedElements") :
+            collector.index("function Get-UiaRuntimeKey")
+        ]
+        unified_gui = collector[
+            collector.index("function Inspect-UnifiedGui") :
+            collector.index("function Close-UiaWindow")
+        ]
+        manager = collector[
+            collector.index("function Inspect-LibraryManager") :
+            collector.index("function Wait-MissingSkillRecoveryDialog")
+        ]
+        busy = collector[
+            collector.index("function Assert-BusyMessageAndClose") :
+            collector.index("$configPath =")
+        ]
+        self.assertIn("[int]$ProcessId = 0", named_elements)
+        self.assertIn("[int]$_.Current.ProcessId -eq $ProcessId", named_elements)
+        self.assertIn("[int]$ExpectedProcessId", unified_gui)
+        self.assertIn(
+            'Wait-VisibleNamedElement "Skill Magnet — 実行確認" $ExpectedProcessId',
+            unified_gui,
+        )
+        self.assertIn(
+            'Wait-VisibleWindowByPrefix "Library Manager" $ExpectedProcessId',
+            manager,
+        )
+        self.assertIn(
+            'Wait-VisibleNamedElement "Skill Magnet エラー" $ExpectedProcessId',
+            busy,
+        )
+        self.assertRegex(
+            collector,
+            r"Inspect-UnifiedGui `\s*\n\s*\$selectedFolder "
+            r"\$expectedChoices \$selectedSequence\.process_id",
+        )
+        self.assertRegex(
+            collector,
+            r"Assert-BusyMessageAndClose \$differentSequence\.process_id",
+        )
 
     def test_field_collector_preserves_preexisting_ui_and_owner_generation(self) -> None:
         collector = (

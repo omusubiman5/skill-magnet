@@ -305,7 +305,7 @@ public static class SkillMagnetFieldInput {
 }
 "@
 
-function Get-VisibleNamedElements([string]$Name) {
+function Get-VisibleNamedElements([string]$Name, [int]$ProcessId = 0) {
     $condition = New-Object System.Windows.Automation.PropertyCondition(
         [System.Windows.Automation.AutomationElement]::NameProperty, $Name
     )
@@ -313,7 +313,11 @@ function Get-VisibleNamedElements([string]$Name) {
         [System.Windows.Automation.TreeScope]::Descendants, $condition
     )
     @($matches | Where-Object {
-        try { -not $_.Current.IsOffscreen } catch { $false }
+        try {
+            -not $_.Current.IsOffscreen -and (
+                $ProcessId -le 0 -or [int]$_.Current.ProcessId -eq $ProcessId
+            )
+        } catch { $false }
     })
 }
 
@@ -322,10 +326,14 @@ function Get-UiaRuntimeKey($Element) {
     catch { "" }
 }
 
-function Wait-VisibleNamedElement([string]$Name, [int]$Seconds = 12) {
+function Wait-VisibleNamedElement(
+    [string]$Name,
+    [int]$ProcessId = 0,
+    [int]$Seconds = 12
+) {
     $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
     do {
-        $matches = @(Get-VisibleNamedElements $Name)
+        $matches = @(Get-VisibleNamedElements $Name $ProcessId)
         if ($matches.Count -gt 0) { return $matches[0] }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
@@ -416,20 +424,25 @@ function Invoke-VisibleSkillMagnetRoot(
     [string]$TranscriptSource = ""
 ) {
     $openedMenu = Open-ExplorerContextMenu $Window $SelectedName
-    $rootByRuntime = @{}
-    foreach ($root in @(Get-VisibleNamedElements "Skill Magnet") | Where-Object {
-        try {
-            $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::MenuItem
-        } catch { $false }
-    }) {
-        $key = Get-UiaRuntimeKey $root
-        if ($key -and -not $rootByRuntime.ContainsKey($key)) {
-            $rootByRuntime[$key] = $root
+    $rootDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        $rootByRuntime = @{}
+        foreach ($root in @(Get-VisibleNamedElements "Skill Magnet") | Where-Object {
+            try {
+                $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::MenuItem
+            } catch { $false }
+        }) {
+            $key = Get-UiaRuntimeKey $root
+            if ($key -and -not $rootByRuntime.ContainsKey($key)) {
+                $rootByRuntime[$key] = $root
+            }
         }
-    }
-    $roots = @($rootByRuntime.GetEnumerator() | Where-Object {
-        -not $openedMenu.pre_existing_root_keys.ContainsKey([string]$_.Key)
-    } | ForEach-Object { $_.Value })
+        $roots = @($rootByRuntime.GetEnumerator() | Where-Object {
+            -not $openedMenu.pre_existing_root_keys.ContainsKey([string]$_.Key)
+        } | ForEach-Object { $_.Value })
+        if ($roots.Count -gt 0) { break }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $rootDeadline)
     $diagnostic = @($rootByRuntime.Keys | Sort-Object) -join ","
     Assert-Field ($roots.Count -eq 1) `
         ("Explorer must expose exactly one newly visible Skill Magnet root; " +
@@ -543,9 +556,10 @@ function Get-ButtonCount($Gui, [string]$Name) {
 function Inspect-UnifiedGui(
     [string]$ProjectPath,
     [object[]]$ExpectedChoices,
+    [int]$ExpectedProcessId,
     [string]$TranscriptSource = ""
 ) {
-    $gui = Wait-VisibleNamedElement "Skill Magnet — 実行確認"
+    $gui = Wait-VisibleNamedElement "Skill Magnet — 実行確認" $ExpectedProcessId
     $projectBound = $false
     $descendants = $gui.FindAll(
         [System.Windows.Automation.TreeScope]::Descendants,
@@ -612,7 +626,7 @@ function Invoke-NamedButton($Window, [string]$Name) {
     $invoke.Invoke()
 }
 
-function Get-VisibleWindowsByPrefix([string]$Prefix) {
+function Get-VisibleWindowsByPrefix([string]$Prefix, [int]$ProcessId = 0) {
     $condition = New-Object System.Windows.Automation.PropertyCondition(
         [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
         [System.Windows.Automation.ControlType]::Window
@@ -622,18 +636,22 @@ function Get-VisibleWindowsByPrefix([string]$Prefix) {
     )
     @($windows | Where-Object {
         try {
-            -not $_.Current.IsOffscreen -and $_.Current.Name.StartsWith(
-                $Prefix, [StringComparison]::Ordinal
-            )
+            -not $_.Current.IsOffscreen -and
+            ($ProcessId -le 0 -or [int]$_.Current.ProcessId -eq $ProcessId) -and
+            $_.Current.Name.StartsWith($Prefix, [StringComparison]::Ordinal)
         }
         catch { $false }
     })
 }
 
-function Wait-VisibleWindowByPrefix([string]$Prefix, [int]$Seconds = 30) {
+function Wait-VisibleWindowByPrefix(
+    [string]$Prefix,
+    [int]$ProcessId = 0,
+    [int]$Seconds = 30
+) {
     $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
     do {
-        $matches = @(Get-VisibleWindowsByPrefix $Prefix)
+        $matches = @(Get-VisibleWindowsByPrefix $Prefix $ProcessId)
         if ($matches.Count -gt 0) { return $matches[0] }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
@@ -911,9 +929,7 @@ function Inspect-LibraryManager(
     [string]$ExpectedRemote,
     [int]$ExpectedProcessId
 ) {
-    $manager = Wait-VisibleWindowByPrefix "Library Manager"
-    Assert-Field ([int]$manager.Current.ProcessId -eq $ExpectedProcessId) `
-        "Library Manager does not belong to the Explorer-launched process."
+    $manager = Wait-VisibleWindowByPrefix "Library Manager" $ExpectedProcessId
     $editValues = @(Get-UiaControlValues $manager ([System.Windows.Automation.ControlType]::Edit))
     $remoteMatches = @($editValues | Where-Object { $_ -ceq $ExpectedRemote }).Count
     Assert-Field ($remoteMatches -eq 1) `
@@ -1072,8 +1088,8 @@ function Wait-NativeSequence(
     throw "Native success sequence did not complete for $Source."
 }
 
-function Assert-BusyMessageAndClose() {
-    $dialog = Wait-VisibleNamedElement "Skill Magnet エラー"
+function Assert-BusyMessageAndClose([int]$ExpectedProcessId) {
+    $dialog = Wait-VisibleNamedElement "Skill Magnet エラー" $ExpectedProcessId
     $containsBusy = $false
     $actionable = $false
     $text = Get-VisibleDescendantText $dialog
@@ -1287,7 +1303,8 @@ try {
     $selectedMenu = Invoke-VisibleSkillMagnetRoot `
         $selectedWindow (Split-Path $selectedFolder -Leaf) "selected_item"
     $selectedSequence = Wait-NativeSequence $invokeLog "selected_item" $before
-    $selectedGui = Inspect-UnifiedGui $selectedFolder $expectedChoices "selected_item"
+    $selectedGui = Inspect-UnifiedGui `
+        $selectedFolder $expectedChoices $selectedSequence.process_id "selected_item"
     Assert-Field ($selectedSequence.project_sha256 -eq (Get-Utf16Sha256 $selectedFolder)) `
         "Selected-folder native digest does not match the Explorer path."
     Assert-Field ([int]$selectedGui.element.Current.ProcessId -eq $selectedSequence.process_id) `
@@ -1314,16 +1331,16 @@ try {
     $managerSameSequence = Wait-NativeSequence `
         $invokeLog "selected_item" $before @("child_running", "child_exited")
     Start-Sleep -Seconds 2
-    $visibleManagers = @(Get-VisibleWindowsByPrefix "Library Manager" | Where-Object {
-        try { [int]$_.Current.ProcessId -eq $selectedSequence.process_id } catch { $false }
-    })
+    $visibleManagers = @(Get-VisibleWindowsByPrefix `
+        "Library Manager" $selectedSequence.process_id)
     Assert-Field ($visibleManagers.Count -eq 1) `
         "Same-folder click while Manager is open created or lost a Manager window."
     $managerForeground = [SkillMagnetFieldInput]::GetForegroundWindow()
     $managerHandle = [IntPtr]([int64]$managerGui.element.Current.NativeWindowHandle)
     Assert-Field ($managerForeground -eq $managerHandle) `
         "Same-folder click did not focus the existing Library Manager."
-    $managerSameErrors = @(Get-VisibleNamedElements "Skill Magnet エラー")
+    $managerSameErrors = @(Get-VisibleNamedElements `
+        "Skill Magnet エラー" $managerSameSequence.process_id)
     Assert-Field ($managerSameErrors.Count -eq 0) `
         "Same-folder click displayed an error while Library Manager was open."
 
@@ -1336,7 +1353,7 @@ try {
     Assert-Field (
         $managerDifferentSequence.project_sha256 -eq (Get-Utf16Sha256 $managerBusyFolder)
     ) "Manager-busy invocation did not bind the attempted folder."
-    $managerBusyObservation = Assert-BusyMessageAndClose
+    $managerBusyObservation = Assert-BusyMessageAndClose $managerDifferentSequence.process_id
     Assert-Field (
         [int]$managerBusyObservation.element.process_id -eq $managerDifferentSequence.process_id
     ) "Manager-busy dialog does not belong to the duplicate launcher process."
@@ -1379,7 +1396,8 @@ try {
     $before = @(Read-InvokeLines $invokeLog).Count
     $backgroundMenu = Invoke-VisibleSkillMagnetRoot $backgroundWindow "" "background_site"
     $backgroundSequence = Wait-NativeSequence $invokeLog "background_site" $before
-    $backgroundGui = Inspect-UnifiedGui $backgroundFolder $expectedChoices "background_site"
+    $backgroundGui = Inspect-UnifiedGui `
+        $backgroundFolder $expectedChoices $backgroundSequence.process_id "background_site"
     Assert-Field ($backgroundSequence.project_sha256 -eq (Get-Utf16Sha256 $backgroundFolder)) `
         "Background-folder native digest does not match the Explorer path."
     Assert-Field ([int]$backgroundGui.element.Current.ProcessId -eq $backgroundSequence.process_id) `
@@ -1396,14 +1414,16 @@ try {
     $sameSequence = Wait-NativeSequence `
         $invokeLog "background_site" $before @("child_running", "child_exited")
     Start-Sleep -Seconds 2
-    $sameGuis = @(Get-VisibleNamedElements "Skill Magnet — 実行確認")
+    $sameGuis = @(Get-VisibleNamedElements `
+        "Skill Magnet — 実行確認" $backgroundSequence.process_id)
     $sameGuiCount = $sameGuis.Count
     Assert-Field ($sameGuiCount -eq 1) "Repeated same-folder click created another GUI."
     $focusedWindow = [SkillMagnetFieldInput]::GetForegroundWindow()
     $expectedFocusedWindow = [IntPtr]([int64]$backgroundGui.element.Current.NativeWindowHandle)
     Assert-Field ($focusedWindow -eq $expectedFocusedWindow) `
         "Repeated same-folder click did not focus the existing Skill Magnet GUI."
-    $unexpectedErrors = @(Get-VisibleNamedElements "Skill Magnet エラー")
+    $unexpectedErrors = @(Get-VisibleNamedElements `
+        "Skill Magnet エラー" $sameSequence.process_id)
     Assert-Field ($unexpectedErrors.Count -eq 0) `
         "Repeated same-folder click displayed an error instead of focusing the existing GUI."
     Assert-Field ($sameSequence.project_sha256 -eq $backgroundSequence.project_sha256) `
@@ -1431,7 +1451,7 @@ try {
     $differentSequence = Wait-NativeSequence $invokeLog "background_site" $before
     Assert-Field ($differentSequence.project_sha256 -eq (Get-Utf16Sha256 $differentFolder)) `
         "Different-folder busy invocation did not bind the attempted folder."
-    $busyObservation = Assert-BusyMessageAndClose
+    $busyObservation = Assert-BusyMessageAndClose $differentSequence.process_id
     Assert-Field (
         [int]$busyObservation.element.process_id -eq $differentSequence.process_id
     ) "Different-folder busy dialog does not belong to the native child process."
@@ -1451,7 +1471,8 @@ try {
     $before = @(Read-InvokeLines $invokeLog).Count
     Invoke-VisibleSkillMagnetRoot $backgroundWindow | Out-Null
     $relaunchSequence = Wait-NativeSequence $invokeLog "background_site" $before
-    $relaunched = Inspect-UnifiedGui $backgroundFolder $expectedChoices
+    $relaunched = Inspect-UnifiedGui `
+        $backgroundFolder $expectedChoices $relaunchSequence.process_id
     Assert-Field ([int]$relaunched.element.Current.ProcessId -eq $relaunchSequence.process_id) `
         "Relaunched GUI does not belong to the new native child process."
     Assert-Field ($relaunchSequence.process_id -ne $backgroundProcessId) `
@@ -1483,7 +1504,8 @@ try {
     $registrationMenu = Invoke-VisibleSkillMagnetRoot `
         $selectedWindow (Split-Path $selectedFolder -Leaf)
     $registrationSequence = Wait-NativeSequence $invokeLog "selected_item" $before
-    $registrationGui = Inspect-UnifiedGui $selectedFolder $expectedChoices
+    $registrationGui = Inspect-UnifiedGui `
+        $selectedFolder $expectedChoices $registrationSequence.process_id
     Assert-Field (
         $registrationSequence.project_sha256 -eq (Get-Utf16Sha256 $selectedFolder)
     ) "Registration invocation did not bind the selected empty folder."
@@ -1547,7 +1569,8 @@ try {
     $runtimeMenu = Invoke-VisibleSkillMagnetRoot `
         $runtimeWindow (Split-Path $runtimeSkillFolder -Leaf)
     $runtimeSequence = Wait-NativeSequence $invokeLog "selected_item" $before
-    $runtimeGui = Inspect-UnifiedGui $runtimeSkillFolder $expectedChoices
+    $runtimeGui = Inspect-UnifiedGui `
+        $runtimeSkillFolder $expectedChoices $runtimeSequence.process_id
     Assert-Field (
         $runtimeSequence.project_sha256 -eq (Get-Utf16Sha256 $runtimeSkillFolder)
     ) "Runtime-skill native digest does not bind the clicked folder."
