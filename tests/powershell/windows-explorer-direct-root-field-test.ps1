@@ -408,12 +408,9 @@ public static class SkillMagnetFieldInput {
             if (attachedForeground) AttachThreadInput(currentThread, foregroundThread, false);
         }
     }
-    public static void LeftClick(int x, int y) {
-        SetCursorPos(x, y); mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
-        mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
-    }
     public static bool CheckedClickCurrent(
-        int x, int y, IntPtr widget, IntPtr root, uint expectedProcessId) {
+        int x, int y, IntPtr widget, IntPtr root, uint expectedProcessId,
+        bool rightClick) {
         POINT cursor;
         if (!GetCursorPos(out cursor) || cursor.X != x || cursor.Y != y) return false;
         if (GetForegroundWindow() != root) return false;
@@ -423,13 +420,11 @@ public static class SkillMagnetFieldInput {
         uint processId;
         GetWindowThreadProcessId(hit, out processId);
         if (processId != expectedProcessId) return false;
-        mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
-        mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
+        uint down = rightClick ? 0x0008u : 0x0002u;
+        uint up = rightClick ? 0x0010u : 0x0004u;
+        mouse_event(down, 0, 0, 0, UIntPtr.Zero);
+        mouse_event(up, 0, 0, 0, UIntPtr.Zero);
         return true;
-    }
-    public static void RightClick(int x, int y) {
-        SetCursorPos(x, y); mouse_event(0x0008, 0, 0, 0, UIntPtr.Zero);
-        mouse_event(0x0010, 0, 0, 0, UIntPtr.Zero);
     }
 }
 "@
@@ -517,6 +512,65 @@ function Get-ExplorerElement($Window) {
     [System.Windows.Automation.AutomationElement]::FromHandle($handle)
 }
 
+function Invoke-CheckedExplorerPhysicalClick(
+    $Window,
+    [int]$X,
+    [int]$Y,
+    [bool]$RightClick,
+    $ExpectedElement = $null
+) {
+    $rootHandle = [IntPtr]([int64]$Window.HWND)
+    $rootPid = [uint32]0
+    $null = [SkillMagnetFieldInput]::GetWindowThreadProcessId($rootHandle, [ref]$rootPid)
+    $identity = Get-FieldProcessIdentity ([int]$rootPid)
+    Assert-Field ($null -ne $identity -and (Test-FieldProcessIdentity $identity)) `
+        "Explorer process identity is unavailable before physical input."
+    Assert-Field ([SkillMagnetFieldInput]::FocusWindow($rootHandle)) `
+        "Could not foreground the exact Explorer window before physical input."
+    Start-Sleep -Milliseconds 100
+    $point = [SkillMagnetFieldInput+POINT]::new()
+    $point.X = $X
+    $point.Y = $Y
+    $firstHwnd = [SkillMagnetFieldInput]::WindowFromPoint($point)
+    $firstUia = [System.Windows.Automation.AutomationElement]::FromPoint(
+        [System.Windows.Point]::new([double]$X, [double]$Y)
+    )
+    Assert-Field (
+        $firstHwnd -ne [IntPtr]::Zero -and $null -ne $firstUia -and
+        [SkillMagnetFieldInput]::GetAncestor($firstHwnd, 2) -eq $rootHandle -and
+        [int]$firstUia.Current.ProcessId -eq [int]$rootPid
+    ) "Explorer click point is not bound to the expected HWND/PID/root."
+    if ($null -ne $ExpectedElement) {
+        Assert-Field (
+            (Get-UiaRuntimeKey $firstUia) -ceq (Get-UiaRuntimeKey $ExpectedElement) -and
+            (Get-Utf8Sha256 ([string]$firstUia.Current.Name)) -ceq
+                (Get-Utf8Sha256 ([string]$ExpectedElement.Current.Name))
+        ) "Explorer click point does not hit the exact expected UIAutomation element."
+    }
+    $runtimeKey = Get-UiaRuntimeKey $firstUia
+    $nameSha256 = Get-Utf8Sha256 ([string]$firstUia.Current.Name)
+    Assert-Field ([SkillMagnetFieldInput]::SetCursorPos($X, $Y)) `
+        "Could not move the cursor to the verified Explorer target."
+    Start-Sleep -Milliseconds 40
+    $finalHwnd = [SkillMagnetFieldInput]::WindowFromPoint($point)
+    $finalUia = [System.Windows.Automation.AutomationElement]::FromPoint(
+        [System.Windows.Point]::new([double]$X, [double]$Y)
+    )
+    Assert-Field (
+        $null -ne $finalUia -and
+        [SkillMagnetFieldInput]::GetForegroundWindow() -eq $rootHandle -and
+        (Test-FieldProcessIdentity $identity) -and
+        $finalHwnd -eq $firstHwnd -and
+        [SkillMagnetFieldInput]::GetAncestor($finalHwnd, 2) -eq $rootHandle -and
+        [int]$finalUia.Current.ProcessId -eq [int]$rootPid -and
+        (Get-UiaRuntimeKey $finalUia) -ceq $runtimeKey -and
+        (Get-Utf8Sha256 ([string]$finalUia.Current.Name)) -ceq $nameSha256
+    ) "Explorer HWND/PID/process/UIA target changed; no mouse input was sent."
+    Assert-Field ([SkillMagnetFieldInput]::CheckedClickCurrent(
+        $X, $Y, $firstHwnd, $rootHandle, $rootPid, $RightClick
+    )) "Explorer target changed at the final input boundary; no mouse input was sent."
+}
+
 function Open-ExplorerContextMenu($Window, [string]$SelectedName = "") {
     $explorer = Get-ExplorerElement $Window
     $preExistingRootKeys = @{}
@@ -545,15 +599,15 @@ function Open-ExplorerContextMenu($Window, [string]$SelectedName = "") {
         $rectangle = $candidates[0].Current.BoundingRectangle
         $x = [int]($rectangle.Left + ($rectangle.Width / 2))
         $y = [int]($rectangle.Top + ($rectangle.Height / 2))
-        [SkillMagnetFieldInput]::LeftClick($x, $y)
+        Invoke-CheckedExplorerPhysicalClick $Window $x $y $false $candidates[0]
         Start-Sleep -Milliseconds 100
-        [SkillMagnetFieldInput]::RightClick($x, $y)
+        Invoke-CheckedExplorerPhysicalClick $Window $x $y $true
     }
     else {
         $rectangle = $explorer.Current.BoundingRectangle
         $x = [int]($rectangle.Left + ($rectangle.Width * 0.76))
         $y = [int]($rectangle.Top + ($rectangle.Height * 0.72))
-        [SkillMagnetFieldInput]::RightClick($x, $y)
+        Invoke-CheckedExplorerPhysicalClick $Window $x $y $true
     }
     Start-Sleep -Milliseconds 300
     [ordered]@{
@@ -656,6 +710,31 @@ function Get-SelectionChoiceContract($Surface, [object[]]$ExpectedChoices) {
     }
 }
 
+function Assert-NoRawReceiptDisplayValues($Value, [string]$Path = "owner") {
+    if ($null -eq $Value) { return }
+    if ($Value -is [string] -or $Value -is [ValueType]) { return }
+    if ($Value -is [System.Collections.IEnumerable] -and
+        -not ($Value -is [System.Collections.IDictionary]) -and
+        -not ($Value -is [pscustomobject])) {
+        $index = 0
+        foreach ($item in $Value) {
+            Assert-NoRawReceiptDisplayValues $item "$Path[$index]"
+            $index += 1
+        }
+        return
+    }
+    $properties = if ($Value -is [System.Collections.IDictionary]) {
+        @($Value.Keys | ForEach-Object {
+            [pscustomobject]@{ Name = [string]$_; Value = $Value[$_] }
+        })
+    } else { @($Value.PSObject.Properties) }
+    foreach ($property in $properties) {
+        Assert-Field (@("text", "value", "values") -cnotcontains [string]$property.Name) `
+            "Receipt contains forbidden raw display key '$($property.Name)' at $Path."
+        Assert-NoRawReceiptDisplayValues $property.Value "$Path.$($property.Name)"
+    }
+}
+
 function Get-ButtonCount($Gui, [string]$Name) {
     $nameCondition = New-Object System.Windows.Automation.PropertyCondition(
         [System.Windows.Automation.AutomationElement]::NameProperty, $Name
@@ -683,12 +762,13 @@ function Inspect-UnifiedGui(
     $projectWidget = Get-FieldUiSurfaceWidget $surface "project" "label"
     $projectBound = [string]$receipt.owner.target_sha256 -ceq `
         (Get-FieldTargetSha256 $ProjectPath)
-    $projectSemanticVisible = if ($ExpectProjectless) {
-        [string]$projectWidget.text -like "*作業対象フォルダー: 指定なし*" -and
-        [string]$projectWidget.text -like "*デスクトップアプリが新規タスク用領域を自動作成*"
-    } else {
-        [string]$projectWidget.text -like "*（選択済み）*"
-    }
+    $expectedProjectText = if ($ExpectProjectless) {
+        "作業対象フォルダー: 指定なし（デスクトップアプリが新規タスク用領域を自動作成）"
+    } else { "作業対象フォルダー: （選択済み）" }
+    $projectSemanticVisible = (
+        [string]$projectWidget.text_sha256 -ceq (Get-Utf8Sha256 $expectedProjectText) -and
+        [int]$projectWidget.text_length -eq $expectedProjectText.Length
+    )
     $selectionContract = Get-SelectionChoiceContract $surface $ExpectedChoices
     $managerButton = Get-FieldUiSurfaceWidget $surface "library_manager" "button"
     $registerButton = Get-FieldUiSurfaceWidget $surface "register_selected" "button"
@@ -707,11 +787,15 @@ function Inspect-UnifiedGui(
         selection_choice_count = @($selectionContract.labels).Count
         selection_combo_exact_match_count = [int]$selectionContract.exact_match_count
         library_manager_button_count = if (
-            [bool]$managerButton.viewable -and [string]$managerButton.text -ceq "Library Manager"
+            [bool]$managerButton.viewable -and
+            [string]$managerButton.text_sha256 -ceq (Get-Utf8Sha256 "Library Manager") -and
+            [int]$managerButton.text_length -eq "Library Manager".Length
         ) { 1 } else { 0 }
         register_button_count = if (
             [bool]$registerButton.viewable -and
-            [string]$registerButton.text -ceq "このフォルダーのスキルを登録"
+            [string]$registerButton.text_sha256 -ceq
+                (Get-Utf8Sha256 "このフォルダーのスキルを登録") -and
+            [int]$registerButton.text_length -eq "このフォルダーのスキルを登録".Length
         ) { 1 } else { 0 }
     }
     Assert-Field $projectBound `
@@ -969,6 +1053,7 @@ function Wait-FieldUiSurface(
             continue
         }
         $owner = $validatedOwner.owner
+        Assert-NoRawReceiptDisplayValues $owner
         if ([int]$owner.pid -ne $ExpectedProcessId) {
             throw (
                 "Context UI receipt belongs to unexpected process: " +
@@ -1075,7 +1160,8 @@ function Wait-FieldUiSurface(
         }
         Assert-Field (
             $nativeTitle -ceq $expectedTitle -and
-            [string]$surface.window.title -ceq $nativeTitle -and
+            [string]$surface.window.title_sha256 -ceq (Get-Utf8Sha256 $nativeTitle) -and
+            [int]$surface.window.title_length -eq $nativeTitle.Length -and
             [string]$uiaSnapshot.name -ceq $nativeTitle
         ) "Context UI receipt title does not match the phase-authorized live root window."
         $nativeRectangle = [SkillMagnetFieldInput+RECT]::new()
@@ -1194,6 +1280,7 @@ function Invoke-FieldUiSurfaceWidget(
     Assert-Field ($allowedIds -contains $Id) `
         "UI receipt click id is not allowlisted: $Id"
     $expectedWidgetText = [string]$expectedTextById[$Id]
+    $expectedWidgetTextSha256 = Get-Utf8Sha256 $expectedWidgetText
     for ($attempt = 0; $attempt -lt 3; $attempt += 1) {
         $receipt = Wait-FieldUiSurface $ExpectedProcessId $ExpectedPhase $TopLevelWindow
         Assert-Field ([string]$receipt.owner.generation -ceq $ExpectedGeneration) `
@@ -1204,7 +1291,8 @@ function Invoke-FieldUiSurfaceWidget(
         $widget = Get-FieldUiSurfaceWidget $receipt.surface $Id "button"
         Assert-Field (
             [bool]$widget.viewable -and [bool]$widget.state.enabled -and
-            [string]$widget.text -ceq $expectedWidgetText
+            [string]$widget.text_sha256 -ceq $expectedWidgetTextSha256 -and
+            [int]$widget.text_length -eq $expectedWidgetText.Length
         ) "UI receipt widget '$Id' is not the expected visible/enabled action."
         $x = [int]$widget.screen.x + [int]([int]$widget.screen.width / 2)
         $y = [int]$widget.screen.y + [int]([int]$widget.screen.height / 2)
@@ -1234,7 +1322,8 @@ function Invoke-FieldUiSurfaceWidget(
             [int64]$fresh.surface.revision -eq [int64]$receipt.surface.revision -and
             [string]$fresh.owner_sha256 -ceq [string]$receipt.owner_sha256 -and
             [int64]$freshWidget.hwnd -eq [int64]$widget.hwnd -and
-            [string]$freshWidget.text -ceq $expectedWidgetText -and
+            [string]$freshWidget.text_sha256 -ceq $expectedWidgetTextSha256 -and
+            [int]$freshWidget.text_length -eq $expectedWidgetText.Length -and
             [bool]$freshWidget.viewable -and [bool]$freshWidget.state.enabled -and
             (Test-FieldScreenRectangle $freshWidget.screen $widget.screen 0)
         )
@@ -1252,7 +1341,7 @@ function Invoke-FieldUiSurfaceWidget(
             $null -ne $uiaHit -and
             [int64]$uiaHit.Current.NativeWindowHandle -eq [int64]$widget.hwnd -and
             [int]$uiaHit.Current.ProcessId -eq $ExpectedProcessId -and
-            [string]$uiaHit.Current.Name -ceq $expectedWidgetText -and
+            (Get-Utf8Sha256 ([string]$uiaHit.Current.Name)) -ceq $expectedWidgetTextSha256 -and
             [string]$uiaHit.Current.ClassName -ceq "TkChild" -and
             [bool]$uiaHit.Current.IsEnabled -and -not [bool]$uiaHit.Current.IsOffscreen -and
             (Test-FieldScreenRectangle (Get-UiaScreenRectangle $uiaHit) $widget.screen 0)
@@ -1263,10 +1352,37 @@ function Invoke-FieldUiSurfaceWidget(
             [int]$pointPid -eq $ExpectedProcessId -and
             [SkillMagnetFieldInput]::GetAncestor($secondHit, 2) -eq $windowHandle
         ) "Receipt-bound '$Id' point belongs to another process or root window."
+        $finalReceipt = Wait-FieldUiSurface `
+            $ExpectedProcessId $ExpectedPhase $TopLevelWindow
+        $finalWidget = Get-FieldUiSurfaceWidget $finalReceipt.surface $Id "button"
+        if (-not (
+            [string]$finalReceipt.owner.generation -ceq $ExpectedGeneration -and
+            [string]$finalReceipt.owner.target_sha256 -ceq $ExpectedTargetSha256 -and
+            [string]$finalReceipt.owner_sha256 -ceq [string]$fresh.owner_sha256 -and
+            [int64]$finalReceipt.surface.revision -eq [int64]$fresh.surface.revision -and
+            [int64]$finalWidget.hwnd -eq [int64]$widget.hwnd -and
+            [string]$finalWidget.text_sha256 -ceq $expectedWidgetTextSha256 -and
+            [int]$finalWidget.text_length -eq $expectedWidgetText.Length -and
+            [bool]$finalWidget.viewable -and [bool]$finalWidget.state.enabled
+        )) { continue }
+        $clickHit = [SkillMagnetFieldInput]::WindowFromPoint($point)
+        $clickUia = [System.Windows.Automation.AutomationElement]::FromPoint($uiaPoint)
+        Assert-Field (
+            [SkillMagnetFieldInput]::GetForegroundWindow() -eq $windowHandle -and
+            $clickHit -eq $widgetHandle -and
+            [SkillMagnetFieldInput]::GetAncestor($clickHit, 2) -eq $windowHandle -and
+            $null -ne $clickUia -and
+            [int64]$clickUia.Current.NativeWindowHandle -eq [int64]$widget.hwnd -and
+            [int]$clickUia.Current.ProcessId -eq $ExpectedProcessId -and
+            (Get-Utf8Sha256 ([string]$clickUia.Current.Name)) -ceq
+                $expectedWidgetTextSha256 -and
+            [string]$clickUia.Current.ClassName -ceq "TkChild" -and
+            [bool]$clickUia.Current.IsEnabled -and -not [bool]$clickUia.Current.IsOffscreen
+        ) "Receipt-bound '$Id' changed after final receipt validation; no mouse input was sent."
         Assert-Field (Test-FieldProcessIdentity $identity) `
             "Receipt-bound process identity changed immediately before '$Id'."
         Assert-Field ([SkillMagnetFieldInput]::CheckedClickCurrent(
-            $x, $y, $widgetHandle, $windowHandle, [uint32]$ExpectedProcessId
+            $x, $y, $widgetHandle, $windowHandle, [uint32]$ExpectedProcessId, $false
         )) "Receipt-bound '$Id' cursor/hit identity changed; no mouse input was sent."
         if ($ExpectedNextPhase -and $ExpectedNextTitlePrefix) {
             $nextWindow = Wait-VisibleWindowByPrefix `
@@ -1515,15 +1631,18 @@ function Inspect-LibraryManager(
     $buttonTextHashes = [ordered]@{}
     foreach ($identifier in @($buttonContracts.Keys)) {
         $button = Get-FieldUiSurfaceWidget $surface $identifier "button"
+        $expectedButtonText = [string]$buttonContracts[$identifier]
+        $expectedButtonSha256 = Get-Utf8Sha256 $expectedButtonText
         Assert-Field (
             [bool]$button.viewable -and
-            [string]$button.text -ceq [string]$buttonContracts[$identifier]
+            [string]$button.text_sha256 -ceq $expectedButtonSha256 -and
+            [int]$button.text_length -eq $expectedButtonText.Length
         ) "Library Manager CRUD control '$identifier' is not uniquely visible."
         $crudKey = if ($identifier -ceq "new_registration") {
             "create_button_count"
         } else { "${identifier}_button_count" }
         $crud[$crudKey] = 1
-        $buttonTextHashes[$identifier] = Get-Utf8Sha256 ([string]$buttonContracts[$identifier])
+        $buttonTextHashes[$identifier] = $expectedButtonSha256
     }
     [ordered]@{
         element = $manager
@@ -2535,11 +2654,13 @@ try {
     ) "Runtime-skill GUI does not belong to the native child process."
     $runtimeProjectWidget = Get-FieldUiSurfaceWidget `
         $runtimeGui.ui_surface "project" "label"
-    $runtimeText = [string]$runtimeProjectWidget.text
-    $runtimePathHidden = $runtimeText -notlike "*$runtimeSkillFolder*"
+    $runtimeExpectedText =
+        "作業対象フォルダー: 指定なし（デスクトップアプリが新規タスク用領域を自動作成）"
+    $runtimePathHidden = -not ($runtimeProjectWidget.PSObject.Properties.Name -contains "text")
     $projectlessVisible = (
-        $runtimeText -like "*作業対象フォルダー: 指定なし*" -and
-        $runtimeText -like "*デスクトップアプリが新規タスク用領域を自動作成*"
+        [string]$runtimeProjectWidget.text_sha256 -ceq
+            (Get-Utf8Sha256 $runtimeExpectedText) -and
+        [int]$runtimeProjectWidget.text_length -eq $runtimeExpectedText.Length
     )
     Assert-Field $runtimePathHidden `
         "Runtime skill folder was incorrectly presented as the task workspace."

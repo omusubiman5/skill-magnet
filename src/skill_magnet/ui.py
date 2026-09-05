@@ -282,9 +282,9 @@ class UiSurfaceOwnerIdentity:
 class UiWidgetSpec:
     """A stable, user-visible widget entry for the recovery receipt.
 
-    Values are opt-in.  In particular, the request entry is deliberately
-    represented without a value so user instructions can never be copied into
-    the process-owner record.
+    Display values are opt-in and are always represented only by a digest and
+    length.  In particular, the request entry has no value at all, so user
+    instructions can never be copied into the process-owner record.
     """
 
     identifier: str
@@ -293,9 +293,6 @@ class UiWidgetSpec:
     text: str | Callable[[], str] | None = None
     value: str | Callable[[], str] | None = None
     values: tuple[str, ...] | Callable[[], tuple[str, ...]] | None = None
-    hash_text: bool = False
-    hash_value: bool = False
-    hash_values: bool = False
 
 
 def ui_surface_owner_identity(
@@ -392,6 +389,26 @@ def _surface_sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _safe_surface_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Keep control flags while ensuring arbitrary strings can never persist."""
+
+    safe: dict[str, Any] = {}
+    for key, value in state.items():
+        if key in {"text", "value", "values"}:
+            raise SkillMagnetError(f"Forbidden raw UI surface state key: {key}")
+        if value is None or value == "":
+            continue
+        if isinstance(value, bool) or isinstance(value, int):
+            safe[key] = value
+            continue
+        if isinstance(value, str):
+            safe[f"{key}_sha256"] = _surface_sha256(value)
+            safe[f"{key}_length"] = len(value)
+            continue
+        raise SkillMagnetError(f"Unsupported UI surface state value: {key}")
+    return safe
+
+
 def build_tk_ui_surface(
     root: Any,
     *,
@@ -438,22 +455,17 @@ def build_tk_ui_surface(
         }
         if spec.text is not None:
             display_text = _surface_value(spec.text) or ""
-            if spec.hash_text:
+            if display_text:
                 entry["text_sha256"] = _surface_sha256(display_text)
                 entry["text_length"] = len(display_text)
-            else:
-                entry["text"] = display_text
         selected_value = _surface_value(spec.value)
-        if selected_value is not None:
-            if spec.hash_value:
-                entry["value_sha256"] = _surface_sha256(selected_value)
-                entry["value_length"] = len(selected_value)
-            else:
-                entry["value"] = selected_value
+        if selected_value:
+            entry["value_sha256"] = _surface_sha256(selected_value)
+            entry["value_length"] = len(selected_value)
         available_values = spec.values() if callable(spec.values) else spec.values
         if available_values is not None:
             normalized_values = [str(value) for value in available_values]
-            if spec.hash_values:
+            if normalized_values:
                 canonical_values = json.dumps(
                     normalized_values,
                     ensure_ascii=False,
@@ -461,9 +473,8 @@ def build_tk_ui_surface(
                 )
                 entry["values_sha256"] = _surface_sha256(canonical_values)
                 entry["value_count"] = len(normalized_values)
-            else:
-                entry["values"] = normalized_values
         entries.append(entry)
+    window_title = str(root.title())
     return {
         "schema_version": UI_SURFACE_SCHEMA_VERSION,
         "generation": identity.generation,
@@ -471,11 +482,12 @@ def build_tk_ui_surface(
         "phase": identity.phase,
         "window": {
             "hwnd": identity.window_handle,
-            "title": str(root.title()),
+            "title_sha256": _surface_sha256(window_title),
+            "title_length": len(window_title),
             "client": client_screen,
             "screen": _screen_rect(root, window=True),
         },
-        "state": dict(state),
+        "state": _safe_surface_state(state),
         "widgets": entries,
     }
 
@@ -2128,7 +2140,6 @@ def show_context_selection(
             purpose_text_label,
             "label",
             text=lambda: skill_purpose_label.get(),
-            hash_text=True,
         ),
         UiWidgetSpec(
             "runtime_label",
@@ -2161,8 +2172,6 @@ def show_context_selection(
             "combobox" if pack_id is None else "label",
             value=lambda: selected_skill_label.get(),
             values=(lambda: tuple(selection_choices)) if pack_id is None else None,
-            hash_value=True,
-            hash_values=pack_id is None,
         ),
         UiWidgetSpec(
             "runtime_choice",
@@ -2216,8 +2225,6 @@ def show_context_selection(
                     "selection_mode": "dynamic" if pack_id is None else "fixed",
                     "processing": processing_active,
                     "details_visible": details_visible,
-                    "request_present": bool(purpose.get()),
-                    "request_length": len(purpose.get()),
                 },
             )
         except Exception:

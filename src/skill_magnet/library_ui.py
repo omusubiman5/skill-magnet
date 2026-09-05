@@ -2452,7 +2452,6 @@ def show_library_manager(
             configured_remote_entry,
             "entry",
             value=lambda: remote.get(),
-            hash_value=True,
         ),
         UiWidgetSpec(
             "inventory", inventory_tree, "tree"
@@ -2462,7 +2461,6 @@ def show_library_manager(
             inventory_frame,
             "status",
             text=lambda: inventory_summary.get(),
-            hash_text=True,
         ),
         UiWidgetSpec(
             "new_registration",
@@ -2493,7 +2491,6 @@ def show_library_manager(
             registration_source_entry,
             "entry",
             value=lambda: import_source.get(),
-            hash_value=True,
         ),
         UiWidgetSpec(
             "registration_browse",

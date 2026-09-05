@@ -3638,7 +3638,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                 pass
 
             def title(self) -> str:
-                return "Skill Magnet"
+                return f"Skill Magnet {secret}"
 
         try:
             lease.publish_window(phase="context_selection", window_handle=991991)
@@ -3648,29 +3648,37 @@ class ActivationEndToEndTest(unittest.TestCase):
                 phase="context_selection",
                 window_handle=991991,
             )
-            choices = (f"Private {secret}", "Second private skill")
+            private_url = f"https://github.com/private/{secret}.git"
+            private_label = f"Private skill {secret}"
+            choices = (private_label, private_url, str(selected))
             widgets = (
                 UiWidgetSpec(
                     "selection_choice",
                     Widget(991992),
                     "combobox",
+                    text=f"Fixed label {secret}",
                     value=choices[0],
                     values=choices,
-                    hash_value=True,
-                    hash_values=True,
                 ),
                 UiWidgetSpec("request", Widget(991993), "entry"),
+                UiWidgetSpec(
+                    "empty", Widget(991995), "entry", text="", value="", values=()
+                ),
             )
             surface = publish_tk_ui_surface(
                 identity,
                 Root(991991),
                 widgets=widgets,
-                state={"request_present": True, "request_length": len(secret)},
+                state={
+                    "private_state": private_url,
+                    "empty_state": "",
+                    "none_state": None,
+                },
             )
             record = json.loads(owner_path.read_text(encoding="utf-8"))
             selector = surface["widgets"][0]
             request = surface["widgets"][1]
-            self.assertEqual(selector["value_count"], 2)
+            self.assertEqual(selector["value_count"], 3)
             self.assertNotIn("value", selector)
             self.assertNotIn("values", selector)
             for private_field in (
@@ -3682,6 +3690,17 @@ class ActivationEndToEndTest(unittest.TestCase):
                 "values_sha256",
             ):
                 self.assertNotIn(private_field, request)
+            empty = surface["widgets"][2]
+            for absent_field in (
+                "text_sha256",
+                "text_length",
+                "value_sha256",
+                "value_length",
+                "values_sha256",
+                "value_count",
+                "present",
+            ):
+                self.assertNotIn(absent_field, empty)
             self.assertEqual(surface["generation"], record["generation"])
             self.assertEqual(surface["revision"], record["revision"])
             self.assertEqual(surface["window"]["hwnd"], record["window_handle"])
@@ -3692,6 +3711,33 @@ class ActivationEndToEndTest(unittest.TestCase):
                 lease.handle.read().decode("utf-8", errors="ignore"),
             )
             self.assertNotIn("project", record)
+            serialized = json.dumps(record, ensure_ascii=False)
+            for private_value in (secret, private_url, private_label, str(selected)):
+                self.assertNotIn(private_value, serialized)
+
+            def all_keys(value: object) -> set[str]:
+                if isinstance(value, dict):
+                    return set(value) | set().union(
+                        *(all_keys(item) for item in value.values()), set()
+                    )
+                if isinstance(value, list):
+                    return set().union(*(all_keys(item) for item in value), set())
+                return set()
+
+            self.assertTrue({"text", "value", "values"}.isdisjoint(all_keys(record)))
+            self.assertNotIn("request_present", record["ui_surface"]["state"])
+            self.assertNotIn("request_length", record["ui_surface"]["state"])
+            self.assertNotIn("private_state", record["ui_surface"]["state"])
+            self.assertIn("private_state_sha256", record["ui_surface"]["state"])
+            self.assertNotIn("empty_state_sha256", record["ui_surface"]["state"])
+            self.assertNotIn("none_state_sha256", record["ui_surface"]["state"])
+            with self.assertRaisesRegex(SkillMagnetError, "Forbidden raw"):
+                build_tk_ui_surface(
+                    Root(991991),
+                    identity=identity,
+                    widgets=(),
+                    state={"text": secret},
+                )
             fixed = build_tk_ui_surface(
                 Root(991991),
                 identity=identity,
@@ -3701,7 +3747,6 @@ class ActivationEndToEndTest(unittest.TestCase):
                         Widget(991994),
                         "label",
                         value=f"Fixed {secret}",
-                        hash_value=True,
                     ),
                 ),
                 state={"selection_mode": "fixed"},

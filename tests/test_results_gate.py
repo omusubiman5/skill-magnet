@@ -1771,6 +1771,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
         self.assertIn(
             "$requestFields -notcontains $forbiddenRequestField", surface
         )
+        self.assertIn("Assert-NoRawReceiptDisplayValues $owner", surface)
         for required in (
             "$allowedIds",
             "Test-FieldProcessIdentity",
@@ -1790,7 +1791,11 @@ class ExplorerResultsGateTest(unittest.TestCase):
         ):
             self.assertIn(required, click)
         self.assertGreaterEqual(click.count("Test-FieldProcessIdentity $identity"), 3)
-        self.assertGreaterEqual(click.count("Wait-FieldUiSurface"), 2)
+        self.assertGreaterEqual(click.count("Wait-FieldUiSurface"), 3)
+        self.assertIn("$finalReceipt.surface.revision", click)
+        self.assertIn("$finalWidget.text_sha256", click)
+        self.assertIn("$clickHit = [SkillMagnetFieldInput]::WindowFromPoint($point)", click)
+        self.assertIn("$clickUia = [System.Windows.Automation.AutomationElement]::FromPoint", click)
         self.assertNotIn("LeftClick", click)
         self.assertLess(
             click.index("$secondHit -eq $widgetHandle"),
@@ -1800,6 +1805,8 @@ class ExplorerResultsGateTest(unittest.TestCase):
             click.index("AutomationElement]::FromPoint"),
             click.index("CheckedClickCurrent"),
         )
+        self.assertLess(click.index("$finalReceipt"), click.index("$clickHit"))
+        self.assertLess(click.index("$clickUia"), click.index("CheckedClickCurrent"))
 
     def test_field_collector_uses_foreground_thread_attachment(self) -> None:
         collector = (
@@ -1820,6 +1827,101 @@ class ExplorerResultsGateTest(unittest.TestCase):
         self.assertGreaterEqual(collector.count("FocusWindow($handle)"), 1)
         self.assertGreaterEqual(collector.count("FocusWindow($windowHandle)"), 1)
 
+    @unittest.skipUnless(os.name == "nt", "requires real Windows HWND behavior")
+    def test_native_click_guard_sends_no_mouse_input_after_competing_hwnd(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        csharp = collector.split('Add-Type @"', 1)[1].split('"@', 1)[0]
+        encoded_csharp = base64.b64encode(csharp.encode("utf-8")).decode("ascii")
+        probe = rf'''
+Add-Type -AssemblyName System.Windows.Forms
+$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("{encoded_csharp}"))
+Add-Type -TypeDefinition $source
+$root = [Windows.Forms.Form]::new()
+$root.Text = "expected-root"
+$root.StartPosition = "Manual"
+$root.SetDesktopBounds(80, 80, 320, 180)
+$button = [Windows.Forms.Button]::new()
+$button.Text = "guarded-action"
+$button.SetBounds(30, 40, 160, 50)
+$root.Controls.Add($button)
+$competitor = [Windows.Forms.Form]::new()
+$competitor.Text = "competing-root"
+$competitor.StartPosition = "Manual"
+$competitor.SetDesktopBounds(500, 80, 260, 160)
+$script:clickCount = 0
+$button.Add_Click({{ $script:clickCount += 1 }})
+try {{
+    $root.Show()
+    $competitor.Show()
+    [Windows.Forms.Application]::DoEvents()
+    $point = $button.PointToScreen([Drawing.Point]::new(20, 20))
+    [SkillMagnetFieldInput]::SetCursorPos($point.X, $point.Y) | Out-Null
+    [SkillMagnetFieldInput]::FocusWindow($competitor.Handle) | Out-Null
+    Start-Sleep -Milliseconds 80
+    $result = [SkillMagnetFieldInput]::CheckedClickCurrent(
+        $point.X, $point.Y, $button.Handle, $root.Handle,
+        [uint32][Diagnostics.Process]::GetCurrentProcess().Id, $false
+    )
+    [Windows.Forms.Application]::DoEvents()
+    [pscustomobject]@{{ result = $result; click_count = $script:clickCount }} |
+        ConvertTo-Json -Compress
+}}
+finally {{
+    $competitor.Close()
+    $root.Close()
+}}
+'''
+        completed = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-STA",
+                "-EncodedCommand",
+                base64.b64encode(probe.encode("utf-16-le")).decode("ascii"),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        observation = json.loads(completed.stdout.strip())
+        self.assertFalse(observation["result"])
+        self.assertEqual(observation["click_count"], 0)
+
+    def test_explorer_physical_clicks_share_the_final_identity_gate(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        gate = collector[
+            collector.index("function Invoke-CheckedExplorerPhysicalClick") :
+            collector.index("function Open-ExplorerContextMenu")
+        ]
+        for required in (
+            "Get-FieldProcessIdentity",
+            "Test-FieldProcessIdentity",
+            "GetForegroundWindow() -eq $rootHandle",
+            "GetAncestor($finalHwnd, 2) -eq $rootHandle",
+            "WindowFromPoint($point)",
+            "AutomationElement]::FromPoint",
+            "Get-UiaRuntimeKey $finalUia",
+            "Get-Utf8Sha256 ([string]$finalUia.Current.Name)",
+            "CheckedClickCurrent",
+            "no mouse input was sent",
+        ):
+            self.assertIn(required, gate)
+        self.assertNotIn("mouse_event", gate)
+        menu = collector[
+            collector.index("function Open-ExplorerContextMenu") :
+            collector.index("function Invoke-VisibleSkillMagnetRoot")
+        ]
+        self.assertEqual(menu.count("Invoke-CheckedExplorerPhysicalClick"), 3)
+        self.assertNotIn("LeftClick", menu)
+        self.assertNotIn("RightClick", menu)
+
     def test_field_collector_clicks_only_fixed_semantic_ids_from_live_receipt(self) -> None:
         collector = (
             ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
@@ -1834,9 +1936,9 @@ class ExplorerResultsGateTest(unittest.TestCase):
             self.assertNotIn(f'"{forbidden_crud_id}"', click)
         self.assertIn('Get-FieldUiSurfaceWidget $receipt.surface $Id "button"', click)
         self.assertIn("$expectedTextById", click)
-        self.assertIn("$widget.text -ceq $expectedWidgetText", click)
-        self.assertIn("$freshWidget.text -ceq $expectedWidgetText", click)
-        self.assertIn("$uiaHit.Current.Name -ceq $expectedWidgetText", click)
+        self.assertIn("$widget.text_sha256 -ceq $expectedWidgetTextSha256", click)
+        self.assertIn("$freshWidget.text_sha256 -ceq $expectedWidgetTextSha256", click)
+        self.assertIn("Get-Utf8Sha256 ([string]$uiaHit.Current.Name)", click)
         self.assertIn("$widget.screen", click)
         self.assertNotIn("fallback", click.casefold())
 
