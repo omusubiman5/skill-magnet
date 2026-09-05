@@ -4,6 +4,20 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+function Get-SkillMagnetSha256Hex {
+    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
+
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = $algorithm.ComputeHash($Bytes)
+    }
+    finally {
+        $algorithm.Dispose()
+    }
+    return [System.BitConverter]::ToString($digest).Replace("-", "").ToLowerInvariant()
+}
+
 . (Join-Path $PSScriptRoot "certificate-state.ps1")
 Import-Module Microsoft.PowerShell.Security
 Import-Module PKI
@@ -113,11 +127,11 @@ try {
     foreach ($artifactName in @("SkillMagnetCommand.dll", "SkillMagnetIdentity.exe")) {
         $artifactPath = Join-Path $ExternalLocation $artifactName
         $artifactBytes = [System.IO.File]::ReadAllBytes($artifactPath)
-        $artifactHash = [System.Security.Cryptography.SHA256]::HashData($artifactBytes)
+        $artifactHash = Get-SkillMagnetSha256Hex -Bytes $artifactBytes
         $artifactRecords += [ordered]@{
             path = $artifactName
             size = $artifactBytes.Length
-            sha256 = [Convert]::ToHexString($artifactHash).ToLowerInvariant()
+            sha256 = $artifactHash
         }
     }
     $nativeSource | Add-Member -NotePropertyName artifacts `

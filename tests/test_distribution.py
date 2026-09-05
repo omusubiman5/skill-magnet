@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -11,6 +13,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from skill_magnet.platforms import _windows_handle_identity
 
 
 class DistributionArtifactTest(unittest.TestCase):
@@ -229,7 +234,7 @@ print(json.dumps({
         )
         self.assertEqual(residue, [])
 
-    def test_native_build_removes_all_previous_product_outputs(self) -> None:
+    def test_native_build_only_accepts_caller_owned_empty_workspace(self) -> None:
         build_script = (
             ROOT / "native" / "windows-modern-context-menu" / "build.ps1"
         ).read_text(encoding="utf-8-sig")
@@ -242,19 +247,167 @@ print(json.dumps({
             "SkillMagnetCommand.obj",
             "SkillMagnetIdentity.exe",
             "SkillMagnetIdentity.obj",
-            "SkillMagnetLauncher.exe",
             "SkillMagnetMenu.tsv",
             "SkillMagnetNativeSource.h",
             "SkillMagnetNativeSource.json",
         }
         for name in generated_outputs:
             self.assertIn(f'"{name}"', build_script)
-        self.assertIn("foreach ($name in $generatedOutputs)", build_script)
-        self.assertIn("if (Test-Path -LiteralPath $generatedPath)", build_script)
-        self.assertIn(
-            "Remove-Item -LiteralPath $generatedPath -Force -ErrorAction Stop",
-            build_script,
-        )
+        self.assertIn("[string]$BuildNonce", build_script)
+        self.assertIn(".skill-magnet-native-build.json", build_script)
+        self.assertIn("OutDir must be empty", build_script)
+        self.assertNotIn("Remove-Item", build_script)
+        self.assertNotIn("New-Item", build_script)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows PowerShell required")
+    def test_native_hash_helpers_execute_on_windows_powershell_5_1(self) -> None:
+        for script_name in ("build.ps1", "build-package.ps1"):
+            with self.subTest(script=script_name):
+                script_text = (
+                    ROOT / "native" / "windows-modern-context-menu" / script_name
+                ).read_text(encoding="utf-8-sig")
+                match = re.search(
+                    r"(?ms)^function Get-SkillMagnetSha256Hex \{.*?^\}",
+                    script_text,
+                )
+                self.assertIsNotNone(match)
+                command = (
+                    match.group(0)
+                    + "\n$result = Get-SkillMagnetSha256Hex -Bytes "
+                    + "([System.Text.Encoding]::UTF8.GetBytes('abc'))\n"
+                    + "if ($result -cne "
+                    + "'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad') "
+                    + "{ throw ('Unexpected SHA-256: ' + $result) }\n"
+                )
+                result = subprocess.run(
+                    [
+                        "powershell.exe",
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-Command",
+                        command,
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                self.assertNotIn("SHA256]::HashData", script_text)
+                self.assertNotIn("[Convert]::ToHexString", script_text)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows PowerShell required")
+    def test_native_build_rejects_existing_bytes_without_changing_them(self) -> None:
+        script = ROOT / "native" / "windows-modern-context-menu" / "build.ps1"
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary) / "owned-workspace"
+            output = workspace / "out"
+            output.mkdir(parents=True)
+            nonce = "a" * 32
+            root_identity = _windows_handle_identity(workspace, directory=True)
+            output_identity = _windows_handle_identity(output, directory=True)
+            marker = {
+                "schema_version": 1,
+                "contract": "skill-magnet-native-build-workspace-v1",
+                "nonce": nonce,
+                "volume_serial": root_identity["volume_serial"],
+                "root_file_id": root_identity["file_id"],
+                "output_file_id": output_identity["file_id"],
+            }
+            marker_bytes = (
+                json.dumps(marker, sort_keys=True, separators=(",", ":")) + "\n"
+            ).encode("utf-8")
+            (workspace / ".skill-magnet-native-build.json").write_bytes(marker_bytes)
+            marker_sha256 = hashlib.sha256(marker_bytes).hexdigest()
+            sentinel = output / "arbitrary-user-bytes.bin"
+            payload = bytes(range(256))
+            sentinel.write_bytes(payload)
+            result = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(script),
+                    "-OutDir",
+                    str(output),
+                    "-BuildNonce",
+                    nonce,
+                    "-MarkerSha256",
+                    marker_sha256,
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("OutDir must be empty", result.stderr + result.stdout)
+            self.assertEqual(sentinel.read_bytes(), payload)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows PowerShell required")
+    def test_native_build_rejects_duplicate_marker_and_forged_identity(self) -> None:
+        script = ROOT / "native" / "windows-modern-context-menu" / "build.ps1"
+        for case in ("duplicate", "forged-identity"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                workspace = Path(temporary) / "workspace"
+                output = workspace / "out"
+                output.mkdir(parents=True)
+                nonce = "b" * 32
+                root_identity = _windows_handle_identity(workspace, directory=True)
+                output_identity = _windows_handle_identity(output, directory=True)
+                values = {
+                    "contract": "skill-magnet-native-build-workspace-v1",
+                    "nonce": nonce,
+                    "output_file_id": output_identity["file_id"],
+                    "root_file_id": root_identity["file_id"],
+                    "schema_version": 1,
+                    "volume_serial": root_identity["volume_serial"],
+                }
+                if case == "duplicate":
+                    marker_text = (
+                        json.dumps(values, sort_keys=True, separators=(",", ":"))
+                        .replace(
+                            '"schema_version":1',
+                            '"schema_version":1,"schema_version":1',
+                        )
+                        + "\n"
+                    )
+                else:
+                    values["root_file_id"] = "f" * 32
+                    marker_text = (
+                        json.dumps(values, sort_keys=True, separators=(",", ":"))
+                        + "\n"
+                    )
+                marker_bytes = marker_text.encode("utf-8")
+                (workspace / ".skill-magnet-native-build.json").write_bytes(
+                    marker_bytes
+                )
+                result = subprocess.run(
+                    [
+                        "powershell.exe",
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-File",
+                        str(script),
+                        "-OutDir",
+                        str(output),
+                        "-BuildNonce",
+                        nonce,
+                        "-MarkerSha256",
+                        hashlib.sha256(marker_bytes).hexdigest(),
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(
+                    "managed build workspace marker",
+                    result.stderr + result.stdout,
+                )
+                self.assertEqual(list(output.iterdir()), [])
 
 
 if __name__ == "__main__":

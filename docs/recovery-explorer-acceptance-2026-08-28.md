@@ -75,6 +75,8 @@ pwsh.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
   -OutDir native/windows-modern-context-menu/out
 ```
 
+このcommandは2026-08-28時点の履歴証跡であり、現行版へそのまま再実行する手順ではない。現行`build.ps1`は既存directoryやrepository内`out`を受け付けず、製品側が作成したnonce、marker SHA-256、root/output file identity付きの空workspaceだけを受理する。現在の再build・登録は`python -m skill_magnet install-context-menu --platform windows --confirm`から実行する。
+
 結果: MSVC `/W4 /WX` build PASS。`SkillMagnet IExplorerCommand contract PASS`。既存LNK4104 warning 2件はexportのPRIVATE属性に関するwarningで、build failureではない。
 
 ```text

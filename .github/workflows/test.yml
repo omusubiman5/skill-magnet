@@ -102,8 +102,24 @@ jobs:
         shell: pwsh
         run: |
           $native = python -c "from skill_magnet.platforms import _windows_modern_paths; print(_windows_modern_paths()[0])"
+          $nonce = [guid]::NewGuid().ToString("N")
+          $workspace = Join-Path $env:RUNNER_TEMP ("skill-magnet-native-build-" + $nonce)
+          $nativeOut = Join-Path $workspace "out"
+          New-Item -ItemType Directory -Path $nativeOut | Out-Null
+          $markerJson = python -c 'import json,sys; from pathlib import Path; from skill_magnet.platforms import _windows_handle_identity; root=_windows_handle_identity(Path(sys.argv[1]),directory=True); output=_windows_handle_identity(Path(sys.argv[2]),directory=True); print(json.dumps({"schema_version":1,"contract":"skill-magnet-native-build-workspace-v1","nonce":sys.argv[3],"volume_serial":root["volume_serial"],"root_file_id":root["file_id"],"output_file_id":output["file_id"]},sort_keys=True,separators=(",",":")))' $workspace $nativeOut $nonce
+          $markerBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($markerJson + "`n")
+          [System.IO.File]::WriteAllText(
+            (Join-Path $workspace ".skill-magnet-native-build.json"),
+            ($markerJson + "`n"),
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          $markerSha256 = [Convert]::ToHexString(
+            [System.Security.Cryptography.SHA256]::HashData($markerBytes)
+          ).ToLowerInvariant()
           & (Join-Path $native "build.ps1") `
-            -OutDir (Join-Path $env:RUNNER_TEMP "wheel-native-out")
+            -OutDir $nativeOut `
+            -BuildNonce $nonce `
+            -MarkerSha256 $markerSha256
       - if: runner.os == 'Windows'
         shell: pwsh
         run: ./tests/powershell/windows-release-lifecycle-tests.ps1

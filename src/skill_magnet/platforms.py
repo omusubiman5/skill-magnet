@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import base64
+import errno
 import os
 import plistlib
 import re
@@ -526,12 +527,17 @@ _WINDOWS_NATIVE_BUILD_OUTPUTS = frozenset(
         "SkillMagnetCommand.obj",
         "SkillMagnetIdentity.exe",
         "SkillMagnetIdentity.obj",
-        "SkillMagnetLauncher.exe",
         "SkillMagnetMenu.tsv",
         "SkillMagnetNativeSource.h",
         "SkillMagnetNativeSource.json",
     }
 )
+_WINDOWS_NATIVE_BUILD_MARKER = ".skill-magnet-native-build.json"
+_WINDOWS_NATIVE_BUILD_MARKER_CONTRACT = "skill-magnet-native-build-workspace-v1"
+_WINDOWS_NATIVE_RECOVERY_ROOT = ".skill-magnet-native-recovery"
+_WINDOWS_NATIVE_RECOVERY_OWNER = "owner.json"
+_WINDOWS_NATIVE_RECOVERY_LOCK = "operation.lock"
+_WINDOWS_NATIVE_RECOVERY_CONTRACT = "skill-magnet-native-out-quarantine-v1"
 _WINDOWS_MODERN_COM_CLSID = "13E2A9DD-4378-4F9D-A385-973C61B19E63"
 _WINDOWS_MODERN_COM_CLASS = (
     _WINDOWS_MODERN_COM_CLSID,
@@ -556,6 +562,152 @@ _WINDOWS_MODERN_VERBS = [
 _TRANSPARENT_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
+
+
+def _close_windows_handle(handle: int) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    close = ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle
+    close.argtypes = (wintypes.HANDLE,)
+    close.restype = wintypes.BOOL
+    close(wintypes.HANDLE(handle))
+
+
+def _windows_handle_identity(path: Path, *, directory: bool) -> dict[str, object]:
+    """Return a volume-bound 128-bit Windows identity for one open object."""
+
+    if sys.platform != "win32":
+        observed = path.stat(follow_symlinks=False)
+        return {
+            "volume_serial": f"{int(observed.st_dev):016x}",
+            "file_id": f"{int(observed.st_ino):032x}",
+        }
+    handle, identity = _open_windows_identity_handle(
+        path,
+        directory=directory,
+        share=0x00000001 | 0x00000002 | 0x00000004,
+    )
+    try:
+        return identity
+    finally:
+        _close_windows_handle(handle)
+
+
+def _open_windows_identity_handle(
+    path: Path, *, directory: bool, share: int
+) -> tuple[int, dict[str, object]]:
+    import ctypes
+    from ctypes import wintypes
+
+    class FileId128(ctypes.Structure):
+        _fields_ = [("identifier", ctypes.c_ubyte * 16)]
+
+    class FileIdInfo(ctypes.Structure):
+        _fields_ = [
+            ("volume_serial_number", ctypes.c_ulonglong),
+            ("file_id", FileId128),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    get_information = kernel32.GetFileInformationByHandleEx
+    get_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    )
+    get_information.restype = wintypes.BOOL
+    close = kernel32.CloseHandle
+    close.argtypes = (wintypes.HANDLE,)
+    close.restype = wintypes.BOOL
+    handle = create_file(
+        str(path),
+        0x80000000 if not directory else 0x00000080,
+        share,
+        None,
+        3,
+        0x00200000 | (0x02000000 if directory else 0),
+        None,
+    )
+    if handle == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        information = FileIdInfo()
+        if not get_information(
+            handle, 18, ctypes.byref(information), ctypes.sizeof(information)
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        identity = {
+            "volume_serial": f"{int(information.volume_serial_number):016x}",
+            "file_id": bytes(information.file_id.identifier).hex(),
+        }
+        if identity["volume_serial"] == "0" * 16 or identity["file_id"] == "0" * 32:
+            raise SafetyError(f"Windows native path has no stable identity: {path}")
+        return int(handle), identity
+    except BaseException:
+        close(handle)
+        raise
+
+
+def _acquire_windows_native_source_lease(native_root: Path) -> dict[str, object]:
+    """Deny source mutation/rebinding for the complete native install transaction."""
+
+    manifest = _windows_native_source_manifest(native_root)
+    if sys.platform != "win32":
+        return {"handles": [], "manifest": manifest}
+    handles: list[int] = []
+    try:
+        current = _absolute_path(native_root)
+        while True:
+            if _is_link(current) or not current.is_dir():
+                raise SafetyError(f"Windows native source path is redirected: {current}")
+            handle, _ = _open_windows_identity_handle(
+                current,
+                directory=True,
+                share=0x00000001 | 0x00000002,  # deny DELETE
+            )
+            handles.append(handle)
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
+        for relative in _WINDOWS_NATIVE_SOURCE_INPUTS:
+            path = native_root / relative
+            if _is_link(path) or not path.is_file():
+                raise SafetyError(f"Windows native source input is unsafe: {path}")
+            handle, _ = _open_windows_identity_handle(
+                path,
+                directory=False,
+                share=0x00000001,  # reads allowed; writes/deletes denied
+            )
+            handles.append(handle)
+        locked_manifest = _windows_native_source_manifest(native_root)
+        if locked_manifest != manifest:
+            raise SafetyError("Windows native source changed while acquiring its lease")
+        return {"handles": handles, "manifest": locked_manifest}
+    except BaseException:
+        for handle in reversed(handles):
+            _close_windows_handle(handle)
+        raise
+
+
+def _release_windows_native_source_lease(lease: dict[str, object] | None) -> None:
+    if lease is None or sys.platform != "win32":
+        return
+    for handle in reversed(list(lease.get("handles", []))):
+        _close_windows_handle(handle)
 
 
 def _windows_native_source_manifest(native_root: Path) -> dict[str, object]:
@@ -600,16 +752,25 @@ def _windows_native_source_manifest(native_root: Path) -> dict[str, object]:
 
 
 def _windows_native_build_binding(
-    native_root: Path, content_root: Path
+    native_root: Path,
+    content_root: Path,
+    *,
+    expected_source_manifest: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Validate source manifest, embedded DLL identity, and packaged binaries."""
 
-    expected = _windows_native_source_manifest(native_root)
+    expected = (
+        expected_source_manifest
+        if expected_source_manifest is not None
+        else _windows_native_source_manifest(native_root)
+    )
     manifest_path = content_root / "SkillMagnetNativeSource.json"
     manifest: object = None
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+        manifest = _strict_native_json(
+            manifest_path.read_bytes(), label="Windows native source manifest"
+        )
+    except (OSError, SafetyError):
         pass
     source_manifest_valid = bool(
         isinstance(manifest, dict)
@@ -746,68 +907,1148 @@ def _packaged_windows_native_root(native_root: Path) -> bool:
     )
 
 
-def _remove_packaged_windows_native_build_residue(native_root: Path) -> bool:
-    """Remove only legacy product build outputs accidentally left in site-packages.
+def _native_json_bytes(payload: dict[str, object]) -> bytes:
+    return (
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    ).encode("utf-8")
 
-    Older releases compiled into ``skill_magnet/_native/.../out``.  pip does not
-    own generated files, so force-reinstall cannot remove them.  Inspect the
-    complete subtree before unlinking anything and refuse unknown content.
-    """
 
-    if not _packaged_windows_native_root(native_root):
-        return False
-    output = native_root / "out"
-    if not os.path.lexists(output):
-        return False
-    _validate_windows_managed_tree(
-        output, label="legacy packaged Windows native build output"
-    )
-    items = sorted(
-        output.rglob("*"), key=lambda path: path.relative_to(output).as_posix()
-    )
-    unexpected = []
-    files: list[Path] = []
-    for path in items:
-        name = path.relative_to(output).as_posix()
-        if (
-            "/" in name
-            or not path.is_file()
-            or name not in _WINDOWS_NATIVE_BUILD_OUTPUTS
-        ):
-            unexpected.append(name + ("/" if path.is_dir() else ""))
-        else:
-            files.append(path)
-    if unexpected:
-        raise SafetyError(
-            "Legacy packaged Windows native build output contains unknown files; "
-            "nothing was removed. Move the reported file outside the Skill Magnet "
-            "package and retry: "
-            + ", ".join(unexpected)
-        )
-    for path in files:
-        # Recheck immediately before each unlink so a swapped link/junction is
-        # removed as a link at worst and is never traversed.
-        if _is_link(path) or not path.is_file():
-            raise SafetyError(
-                "Legacy packaged Windows native build output changed during "
-                f"cleanup; retry the operation: {path}"
-            )
-    for path in files:
-        try:
-            path.unlink()
-        except OSError as exc:
-            raise SkillMagnetError(
-                "Cannot remove a legacy packaged Windows native build output. "
-                f"Close processes using it and retry: {path}"
-            ) from exc
+def _write_exclusive_native_record(path: Path, payload: dict[str, object]) -> bytes:
+    encoded = _native_json_bytes(payload)
     try:
-        output.rmdir()
+        with path.open("xb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
     except OSError as exc:
         raise SkillMagnetError(
-            "Cannot finish legacy packaged Windows native build cleanup. "
-            f"Close processes using this directory and retry: {output}"
+            f"Cannot persist Windows native recovery evidence: {path}"
         ) from exc
-    return True
+    try:
+        observed = path.read_bytes()
+    except OSError as exc:
+        raise SkillMagnetError(
+            f"Cannot verify Windows native recovery evidence: {path}"
+        ) from exc
+    if observed != encoded:
+        raise SafetyError(f"Windows native recovery evidence changed: {path}")
+    return encoded
+
+
+def _flush_native_directory(path: Path) -> None:
+    """Best-effort metadata durability for recovery-record publication."""
+
+    if sys.platform != "win32":
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    flush = kernel32.FlushFileBuffers
+    flush.argtypes = (wintypes.HANDLE,)
+    flush.restype = wintypes.BOOL
+    close = kernel32.CloseHandle
+    close.argtypes = (wintypes.HANDLE,)
+    close.restype = wintypes.BOOL
+    handle = create_file(
+        str(path),
+        0x00000080,  # FILE_READ_ATTRIBUTES
+        0x00000001 | 0x00000002 | 0x00000004,
+        None,
+        3,
+        0x02000000 | 0x00200000,  # BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+        None,
+    )
+    if handle == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        if not flush(handle):
+            error = ctypes.get_last_error()
+            # Some Windows filesystems do not expose directory flushing. The
+            # durable evidence file remains sufficient to reconstruct a lost
+            # hard-link publication on the next launch.
+            if error not in {1, 5, 6, 87}:
+                raise ctypes.WinError(error)
+    finally:
+        close(handle)
+
+
+def _publish_native_record(
+    directory: Path,
+    final: Path,
+    payload: dict[str, object],
+    *,
+    evidence_prefix: str,
+) -> tuple[bytes, Path]:
+    """Publish an immutable record via a fully-written recovery hard link."""
+
+    encoded = _native_json_bytes(payload)
+    if os.path.lexists(final):
+        if _is_link(final) or not final.is_file() or final.read_bytes() != encoded:
+            raise SafetyError(f"Windows native recovery record already differs: {final}")
+        return encoded, final
+    evidence = directory / f"{evidence_prefix}-{uuid.uuid4().hex}.json"
+    _write_exclusive_native_record(evidence, payload)
+    try:
+        os.link(evidence, final)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        raise SkillMagnetError(
+            f"Cannot atomically publish Windows native recovery record: {final}"
+        ) from exc
+    try:
+        if (
+            _is_link(final)
+            or not final.is_file()
+            or final.read_bytes() != encoded
+            or not os.path.samefile(evidence, final)
+        ):
+            raise SafetyError(f"Windows native recovery publication changed: {final}")
+    except OSError as exc:
+        raise SafetyError(f"Windows native recovery publication is invalid: {final}") from exc
+    _flush_native_directory(directory)
+    return encoded, evidence
+
+
+def _strict_native_json(encoded: bytes, *, label: str) -> dict[str, object]:
+    def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate key: {key}")
+            result[key] = value
+        return result
+
+    try:
+        payload = json.loads(
+            encoded.decode("utf-8"), object_pairs_hook=reject_duplicate_keys
+        )
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise SafetyError(f"{label} is invalid") from exc
+    if not isinstance(payload, dict):
+        raise SafetyError(f"{label} is invalid")
+    return payload
+
+
+def _native_tree_snapshot(root: Path) -> dict[str, object]:
+    """Hash a regular tree twice-addressably without deleting or following links."""
+
+    _validate_windows_managed_tree(root, label="Windows native recovery tree")
+    try:
+        root_before = root.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise SafetyError(f"Cannot identify Windows native recovery tree: {root}") from exc
+    if not root_before.st_ino:
+        raise SafetyError(f"Windows native recovery tree has no stable identity: {root}")
+    records: list[dict[str, object]] = []
+    total_size = 0
+    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
+        relative = path.relative_to(root).as_posix()
+        if _is_link(path):
+            raise SafetyError(f"Windows native recovery tree contains a link: {path}")
+        try:
+            before = path.stat(follow_symlinks=False)
+        except OSError as exc:
+            raise SafetyError(f"Cannot identify Windows native recovery entry: {path}") from exc
+        if path.is_dir():
+            records.append(
+                {
+                    "kind": "directory",
+                    "path": relative,
+                    "device": int(before.st_dev),
+                    "inode": int(before.st_ino),
+                    "mode": int(before.st_mode),
+                    "link_count": int(before.st_nlink),
+                    "modified_ns": int(before.st_mtime_ns),
+                    "file_attributes": int(getattr(before, "st_file_attributes", 0)),
+                }
+            )
+            continue
+        if not path.is_file():
+            raise SafetyError(f"Windows native recovery entry is not regular: {path}")
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with path.open("rb") as handle:
+                while True:
+                    chunk = handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    digest.update(chunk)
+            after = path.stat(follow_symlinks=False)
+        except OSError as exc:
+            raise SafetyError(f"Cannot hash Windows native recovery entry: {path}") from exc
+        if (
+            before.st_dev != after.st_dev
+            or before.st_ino != after.st_ino
+            or before.st_size != after.st_size
+            or size != after.st_size
+        ):
+            raise SafetyError(f"Windows native recovery entry changed while hashing: {path}")
+        total_size += size
+        records.append(
+            {
+                "kind": "file",
+                "path": relative,
+                "device": int(after.st_dev),
+                "inode": int(after.st_ino),
+                "mode": int(after.st_mode),
+                "link_count": int(after.st_nlink),
+                "modified_ns": int(after.st_mtime_ns),
+                "file_attributes": int(getattr(after, "st_file_attributes", 0)),
+                "size": size,
+                "sha256": digest.hexdigest(),
+            }
+        )
+    try:
+        root_after = root.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise SafetyError(f"Windows native recovery tree disappeared: {root}") from exc
+    if (root_before.st_dev, root_before.st_ino) != (
+        root_after.st_dev,
+        root_after.st_ino,
+    ):
+        raise SafetyError(f"Windows native recovery root identity changed: {root}")
+    manifest = _native_json_bytes({"entries": records})
+    return {
+        "root_device": int(root_after.st_dev),
+        "root_inode": int(root_after.st_ino),
+        "root_mode": int(root_after.st_mode),
+        "root_link_count": int(root_after.st_nlink),
+        "root_modified_ns": int(root_after.st_mtime_ns),
+        "root_file_attributes": int(getattr(root_after, "st_file_attributes", 0)),
+        "manifest_sha256": hashlib.sha256(manifest).hexdigest(),
+        "entry_count": len(records),
+        "total_size": total_size,
+    }
+
+
+def _stable_native_tree_snapshot(root: Path) -> dict[str, object]:
+    first = _native_tree_snapshot(root)
+    second = _native_tree_snapshot(root)
+    if first != second:
+        raise SafetyError(f"Windows native recovery tree is changing: {root}")
+    return first
+
+
+def _native_recovery_root(native_root: Path) -> Path:
+    root = type(native_root)(str(_PACKAGE_ROOT.parent)) / _WINDOWS_NATIVE_RECOVERY_ROOT
+    package = _absolute_path(_PACKAGE_ROOT)
+    absolute = _absolute_path(root)
+    if absolute == package or absolute.is_relative_to(package):
+        raise SafetyError("Windows native recovery directory must be outside the package")
+    return root
+
+
+def _ensure_native_recovery_root(native_root: Path) -> Path:
+    root = _validate_windows_install_root_path(_native_recovery_root(native_root))
+    owner_payload = {
+        "schema_version": 1,
+        "owner": "skill-magnet",
+        "contract": _WINDOWS_NATIVE_RECOVERY_CONTRACT,
+    }
+    owner_bytes = _native_json_bytes(owner_payload)
+    if not root.exists():
+        try:
+            root.mkdir()
+        except OSError as exc:
+            raise SkillMagnetError(
+                f"Cannot create Windows native recovery directory: {root}"
+            ) from exc
+    _validate_windows_managed_tree(root, label="Windows native recovery directory")
+    owner = root / _WINDOWS_NATIVE_RECOVERY_OWNER
+    if not owner.exists():
+        entries = list(root.iterdir())
+        unexpected = [
+            path.name
+            for path in entries
+            if not path.is_file()
+            or _is_link(path)
+            or re.fullmatch(r"owner-evidence-[0-9a-f]{32}\.json", path.name)
+            is None
+        ]
+        if unexpected:
+            raise SafetyError(
+                "Windows native recovery owner is missing and the directory "
+                "contains unbound entries; nothing was changed: "
+                + ", ".join(sorted(unexpected))
+            )
+        _publish_native_record(
+            root,
+            owner,
+            owner_payload,
+            evidence_prefix="owner-evidence",
+        )
+    try:
+        observed = owner.read_bytes()
+    except OSError as exc:
+        raise SafetyError(f"Windows native recovery owner is missing: {root}") from exc
+    if _is_link(owner) or observed != owner_bytes:
+        raise SafetyError(f"Windows native recovery owner is invalid: {root}")
+    return root
+
+
+def _acquire_native_recovery_lock(native_root: Path) -> object:
+    recovery = _ensure_native_recovery_root(native_root)
+    lock_path = recovery / _WINDOWS_NATIVE_RECOVERY_LOCK
+    if os.path.lexists(lock_path) and (_is_link(lock_path) or not lock_path.is_file()):
+        raise SafetyError(f"Windows native recovery lock is unsafe: {lock_path}")
+    lock_attempted = False
+    try:
+        handle = lock_path.open("a+b")
+        opened = os.fstat(handle.fileno())
+        current = lock_path.stat(follow_symlinks=False)
+        if (
+            _is_link(lock_path)
+            or not lock_path.is_file()
+            or opened.st_dev != current.st_dev
+            or opened.st_ino != current.st_ino
+            or opened.st_nlink != 1
+            or current.st_nlink != 1
+        ):
+            raise SafetyError(f"Windows native recovery lock is unsafe: {lock_path}")
+        handle.seek(0)
+        lock_attempted = True
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_attempted = False
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            # Re-check the path-to-handle binding immediately before the only
+            # mutation this function performs.
+            current = lock_path.stat(follow_symlinks=False)
+            if (
+                _is_link(lock_path)
+                or current.st_dev != opened.st_dev
+                or current.st_ino != opened.st_ino
+                or current.st_nlink != 1
+            ):
+                raise SafetyError(f"Windows native recovery lock changed: {lock_path}")
+            handle.write(b"\0")
+            handle.flush()
+            os.fsync(handle.fileno())
+        handle.seek(0)
+        if handle.read() != b"\0":
+            raise SafetyError(f"Windows native recovery lock is invalid: {lock_path}")
+    except BaseException as exc:
+        try:
+            handle.close()
+        except (OSError, UnboundLocalError):
+            pass
+        if isinstance(exc, (SafetyError, KeyboardInterrupt, SystemExit)):
+            raise
+        contention = (
+            isinstance(exc, OSError)
+            and lock_attempted
+            and getattr(exc, "errno", None) in {errno.EACCES, errno.EAGAIN}
+        )
+        if contention:
+            raise SkillMagnetError(
+                "Another Windows native recovery/install operation is active; "
+                "nothing was changed. Retry after it finishes."
+            ) from exc
+        raise SkillMagnetError(
+            "Cannot open or verify the Windows native recovery lock at "
+            f"{lock_path}. Check access permissions and available disk space, "
+            "then retry; no recovery data was changed."
+        ) from exc
+    return handle
+
+
+def _release_native_recovery_lock(handle: object | None) -> None:
+    if handle is None:
+        return
+    try:
+        handle.seek(0)
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        # Closing an OS-locked file handle releases the lock even if an explicit
+        # unlock races process teardown.
+        pass
+    finally:
+        handle.close()
+
+
+def _native_source_identity(source: Path) -> str:
+    normalized = os.path.normcase(os.path.abspath(source))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _read_native_quarantine_journal(
+    path: Path, source: Path, encoded: bytes
+) -> dict[str, object]:
+    try:
+        payload = _strict_native_json(
+            encoded, label=f"Windows native recovery journal {path}"
+        )
+    except SafetyError as exc:
+        raise SafetyError(f"Windows native recovery journal is invalid: {path}") from exc
+    expected_keys = {
+        "schema_version",
+        "contract",
+        "nonce",
+        "source_identity_sha256",
+        "target_name",
+        "snapshot",
+    }
+    nonce = payload.get("nonce") if isinstance(payload, dict) else None
+    target_name = payload.get("target_name") if isinstance(payload, dict) else None
+    snapshot = payload.get("snapshot") if isinstance(payload, dict) else None
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != expected_keys
+        or payload.get("schema_version") != 1
+        or payload.get("contract") != _WINDOWS_NATIVE_RECOVERY_CONTRACT
+        or not isinstance(nonce, str)
+        or re.fullmatch(r"[0-9a-f]{32}", nonce) is None
+        or (
+            path.name != f"transaction-{nonce}.json"
+            and re.fullmatch(
+                rf"journal-evidence-{nonce}-[0-9a-f]{{32}}\.json", path.name
+            )
+            is None
+        )
+        or target_name != f"legacy-out-{nonce}"
+        or payload.get("source_identity_sha256") != _native_source_identity(source)
+        or not isinstance(snapshot, dict)
+        or set(snapshot)
+        != {
+            "root_device",
+            "root_inode",
+            "root_mode",
+            "root_link_count",
+            "root_modified_ns",
+            "root_file_attributes",
+            "manifest_sha256",
+            "entry_count",
+            "total_size",
+        }
+        or not isinstance(snapshot.get("root_device"), int)
+        or not isinstance(snapshot.get("root_inode"), int)
+        or not snapshot.get("root_inode")
+        or not isinstance(snapshot.get("root_mode"), int)
+        or not isinstance(snapshot.get("root_link_count"), int)
+        or not isinstance(snapshot.get("root_modified_ns"), int)
+        or not isinstance(snapshot.get("root_file_attributes"), int)
+        or re.fullmatch(r"[0-9a-f]{64}", str(snapshot.get("manifest_sha256", "")))
+        is None
+        or not isinstance(snapshot.get("entry_count"), int)
+        or not isinstance(snapshot.get("total_size"), int)
+    ):
+        raise SafetyError(f"Windows native recovery journal is unsupported: {path}")
+    return payload
+
+
+def _native_completion_status(path: Path, journal_bytes: bytes) -> str | None:
+    if not os.path.lexists(path):
+        return None
+    if not path.is_file() or _is_link(path):
+        raise SafetyError(f"Windows native completion record is unsafe: {path}")
+    try:
+        payload = _strict_native_json(
+            path.read_bytes(), label=f"Windows native completion record {path}"
+        )
+    except OSError as exc:
+        raise SafetyError(f"Windows native completion record is unreadable: {path}") from exc
+    if (
+        set(payload)
+        != {"schema_version", "contract", "status", "journal_sha256"}
+        or payload.get("schema_version") != 1
+        or payload.get("contract") != _WINDOWS_NATIVE_RECOVERY_CONTRACT
+        or payload.get("journal_sha256")
+        != hashlib.sha256(journal_bytes).hexdigest()
+        or payload.get("status")
+        not in {
+            "preserved_after_success",
+            "restored_after_failure",
+            "recovered_after_interruption",
+        }
+    ):
+        raise SafetyError(f"Windows native completion record is invalid: {path}")
+    return str(payload["status"])
+
+
+def _write_native_completion_record(
+    recovery: Path, nonce: str, payload: dict[str, object]
+) -> None:
+    """Publish completion atomically without overwriting an existing record."""
+
+    final = recovery / f"complete-{nonce}.json"
+    _publish_native_record(
+        recovery,
+        final,
+        payload,
+        evidence_prefix=f"completion-evidence-{nonce}",
+    )
+
+
+def _assert_native_snapshot(path: Path, expected: dict[str, object]) -> None:
+    observed = _stable_native_tree_snapshot(path)
+    if observed != expected:
+        raise SafetyError(f"Windows native recovery snapshot changed: {path}")
+
+
+def _restore_native_quarantine(record: dict[str, object]) -> None:
+    source = record["source"]
+    target = record["target"]
+    snapshot = record["snapshot"]
+    if not isinstance(source, Path) or not isinstance(target, Path) or not isinstance(snapshot, dict):
+        raise SafetyError("Windows native recovery record is invalid")
+    source_exists = os.path.lexists(source)
+    target_exists = os.path.lexists(target)
+    if source_exists and target_exists:
+        raise SafetyError(
+            "Windows native recovery has both source and preserved copies; "
+            f"nothing was overwritten: {target}"
+        )
+    if source_exists:
+        _assert_native_snapshot(source, snapshot)
+        return
+    if not target_exists:
+        raise SafetyError(f"Windows native recovery copy is missing: {target}")
+    _assert_native_snapshot(target, snapshot)
+    try:
+        os.replace(target, source)
+    except OSError as exc:
+        raise SkillMagnetError(
+            f"Cannot restore preserved Windows native output: {target}"
+        ) from exc
+    _assert_native_snapshot(source, snapshot)
+
+
+def _recover_incomplete_native_quarantines(native_root: Path) -> None:
+    recovery = _native_recovery_root(native_root)
+    if not os.path.lexists(recovery):
+        return
+    recovery = _ensure_native_recovery_root(native_root)
+    source = native_root / "out"
+    entries = list(recovery.iterdir())
+    journal_evidence: dict[str, list[Path]] = {}
+    for path in entries:
+        match = re.fullmatch(
+            r"journal-evidence-([0-9a-f]{32})-[0-9a-f]{32}\.json", path.name
+        )
+        if match is not None:
+            if _is_link(path) or not path.is_file():
+                raise SafetyError(f"Windows native journal evidence is unsafe: {path}")
+            journal_evidence.setdefault(match.group(1), []).append(path)
+    journals = {
+        path.stem.removeprefix("transaction-"): path
+        for path in entries
+        if path.is_file() and re.fullmatch(r"transaction-[0-9a-f]{32}\.json", path.name)
+    }
+    for nonce, candidates in journal_evidence.items():
+        if nonce in journals:
+            continue
+        target = recovery / f"legacy-out-{nonce}"
+        source_exists = os.path.lexists(source)
+        target_exists = os.path.lexists(target)
+        if source_exists and not target_exists:
+            # The canonical journal was never published. Evidence may be a
+            # partial crash artifact, so it is preserved but never authorizes a
+            # mutation of the intact source tree.
+            continue
+        if source_exists or not target_exists:
+            raise SafetyError(
+                "Windows native recovery has an incomplete journal and an "
+                f"ambiguous tree state; nothing was changed: {nonce}"
+            )
+        valid: list[tuple[Path, bytes]] = []
+        for evidence in candidates:
+            encoded = evidence.read_bytes()
+            try:
+                _read_native_quarantine_journal(evidence, source, encoded)
+            except SafetyError:
+                continue
+            valid.append((evidence, encoded))
+        if len(valid) != 1:
+            raise SafetyError(
+                "Windows native recovery cannot reconstruct its journal; "
+                f"preserved files were not changed: {target}"
+            )
+        evidence, encoded = valid[0]
+        journal = recovery / f"transaction-{nonce}.json"
+        try:
+            os.link(evidence, journal)
+        except OSError as exc:
+            raise SkillMagnetError(
+                f"Cannot restore Windows native recovery journal: {journal}"
+            ) from exc
+        if journal.read_bytes() != encoded or not os.path.samefile(evidence, journal):
+            raise SafetyError(f"Windows native recovery journal reconstruction failed: {journal}")
+        _flush_native_directory(recovery)
+        journals[nonce] = journal
+
+    allowed = {_WINDOWS_NATIVE_RECOVERY_OWNER, _WINDOWS_NATIVE_RECOVERY_LOCK}
+    allowed.update(
+        path.name
+        for path in entries
+        if re.fullmatch(r"owner-evidence-[0-9a-f]{32}\.json", path.name)
+        or re.fullmatch(
+            r"journal-evidence-[0-9a-f]{32}-[0-9a-f]{32}\.json", path.name
+        )
+    )
+    for nonce, journal in journals.items():
+        allowed.update(
+            {
+                journal.name,
+                f"complete-{nonce}.json",
+                f"legacy-out-{nonce}",
+            }
+        )
+        allowed.update(
+            path.name
+            for path in entries
+            if re.fullmatch(
+                rf"completion-evidence-{nonce}-[0-9a-f]{{32}}\.json",
+                path.name,
+            )
+        )
+    unknown = sorted(path.name for path in entries if path.name not in allowed)
+    if unknown:
+        raise SafetyError(
+            "Windows native recovery directory contains unbound entries; "
+            "nothing was changed: " + ", ".join(unknown)
+        )
+    for nonce, journal in sorted(journals.items()):
+        journal_bytes = journal.read_bytes()
+        payload = _read_native_quarantine_journal(journal, source, journal_bytes)
+        target = recovery / str(payload["target_name"])
+        complete = recovery / f"complete-{nonce}.json"
+        completion_status = _native_completion_status(complete, journal_bytes)
+        if completion_status is not None:
+            if completion_status == "preserved_after_success":
+                if not os.path.lexists(target):
+                    raise SafetyError(
+                        f"Completed Windows native recovery copy is missing: {target}"
+                    )
+                _assert_native_snapshot(target, payload["snapshot"])
+            elif os.path.lexists(target):
+                raise SafetyError(
+                    f"Restored Windows native recovery target still exists: {target}"
+                )
+            continue
+        record = {
+            "source": source,
+            "target": target,
+            "snapshot": payload["snapshot"],
+            "recovery": recovery,
+            "nonce": nonce,
+            "journal_sha256": hashlib.sha256(journal_bytes).hexdigest(),
+        }
+        # Every incomplete phase is authoritative: before rename the source must
+        # still match, after rename the target must be restorable, and neither or
+        # both existing is a fail-closed collision.
+        _restore_native_quarantine(record)
+        _complete_native_quarantine(
+            record, status="recovered_after_interruption"
+        )
+
+
+def _quarantine_packaged_windows_native_output(
+    native_root: Path,
+) -> dict[str, object] | None:
+    if not _packaged_windows_native_root(native_root):
+        return None
+    _recover_incomplete_native_quarantines(native_root)
+    source = native_root / "out"
+    if not os.path.lexists(source):
+        return None
+    snapshot = _stable_native_tree_snapshot(source)
+    recovery = _ensure_native_recovery_root(native_root)
+    if source.stat(follow_symlinks=False).st_dev != recovery.stat(follow_symlinks=False).st_dev:
+        raise SafetyError("Windows native recovery must remain on the package filesystem")
+    nonce = uuid.uuid4().hex
+    target = recovery / f"legacy-out-{nonce}"
+    journal = recovery / f"transaction-{nonce}.json"
+    payload = {
+        "schema_version": 1,
+        "contract": _WINDOWS_NATIVE_RECOVERY_CONTRACT,
+        "nonce": nonce,
+        "source_identity_sha256": _native_source_identity(source),
+        "target_name": target.name,
+        "snapshot": snapshot,
+    }
+    journal_bytes, _ = _publish_native_record(
+        recovery,
+        journal,
+        payload,
+        evidence_prefix=f"journal-evidence-{nonce}",
+    )
+    _assert_native_snapshot(source, snapshot)
+    try:
+        os.replace(source, target)
+    except OSError as exc:
+        raise SkillMagnetError(
+            f"Cannot preserve legacy Windows native output for recovery: {source}"
+        ) from exc
+    record = {
+        "source": source,
+        "target": target,
+        "snapshot": snapshot,
+        "recovery": recovery,
+        "nonce": nonce,
+        "journal_sha256": hashlib.sha256(journal_bytes).hexdigest(),
+    }
+    try:
+        _assert_native_snapshot(target, snapshot)
+    except BaseException:
+        _restore_native_quarantine(record)
+        raise
+    return record
+
+
+def _complete_native_quarantine(
+    record: dict[str, object], *, status: str = "preserved_after_success"
+) -> None:
+    recovery = record.get("recovery")
+    nonce = record.get("nonce")
+    journal_sha256 = record.get("journal_sha256")
+    if (
+        not isinstance(recovery, Path)
+        or not isinstance(nonce, str)
+        or not isinstance(journal_sha256, str)
+        or status
+        not in {
+            "preserved_after_success",
+            "restored_after_failure",
+            "recovered_after_interruption",
+        }
+    ):
+        raise SafetyError("Windows native recovery completion record is invalid")
+    _validate_windows_managed_tree(
+        recovery, label="Windows native recovery directory"
+    )
+    journal = recovery / f"transaction-{nonce}.json"
+    try:
+        journal_bytes = journal.read_bytes()
+    except OSError as exc:
+        raise SafetyError("Windows native recovery journal disappeared") from exc
+    if hashlib.sha256(journal_bytes).hexdigest() != journal_sha256:
+        raise SafetyError("Windows native recovery journal changed")
+    source = record.get("source")
+    target = record.get("target")
+    snapshot = record.get("snapshot")
+    if (
+        not isinstance(source, Path)
+        or not isinstance(target, Path)
+        or not isinstance(snapshot, dict)
+    ):
+        raise SafetyError("Windows native recovery completion paths are invalid")
+    _read_native_quarantine_journal(journal, source, journal_bytes)
+    if status == "preserved_after_success":
+        if os.path.lexists(source):
+            raise SafetyError("Windows native recovery source unexpectedly reappeared")
+        _assert_native_snapshot(target, snapshot)
+    else:
+        if os.path.lexists(target):
+            raise SafetyError("Windows native recovery target still exists after restore")
+        _assert_native_snapshot(source, snapshot)
+    _write_native_completion_record(
+        recovery,
+        nonce,
+        {
+            "schema_version": 1,
+            "contract": _WINDOWS_NATIVE_RECOVERY_CONTRACT,
+            "status": status,
+            "journal_sha256": journal_sha256,
+        },
+    )
+
+
+def _create_windows_native_build_workspace(native_root: Path) -> dict[str, object]:
+    raw = tempfile.mkdtemp(prefix="skill-magnet-native-build-")
+    path = type(native_root)(raw)
+    nonce = uuid.uuid4().hex
+    stat = path.stat(follow_symlinks=False)
+    if _is_link(path) or not path.is_dir() or not stat.st_ino:
+        raise SafetyError(f"Windows native build workspace is unsafe: {path}")
+    output = path / "out"
+    output.mkdir()
+    output_stat = output.stat(follow_symlinks=False)
+    root_identity = _windows_handle_identity(path, directory=True)
+    output_identity = _windows_handle_identity(output, directory=True)
+    if root_identity["volume_serial"] != output_identity["volume_serial"]:
+        raise SafetyError("Windows native build workspace crosses filesystem volumes")
+    payload = {
+        "schema_version": 1,
+        "contract": _WINDOWS_NATIVE_BUILD_MARKER_CONTRACT,
+        "nonce": nonce,
+        "volume_serial": root_identity["volume_serial"],
+        "root_file_id": root_identity["file_id"],
+        "output_file_id": output_identity["file_id"],
+    }
+    marker = path / _WINDOWS_NATIVE_BUILD_MARKER
+    marker_bytes = _write_exclusive_native_record(marker, payload)
+    if (
+        _is_link(output)
+        or not output.is_dir()
+        or not output_stat.st_ino
+        or sorted(item.name for item in path.iterdir())
+        != [_WINDOWS_NATIVE_BUILD_MARKER, "out"]
+        or any(output.iterdir())
+    ):
+        # Never recursively delete a workspace which failed its ownership proof.
+        raise SafetyError(f"Windows native build workspace was not empty: {path}")
+    return {
+        "path": path,
+        "output": output,
+        "nonce": nonce,
+        "root_device": int(stat.st_dev),
+        "root_inode": int(stat.st_ino),
+        "root_volume_serial": root_identity["volume_serial"],
+        "root_file_id": root_identity["file_id"],
+        "output_device": int(output_stat.st_dev),
+        "output_inode": int(output_stat.st_ino),
+        "output_volume_serial": output_identity["volume_serial"],
+        "output_file_id": output_identity["file_id"],
+        "marker_sha256": hashlib.sha256(marker_bytes).hexdigest(),
+    }
+
+
+def _validate_windows_native_build_workspace(workspace: dict[str, object]) -> Path:
+    path = workspace.get("path")
+    if not isinstance(path, Path) or _is_link(path) or not path.is_dir():
+        raise SafetyError("Windows native build workspace is missing or redirected")
+    stat = path.stat(follow_symlinks=False)
+    if (int(stat.st_dev), int(stat.st_ino)) != (
+        workspace.get("root_device"),
+        workspace.get("root_inode"),
+    ):
+        raise SafetyError(f"Windows native build workspace identity changed: {path}")
+    marker = path / _WINDOWS_NATIVE_BUILD_MARKER
+    if _is_link(marker) or not marker.is_file():
+        raise SafetyError(f"Windows native build marker is missing: {path}")
+    if hashlib.sha256(marker.read_bytes()).hexdigest() != workspace.get("marker_sha256"):
+        raise SafetyError(f"Windows native build marker changed: {path}")
+    output = workspace.get("output")
+    if not isinstance(output, Path) or output != path / "out":
+        raise SafetyError("Windows native build output binding is invalid")
+    if _is_link(output) or not output.is_dir():
+        raise SafetyError(f"Windows native build output is missing or redirected: {output}")
+    output_stat = output.stat(follow_symlinks=False)
+    if (int(output_stat.st_dev), int(output_stat.st_ino)) != (
+        workspace.get("output_device"),
+        workspace.get("output_inode"),
+    ):
+        raise SafetyError(f"Windows native build output identity changed: {output}")
+    root_identity = _windows_handle_identity(path, directory=True)
+    output_identity = _windows_handle_identity(output, directory=True)
+    if (
+        root_identity.get("volume_serial") != workspace.get("root_volume_serial")
+        or root_identity.get("file_id") != workspace.get("root_file_id")
+        or output_identity.get("volume_serial") != workspace.get("output_volume_serial")
+        or output_identity.get("file_id") != workspace.get("output_file_id")
+        or root_identity.get("volume_serial") != output_identity.get("volume_serial")
+    ):
+        raise SafetyError(f"Windows native build volume/file identity changed: {path}")
+    root_entries = sorted(item.name for item in path.iterdir())
+    if root_entries != [_WINDOWS_NATIVE_BUILD_MARKER, "out"]:
+        raise SafetyError(
+            "Windows native build workspace contains unowned entries; nothing was "
+            "deleted: " + ", ".join(root_entries)
+        )
+    unexpected = sorted(
+        item.name
+        for item in output.iterdir()
+        if item.name not in _WINDOWS_NATIVE_BUILD_OUTPUTS
+        or not item.is_file()
+        or _is_link(item)
+    )
+    if unexpected:
+        raise SafetyError(
+            "Windows native build workspace contains unowned entries; nothing was "
+            "deleted: " + ", ".join(unexpected)
+        )
+    return output
+
+
+def _native_cleanup_identity(path: Path, *, directory: bool) -> dict[str, object]:
+    if _is_link(path) or (path.is_dir() if directory else path.is_file()) is False:
+        raise SafetyError(f"Windows native build cleanup entry is unsafe: {path}")
+    stat = path.stat(follow_symlinks=False)
+    if not stat.st_ino or stat.st_nlink != 1:
+        raise SafetyError(f"Windows native build cleanup entry is not unique: {path}")
+    identity: dict[str, object] = {
+        "device": int(stat.st_dev),
+        "inode": int(stat.st_ino),
+        "mode": int(stat.st_mode),
+        "link_count": int(stat.st_nlink),
+        "file_attributes": int(getattr(stat, "st_file_attributes", 0)),
+    }
+    if not directory:
+        digest = hashlib.sha256()
+        size = 0
+        with path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                size += len(chunk)
+                digest.update(chunk)
+        after = path.stat(follow_symlinks=False)
+        if (
+            stat.st_dev != after.st_dev
+            or stat.st_ino != after.st_ino
+            or stat.st_size != after.st_size
+            or stat.st_mtime_ns != after.st_mtime_ns
+            or size != after.st_size
+        ):
+            raise SafetyError(f"Windows native build cleanup entry changed: {path}")
+        identity.update(
+            {
+                "size": size,
+                "modified_ns": int(after.st_mtime_ns),
+                "sha256": digest.hexdigest(),
+            }
+        )
+    return identity
+
+
+def _capture_windows_native_cleanup_identity(
+    workspace: dict[str, object],
+) -> dict[str, object]:
+    output = _validate_windows_native_build_workspace(workspace)
+    root = workspace.get("path")
+    if not isinstance(root, Path):
+        raise SafetyError("Windows native build cleanup record is invalid")
+    marker = root / _WINDOWS_NATIVE_BUILD_MARKER
+
+    def capture() -> dict[str, object]:
+        return {
+            "root": _native_cleanup_identity(root, directory=True),
+            "output": _native_cleanup_identity(output, directory=True),
+            "marker": _native_cleanup_identity(marker, directory=False),
+            "files": {
+                path.name: _native_cleanup_identity(path, directory=False)
+                for path in sorted(output.iterdir(), key=lambda item: item.name)
+            },
+        }
+
+    first = capture()
+    second = capture()
+    if first != second:
+        raise SafetyError("Windows native build cleanup identities are changing")
+    workspace["cleanup_identity"] = first
+    return first
+
+
+def _identity_matches_stat(expected: dict[str, object], observed: os.stat_result) -> bool:
+    return (
+        int(observed.st_dev) == expected.get("device")
+        and int(observed.st_ino) == expected.get("inode")
+        # Windows path stat synthesizes executable permission bits from a file
+        # suffix while handle stat cannot; compare the object kind, not those
+        # name-derived bits.
+        and int(observed.st_mode) & 0o170000
+        == int(expected.get("mode", 0)) & 0o170000
+        and int(observed.st_nlink) == expected.get("link_count") == 1
+        and int(getattr(observed, "st_file_attributes", 0))
+        == expected.get("file_attributes")
+        and (
+            "size" not in expected
+            or (
+                int(observed.st_size) == expected.get("size")
+                and int(observed.st_mtime_ns) == expected.get("modified_ns")
+            )
+        )
+    )
+
+
+def _delete_windows_native_path_by_handle(
+    path: Path, expected: dict[str, object], *, directory: bool
+) -> None:
+    """Delete only the object proven by its open Windows handle, never its pathname."""
+
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    set_information = kernel32.SetFileInformationByHandle
+    set_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    )
+    set_information.restype = wintypes.BOOL
+    handle = create_file(
+        str(path),
+        0x00010000 | 0x00000080 | (0 if directory else 0x80000000),
+        # Files are opened without FILE_SHARE_WRITE, so their bytes cannot
+        # change between the handle-bound digest and disposition operation.
+        0x00000001 | (0x00000002 if directory else 0) | 0x00000004,
+        None,
+        3,  # OPEN_EXISTING
+        0x00200000 | (0x02000000 if directory else 0),
+        None,
+    )
+    if handle == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    descriptor = -1
+    try:
+        descriptor = msvcrt.open_osfhandle(int(handle), os.O_RDONLY)
+        observed = os.fstat(descriptor)
+        if not _identity_matches_stat(expected, observed):
+            raise SafetyError(
+                f"Windows native build cleanup identity changed: {path}"
+            )
+        if not directory:
+            digest = hashlib.sha256()
+            size = 0
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            while chunk := os.read(descriptor, 1024 * 1024):
+                size += len(chunk)
+                digest.update(chunk)
+            after = os.fstat(descriptor)
+            if (
+                not _identity_matches_stat(expected, after)
+                or size != expected.get("size")
+                or digest.hexdigest() != expected.get("sha256")
+            ):
+                raise SafetyError(
+                    f"Windows native build cleanup content changed: {path}"
+                )
+        delete = ctypes.c_ubyte(1)
+        if not set_information(
+            wintypes.HANDLE(msvcrt.get_osfhandle(descriptor)),
+            4,  # FileDispositionInfo
+            ctypes.byref(delete),
+            ctypes.sizeof(delete),
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        else:
+            kernel32.CloseHandle(handle)
+
+
+def _delete_posix_native_workspace(
+    retired: Path, identity: dict[str, object]
+) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    parent_fd = os.open(retired.parent, flags)
+    root_fd = -1
+    output_fd = -1
+    try:
+        root_fd = os.open(retired.name, flags, dir_fd=parent_fd)
+        if not _identity_matches_stat(identity["root"], os.fstat(root_fd)):
+            raise SafetyError("Windows native build cleanup root identity changed")
+        output_fd = os.open("out", flags, dir_fd=root_fd)
+        if not _identity_matches_stat(identity["output"], os.fstat(output_fd)):
+            raise SafetyError("Windows native build cleanup output identity changed")
+        for name, expected in identity["files"].items():
+            observed = os.stat(name, dir_fd=output_fd, follow_symlinks=False)
+            if not _identity_matches_stat(expected, observed):
+                raise SafetyError(
+                    f"Windows native build cleanup file identity changed: {name}"
+                )
+            os.unlink(name, dir_fd=output_fd)
+        os.close(output_fd)
+        output_fd = -1
+        os.rmdir("out", dir_fd=root_fd)
+        marker_stat = os.stat(
+            _WINDOWS_NATIVE_BUILD_MARKER, dir_fd=root_fd, follow_symlinks=False
+        )
+        if not _identity_matches_stat(identity["marker"], marker_stat):
+            raise SafetyError("Windows native build cleanup marker identity changed")
+        os.unlink(_WINDOWS_NATIVE_BUILD_MARKER, dir_fd=root_fd)
+        os.close(root_fd)
+        root_fd = -1
+        os.rmdir(retired.name, dir_fd=parent_fd)
+    finally:
+        if output_fd >= 0:
+            os.close(output_fd)
+        if root_fd >= 0:
+            os.close(root_fd)
+        os.close(parent_fd)
+
+
+def _cleanup_windows_native_build_workspace(workspace: dict[str, object]) -> None:
+    identity = workspace.get("cleanup_identity")
+    if not isinstance(identity, dict):
+        identity = _capture_windows_native_cleanup_identity(workspace)
+    path = workspace.get("path")
+    if not isinstance(path, Path):
+        raise SafetyError("Windows native build cleanup record is invalid")
+    retired = path.with_name(path.name + ".cleanup-" + str(workspace["nonce"]))
+    if os.path.lexists(retired):
+        raise SafetyError(f"Windows native build cleanup target already exists: {retired}")
+    try:
+        os.replace(path, retired)
+    except OSError as exc:
+        raise SkillMagnetError(f"Cannot isolate Windows native build cleanup: {path}") from exc
+    moved = {**workspace, "path": retired, "output": retired / "out"}
+    try:
+        _validate_windows_native_build_workspace(moved)
+        if sys.platform == "win32":
+            files = identity.get("files")
+            if not isinstance(files, dict):
+                raise SafetyError("Windows native build cleanup file identities are invalid")
+            for name, expected in files.items():
+                _delete_windows_native_path_by_handle(
+                    retired / "out" / name, expected, directory=False
+                )
+            _delete_windows_native_path_by_handle(
+                retired / "out", identity["output"], directory=True
+            )
+            _delete_windows_native_path_by_handle(
+                retired / _WINDOWS_NATIVE_BUILD_MARKER,
+                identity["marker"],
+                directory=False,
+            )
+            _delete_windows_native_path_by_handle(
+                retired, identity["root"], directory=True
+            )
+        else:
+            _delete_posix_native_workspace(retired, identity)
+    except BaseException as exc:
+        raise SkillMagnetError(
+            "Windows native build cleanup did not complete. The isolated build "
+            f"directory was preserved for recovery: {retired}"
+        ) from exc
 
 
 def _windows_modern_paths(install_root: Path | None = None) -> tuple[Path, Path, Path]:
@@ -1385,23 +2626,32 @@ def install_windows_modern_context_menu(
     if os.name != "nt":
         raise SkillMagnetError("Windows modern context menu can only be installed on Windows")
     native_root, root, script = _windows_modern_paths(install_root)
-    _validate_windows_managed_tree(root, label="Windows context-menu install tree")
-    if _packaged_windows_native_root(native_root) and not build:
-        raise SkillMagnetError(
-            "An installed wheel cannot reuse native build output from its package "
-            "directory; rerun with native build enabled."
-        )
-    removed_packaged_build_residue = (
-        _remove_packaged_windows_native_build_residue(native_root) if build else False
-    )
-    temporary_build: tempfile.TemporaryDirectory[str] | None = None
+    source_lease: dict[str, object] | None = None
+    recovery_lock: object | None = None
+    quarantine: dict[str, object] | None = None
+    workspace: dict[str, object] | None = None
     output = native_root / "out"
     try:
-        if build:
-            temporary_build = tempfile.TemporaryDirectory(
-                prefix="skill-magnet-native-build-"
+        source_lease = _acquire_windows_native_source_lease(native_root)
+        _validate_windows_managed_tree(root, label="Windows context-menu install tree")
+        if _packaged_windows_native_root(native_root) and not build:
+            raise SkillMagnetError(
+                "An installed wheel cannot reuse native build output from its package "
+                "directory; rerun with native build enabled."
             )
-            output = type(native_root)(temporary_build.name)
+        recovery_lock = (
+            _acquire_native_recovery_lock(native_root)
+            if build and _packaged_windows_native_root(native_root)
+            else None
+        )
+        if build:
+            quarantine = _quarantine_packaged_windows_native_output(native_root)
+        if build:
+            workspace = _create_windows_native_build_workspace(native_root)
+            output_value = workspace.get("output")
+            if not isinstance(output_value, Path):
+                raise SafetyError("Windows native build workspace has no bound output")
+            output = output_value
             build_result = run(
                 [
                     _powershell_executable(),
@@ -1413,6 +2663,10 @@ def install_windows_modern_context_menu(
                     str(native_root / "build.ps1"),
                     "-OutDir",
                     str(output),
+                    "-BuildNonce",
+                    str(workspace["nonce"]),
+                    "-MarkerSha256",
+                    str(workspace["marker_sha256"]),
                 ],
                 capture_output=True,
                 text=True,
@@ -1427,6 +2681,8 @@ def install_windows_modern_context_menu(
                 raise SkillMagnetError(
                     f"Windows modern context-menu build failed: {detail}"
                 )
+            _validate_windows_native_build_workspace(workspace)
+            _capture_windows_native_cleanup_identity(workspace)
         required = (
             output / "SkillMagnetCommand.dll",
             output / "SkillMagnetIdentity.exe",
@@ -1434,7 +2690,14 @@ def install_windows_modern_context_menu(
         )
         if not all(path.is_file() for path in required):
             raise SkillMagnetError("Windows modern context-menu build outputs are missing")
-        output_binding = _windows_native_build_binding(native_root, output)
+        expected_source_manifest = source_lease.get("manifest")
+        if not isinstance(expected_source_manifest, dict):
+            raise SafetyError("Windows native source lease is invalid")
+        output_binding = _windows_native_build_binding(
+            native_root,
+            output,
+            expected_source_manifest=expected_source_manifest,
+        )
         if not output_binding["native_build_binding_valid"]:
             raise SkillMagnetError(
                 "Windows native build does not match this release source; "
@@ -1495,6 +2758,8 @@ def install_windows_modern_context_menu(
         )
         if not status.get("usable_installed_state"):
             raise SkillMagnetError("Windows modern context-menu installed state is incomplete")
+        if _windows_native_source_manifest(native_root) != expected_source_manifest:
+            raise SafetyError("Windows native source changed during package installation")
         status.update(
             {
                 "platform": "windows",
@@ -1502,8 +2767,15 @@ def install_windows_modern_context_menu(
                 "external_location": str(root),
                 "contexts": ["Directory", r"Directory\Background"],
                 "reinstall_required_after_pack_change": False,
-                "packaged_native_build_residue_removed": (
-                    removed_packaged_build_residue
+                "packaged_native_build_residue_removed": False,
+                "packaged_native_build_residue_preserved": quarantine is not None,
+                "packaged_native_build_recovery_id": (
+                    quarantine.get("nonce") if quarantine is not None else None
+                ),
+                "packaged_native_build_recovery_directory": (
+                    str(quarantine["recovery"])
+                    if quarantine is not None
+                    else None
                 ),
                 # status is intentionally read back after registration, but that
                 # command cannot reconstruct which historical trust entries the
@@ -1513,10 +2785,40 @@ def install_windows_modern_context_menu(
                 ),
             }
         )
+        if workspace is not None:
+            completed_workspace = workspace
+            workspace = None
+            _cleanup_windows_native_build_workspace(completed_workspace)
+        if quarantine is not None:
+            _complete_native_quarantine(quarantine)
         return status
+    except BaseException as original:
+        recovery_failures: list[str] = []
+        if workspace is not None:
+            failed_workspace = workspace
+            workspace = None
+            try:
+                _cleanup_windows_native_build_workspace(failed_workspace)
+            except BaseException as exc:
+                recovery_failures.append(f"temporary build cleanup: {exc}")
+        if quarantine is not None:
+            try:
+                _restore_native_quarantine(quarantine)
+                _complete_native_quarantine(
+                    quarantine, status="restored_after_failure"
+                )
+            except BaseException as exc:
+                recovery_failures.append(f"legacy output restore: {exc}")
+        if recovery_failures:
+            raise SkillMagnetError(
+                "Windows context-menu install failed and automatic recovery did not "
+                "complete. Recovery evidence was preserved; retry after resolving: "
+                + "; ".join(recovery_failures)
+            ) from original
+        raise
     finally:
-        if temporary_build is not None:
-            temporary_build.cleanup()
+        _release_native_recovery_lock(recovery_lock)
+        _release_windows_native_source_lease(source_lease)
 
 
 def uninstall_windows_modern_context_menu(
@@ -2112,7 +3414,78 @@ def _restore_windows_context_backup(
         )
 
 
-def install_windows_context_menus(
+def _acquire_windows_context_mutation_lock() -> object:
+    """Serialize every public Windows context-menu state transition."""
+
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_mutex = kernel32.CreateMutexW
+        create_mutex.argtypes = (wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)
+        create_mutex.restype = wintypes.HANDLE
+        close = kernel32.CloseHandle
+        close.argtypes = (wintypes.HANDLE,)
+        close.restype = wintypes.BOOL
+        ctypes.set_last_error(0)
+        handle = create_mutex(
+            None,
+            True,
+            "Local\\SkillMagnet-WindowsContextMenuMutation-v1",
+        )
+        if not handle:
+            raise SkillMagnetError(
+                "Cannot acquire the Windows context-menu operation lock. "
+                "Nothing was changed; check this user's access permissions and retry."
+            )
+        if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+            close(handle)
+            raise SkillMagnetError(
+                "Another Windows context-menu operation is active. Nothing was "
+                "changed; wait for it to finish and retry."
+            )
+        return (kernel32, handle)
+
+    # Cross-platform tests use the same process contract without weakening the
+    # real Windows named-mutex boundary.
+    import fcntl
+
+    path = Path(tempfile.gettempdir()) / "skill-magnet-windows-context-mutation.lock"
+    handle = path.open("a+b")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        handle.close()
+        raise SkillMagnetError(
+            "Another Windows context-menu operation is active. Nothing was "
+            "changed; wait for it to finish and retry."
+        ) from exc
+    return handle
+
+
+def _release_windows_context_mutation_lock(lock: object | None) -> None:
+    if lock is None:
+        return
+    if isinstance(lock, tuple):
+        kernel32, handle = lock
+        try:
+            if not kernel32.ReleaseMutex(handle):
+                error = __import__("ctypes").get_last_error()
+                if error not in {0, 288}:  # ERROR_NOT_OWNER during teardown
+                    raise OSError(error, "Cannot release Windows context-menu mutex")
+        finally:
+            kernel32.CloseHandle(handle)
+        return
+    try:
+        import fcntl
+
+        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    finally:
+        lock.close()
+
+
+def _install_windows_context_menus_unlocked(
     config: Path,
     *,
     install_root: Path | None = None,
@@ -2132,6 +3505,7 @@ def install_windows_context_menus(
     backup = _windows_context_backup_root(root)
     first_install = not backup.exists()
     transaction_backup = backup if first_install else backup.with_name(backup.name + ".update")
+    modern_recovery: dict[str, object] | None = None
     try:
         previous = _capture_windows_context_backup(
             transaction_backup, install_root=root, run=run
@@ -2143,6 +3517,13 @@ def install_windows_context_menus(
             modern = install_windows_modern_context_menu(
                 config, install_root=root, run=run, build=build
             )
+            if modern.get("packaged_native_build_residue_preserved"):
+                modern_recovery = {
+                    "id": modern.get("packaged_native_build_recovery_id"),
+                    "directory": modern.get(
+                        "packaged_native_build_recovery_directory"
+                    ),
+                }
         except SkillMagnetError as modern_error:
             # A partial modern registration must not coexist with another
             # entry. Do not fall back to a self-signed process adapter: Smart
@@ -2179,9 +3560,19 @@ def install_windows_context_menus(
                 "locations": list(_windows_owned_menu_roots()),
                 "verified_absent": True,
             }
+            modern_receipt = modern
             modern = windows_modern_context_menu_status(
                 install_root=root, config=config, run=run
             )
+            for field in (
+                "packaged_native_build_residue_removed",
+                "packaged_native_build_residue_preserved",
+                "packaged_native_build_recovery_id",
+                "packaged_native_build_recovery_directory",
+                "legacy_certificate_thumbprints_removed",
+            ):
+                if field in modern_receipt:
+                    modern[field] = modern_receipt[field]
             if not modern.get("usable_installed_state"):
                 raise SkillMagnetError(
                     "Windows context-menu install did not reach one exclusive usable root"
@@ -2201,15 +3592,50 @@ def install_windows_context_menus(
             "recovered_certificate_ownership": recovered_certificate_ownership,
             "recovered_rollback_rotation": recovered_rotation,
         }
-    except Exception:
-        if (transaction_backup / "backup.json").is_file():
-            _restore_windows_context_backup(transaction_backup, install_root=root, run=run)
-        if transaction_backup.exists():
-            shutil.rmtree(transaction_backup)
+    except Exception as original:
+        rollback_failure: Exception | None = None
+        try:
+            if (transaction_backup / "backup.json").is_file():
+                _restore_windows_context_backup(
+                    transaction_backup, install_root=root, run=run
+                )
+            if transaction_backup.exists():
+                shutil.rmtree(transaction_backup)
+        except Exception as exc:
+            rollback_failure = exc
+        details: list[str] = []
+        if rollback_failure is not None:
+            details.append(f"previous menu-state recovery failed: {rollback_failure}")
+        if modern_recovery is not None:
+            details.append(
+                "legacy native output remains preserved for user recovery at "
+                f"{modern_recovery['directory']} "
+                f"(recovery id {modern_recovery['id']}); no preserved file was deleted"
+            )
+        if details:
+            raise SkillMagnetError(str(original) + "; " + "; ".join(details)) from original
         raise
 
 
-def rollback_windows_context_menus(
+def install_windows_context_menus(
+    config: Path,
+    *,
+    install_root: Path | None = None,
+    run: object = subprocess.run,
+    build: bool = True,
+) -> dict[str, object]:
+    if os.name != "nt":
+        raise SkillMagnetError("Windows context menus can only be installed on Windows")
+    lock = _acquire_windows_context_mutation_lock()
+    try:
+        return _install_windows_context_menus_unlocked(
+            config, install_root=install_root, run=run, build=build
+        )
+    finally:
+        _release_windows_context_mutation_lock(lock)
+
+
+def _rollback_windows_context_menus_unlocked(
     *, install_root: Path | None = None, run: object = subprocess.run
 ) -> dict[str, object]:
     if os.name != "nt":
@@ -2230,7 +3656,21 @@ def rollback_windows_context_menus(
     }
 
 
-def uninstall_windows_context_menus(
+def rollback_windows_context_menus(
+    *, install_root: Path | None = None, run: object = subprocess.run
+) -> dict[str, object]:
+    if os.name != "nt":
+        raise SkillMagnetError("Windows context menus can only be rolled back on Windows")
+    lock = _acquire_windows_context_mutation_lock()
+    try:
+        return _rollback_windows_context_menus_unlocked(
+            install_root=install_root, run=run
+        )
+    finally:
+        _release_windows_context_mutation_lock(lock)
+
+
+def _uninstall_windows_context_menus_unlocked(
     *, install_root: Path | None = None, run: object = subprocess.run
 ) -> dict[str, object]:
     """Remove the current product state instead of restoring an older update."""
@@ -2259,6 +3699,20 @@ def uninstall_windows_context_menus(
         "rollback_point_removed": not backup.exists(),
         "removed_transaction_residue": removed_residue,
     }
+
+
+def uninstall_windows_context_menus(
+    *, install_root: Path | None = None, run: object = subprocess.run
+) -> dict[str, object]:
+    if os.name != "nt":
+        raise SkillMagnetError("Windows context menus can only be uninstalled on Windows")
+    lock = _acquire_windows_context_mutation_lock()
+    try:
+        return _uninstall_windows_context_menus_unlocked(
+            install_root=install_root, run=run
+        )
+    finally:
+        _release_windows_context_mutation_lock(lock)
 
 
 def _windows_menu_roots(prefix: str = "HKCU") -> tuple[tuple[str, str], ...]:

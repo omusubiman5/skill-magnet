@@ -321,6 +321,10 @@ modernメニューは署名済みMSIX identity packageとExplorer用COM command�
 
 installは単一transactionでrollback pointを作り、modernがusableならclassic rootを削除します。modern登録に失敗した場合は、完全性を破壊前検証したrollback pointだけを使って部分登録を除去・復元し、errorで停止します。Explorer用COM DLL、固定メニューmanifest、native source manifest、`SkillMagnetIdentity.exe`はすべてfull MSIXへ収容します。statusはrepositoryの固定native入力から再計算したsource tree digest、manifest内artifact hash、DLLへ一意に埋め込んだ同digestを照合します。release field gateはさらに署名済みMSIX内payload、package root、外部install rootのbytes一致を要求します。COM DLLはメニューmanifestに固定したAuthenticode-validなPythonを`CREATE_NO_WINDOW`で直接起動します。自己署名のprocess adapterは実行経路に置かず、`SkillMagnetIdentity.exe`はidentity anchor専用でメニュー選択時には実行されません。Appx、module、distribution、runtime tree、wheel/source、native source、DLL、MSIXのいずれかが別世代なら0.5.9の実機証拠として拒否します。
 
+installed wheel内に旧版が残した`_native/windows-modern-context-menu/out`がある場合、installは中の名前や内容を推測して削除しません。link、junction、同時実行、途中変更を検査した後、`out`全体を同じfilesystem上の`site-packages/.skill-magnet-native-recovery/legacy-out-<recovery-id>`へ原子的に隔離します。native buildまたはmodern登録が失敗すれば同じobjectを元の`out`へ戻し、modern登録成功後のclassic整理・最終readback・rollback-point更新で失敗した場合はerrorに復旧IDと復旧directoryを表示します。成功時は隔離copyとwrite-once journalを保持します。成功JSONの`modern.packaged_native_build_recovery_id`と`modern.packaged_native_build_recovery_directory`が復旧場所です。利用者のfileが混入していた場合もその場所から取り出せます。sourceと隔離先が両方ある、journalが壊れている、または内容が変わった場合は、どちらも上書き・削除せずerrorで停止します。
+
+native buildの`OutDir`を直接指定する運用は受け付けません。製品commandが作成した一回限りのnonce、marker digest、directory file identityを持つ空workspaceだけをbuild対象にし、build中はWindows handleでworkspaceと`out`のrename／junction差替えを禁止します。通常の導入と復旧には上記の`install-context-menu` commandを使います。
+
 </details>
 
 packの追加・削除・版・含有skillを変更しても、右クリックメニューの再登録は不要です。WindowsとmacOSの右クリックには単一の「Skill Magnet」だけを登録し、起動時に現在の設定からpackとskillを画面へ読み込みます。再登録が必要なのは、導入した実行file、設定fileの場所、native adapter、またはFinder Quick Actionそのものが変わった場合だけです。Skill Magnet画面のCancelまたはcloseではcontract、evidence、stateを作成しません。

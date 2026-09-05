@@ -6,6 +6,7 @@ import json
 import io
 import os
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -4557,7 +4558,14 @@ class ActivationEndToEndTest(unittest.TestCase):
             if any(str(item).endswith("build.ps1") for item in args):
                 output = type(self.root)(str(args[args.index("-OutDir") + 1]))
                 build_outputs.append(output)
-                output.mkdir(exist_ok=True)
+                nonce = args[args.index("-BuildNonce") + 1]
+                marker = json.loads(
+                    (output.parent / ".skill-magnet-native-build.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                self.assertEqual(marker["nonce"], nonce)
+                self.assertEqual(list(output.iterdir()), [])
                 for name in (
                     "SkillMagnetCommand.dll",
                     "SkillMagnetIdentity.exe",
@@ -4595,7 +4603,7 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertNotEqual(build_outputs[0], source_output)
         self.assertFalse(build_outputs[0].exists())
 
-    def test_installed_wheel_build_is_temporary_and_repairs_known_package_residue(
+    def test_installed_wheel_build_quarantines_package_residue_without_deleting_it(
         self,
     ) -> None:
         package_root = self.root / "installed" / "site-packages" / "skill_magnet"
@@ -4623,7 +4631,7 @@ class ActivationEndToEndTest(unittest.TestCase):
             if any(str(item).endswith("build.ps1") for item in args):
                 output = type(self.root)(str(args[args.index("-OutDir") + 1]))
                 build_outputs.append(output)
-                output.mkdir(exist_ok=True)
+                self.assertEqual(list(output.iterdir()), [])
                 source_manifest = _windows_native_source_manifest(native_root)
                 source_digest = str(source_manifest["source_tree_sha256"])
                 artifacts = {
@@ -4676,13 +4684,24 @@ class ActivationEndToEndTest(unittest.TestCase):
                 self.config_path, install_root=root, run=fake_run, build=True
             )
         self.assertTrue(result["usable_installed_state"])
-        self.assertTrue(result["packaged_native_build_residue_removed"])
+        self.assertFalse(result["packaged_native_build_residue_removed"])
+        self.assertTrue(result["packaged_native_build_residue_preserved"])
         self.assertFalse(legacy_output.exists())
+        recovery = Path(result["packaged_native_build_recovery_directory"])
+        preserved = list(recovery.glob("legacy-out-*"))
+        self.assertEqual(len(preserved), 1)
+        self.assertEqual(
+            (preserved[0] / "SkillMagnetCommand.lib").read_bytes(),
+            b"stale build output",
+        )
+        self.assertTrue(
+            (recovery / f"complete-{result['packaged_native_build_recovery_id']}.json").is_file()
+        )
         self.assertEqual(len(build_outputs), 1)
         self.assertFalse(build_outputs[0].is_relative_to(package_root))
         self.assertFalse(build_outputs[0].exists())
 
-    def test_installed_wheel_preserves_unknown_package_residue_and_fails_closed(
+    def test_installed_wheel_quarantines_arbitrary_package_residue_byte_exactly(
         self,
     ) -> None:
         package_root = self.root / "unknown-residue" / "site-packages" / "skill_magnet"
@@ -4698,27 +4717,79 @@ class ActivationEndToEndTest(unittest.TestCase):
         output.mkdir()
         foreign = output / "user-data.txt"
         foreign.write_text("preserve", encoding="utf-8")
+        root = self.root / "unknown-residue-context-menu"
         calls: list[list[str]] = []
 
         def fake_run(args: list[str], **_: object) -> SimpleNamespace:
             calls.append(args)
-            return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+            if args[:2] == ["reg", "query"]:
+                return SimpleNamespace(
+                    returncode=1, stdout="", stderr="__REGISTRY_KEY_NOT_FOUND__"
+                )
+            if any(str(item).endswith("build.ps1") for item in args):
+                temporary_output = Path(args[args.index("-OutDir") + 1])
+                source_manifest = _windows_native_source_manifest(native_root)
+                source_digest = str(source_manifest["source_tree_sha256"])
+                artifacts = {
+                    "SkillMagnetCommand.dll": (
+                        b"test-dll\0"
+                        + ("skill-magnet-native-source-v1:" + source_digest).encode(
+                            "utf-16-le"
+                        )
+                    ),
+                    "SkillMagnetIdentity.exe": b"test-identity",
+                }
+                for name, payload in artifacts.items():
+                    (temporary_output / name).write_bytes(payload)
+                source_manifest["artifacts"] = [
+                    {
+                        "path": name,
+                        "size": len(payload),
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                    }
+                    for name, payload in artifacts.items()
+                ]
+                (temporary_output / "SkillMagnetNativeSource.json").write_text(
+                    json.dumps(source_manifest, separators=(",", ":")) + "\n",
+                    encoding="utf-8",
+                )
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if any(str(item).endswith("build-package.ps1") for item in args):
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            action = args[args.index("-Action") + 1]
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "installed": action != "uninstall",
+                        "name": "SkillMagnet.ContextMenu",
+                        "version": "0.5.9.0",
+                        "architecture": "X64",
+                        "publisher": "CN=Skill Magnet Local",
+                        "install_location": str(root),
+                    }
+                ),
+                stderr="",
+            )
 
         with (
             mock.patch("skill_magnet.platforms.os.name", "nt"),
             mock.patch("skill_magnet.platforms._PACKAGE_ROOT", package_root),
-            self.assertRaisesRegex(SafetyError, "unknown files"),
         ):
-            install_windows_modern_context_menu(
+            result = install_windows_modern_context_menu(
                 self.config_path,
-                install_root=self.root / "must-not-be-created",
+                install_root=root,
                 run=fake_run,
                 build=True,
             )
-        self.assertEqual(calls, [])
-        self.assertEqual(foreign.read_text(encoding="utf-8"), "preserve")
+        self.assertTrue(result["usable_installed_state"])
+        self.assertFalse(foreign.exists())
+        recovery = Path(result["packaged_native_build_recovery_directory"])
+        preserved = list(recovery.glob("legacy-out-*/user-data.txt"))
+        self.assertEqual(len(preserved), 1)
+        self.assertEqual(preserved[0].read_bytes(), b"preserve")
 
-    def test_installed_wheel_build_failure_leaves_no_package_or_temporary_output(
+    def test_installed_wheel_build_failure_restores_package_output_byte_exactly(
         self,
     ) -> None:
         package_root = self.root / "failed-build" / "site-packages" / "skill_magnet"
@@ -4738,7 +4809,7 @@ class ActivationEndToEndTest(unittest.TestCase):
         def fake_run(args: list[str], **_: object) -> SimpleNamespace:
             output = type(self.root)(str(args[args.index("-OutDir") + 1]))
             build_outputs.append(output)
-            (output / "partial.obj").write_bytes(b"partial")
+            (output / "ContractTest.obj").write_bytes(b"partial")
             return SimpleNamespace(returncode=1, stdout="compile failed", stderr="")
 
         with (
@@ -4752,10 +4823,865 @@ class ActivationEndToEndTest(unittest.TestCase):
                 run=fake_run,
                 build=True,
             )
-        self.assertFalse(legacy_output.exists())
+        self.assertTrue(legacy_output.exists())
+        self.assertEqual((legacy_output / "ContractTest.obj").read_bytes(), b"stale")
         self.assertEqual(len(build_outputs), 1)
         self.assertFalse(build_outputs[0].exists())
         self.assertFalse((self.root / "failed-build-context-menu").exists())
+
+    def test_installed_wheel_restores_legacy_output_at_every_failure_stage(
+        self,
+    ) -> None:
+        stages = (
+            "build",
+            "missing-output",
+            "package-build",
+            "package-install",
+            "status-readback",
+            "workspace-cleanup",
+            "quarantine-completion",
+        )
+        for stage in stages:
+            with self.subTest(stage=stage):
+                package_root = self.root / stage / "site-packages" / "skill_magnet"
+                native_root = package_root / "_native" / "windows-modern-context-menu"
+                shutil.copytree(
+                    Path(__file__).resolve().parents[1]
+                    / "native"
+                    / "windows-modern-context-menu",
+                    native_root,
+                    ignore=shutil.ignore_patterns("out", "__pycache__", "*.pyc"),
+                )
+                legacy_output = native_root / "out"
+                (legacy_output / "nested" / "empty").mkdir(parents=True)
+                legacy_bytes = bytes(range(256)) + b"\0legacy\xff"
+                (legacy_output / "nested" / "user-data.bin").write_bytes(
+                    legacy_bytes
+                )
+                install_root = self.root / stage / "ContextMenu"
+                build_outputs: list[Path] = []
+                installed = False
+
+                def write_valid_output(output: Path) -> None:
+                    source_manifest = _windows_native_source_manifest(native_root)
+                    source_digest = str(source_manifest["source_tree_sha256"])
+                    artifacts = {
+                        "SkillMagnetCommand.dll": (
+                            b"test-dll\0"
+                            + (
+                                "skill-magnet-native-source-v1:" + source_digest
+                            ).encode("utf-16-le")
+                        ),
+                        "SkillMagnetIdentity.exe": b"test-identity",
+                    }
+                    for name, payload in artifacts.items():
+                        (output / name).write_bytes(payload)
+                    source_manifest["artifacts"] = [
+                        {
+                            "path": name,
+                            "size": len(payload),
+                            "sha256": hashlib.sha256(payload).hexdigest(),
+                        }
+                        for name, payload in artifacts.items()
+                    ]
+                    (output / "SkillMagnetNativeSource.json").write_text(
+                        json.dumps(source_manifest, separators=(",", ":")) + "\n",
+                        encoding="utf-8",
+                    )
+
+                def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+                    nonlocal installed
+                    if args[:2] == ["reg", "query"]:
+                        return SimpleNamespace(
+                            returncode=1,
+                            stdout="",
+                            stderr="__REGISTRY_KEY_NOT_FOUND__",
+                        )
+                    if any(str(item).endswith("build.ps1") for item in args):
+                        output = Path(args[args.index("-OutDir") + 1])
+                        build_outputs.append(output)
+                        if stage == "build":
+                            (output / "ContractTest.obj").write_bytes(b"partial")
+                            return SimpleNamespace(
+                                returncode=1, stdout="build-stage", stderr=""
+                            )
+                        if stage != "missing-output":
+                            write_valid_output(output)
+                        return SimpleNamespace(returncode=0, stdout="", stderr="")
+                    if any(
+                        str(item).endswith("build-package.ps1") for item in args
+                    ):
+                        return SimpleNamespace(
+                            returncode=1 if stage == "package-build" else 0,
+                            stdout="package-stage" if stage == "package-build" else "",
+                            stderr="",
+                        )
+                    action = args[args.index("-Action") + 1]
+                    if action == "install":
+                        if stage == "package-install":
+                            return SimpleNamespace(
+                                returncode=1, stdout="", stderr="install-stage"
+                            )
+                        installed = True
+                    observed_installed = installed
+                    if action == "status" and stage == "status-readback":
+                        observed_installed = False
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout=json.dumps(
+                            {
+                                "installed": observed_installed,
+                                "name": "SkillMagnet.ContextMenu",
+                                "version": "0.5.9.0",
+                                "architecture": "X64",
+                                "publisher": "CN=Skill Magnet Local",
+                                "install_location": str(install_root),
+                            }
+                        ),
+                        stderr="",
+                    )
+
+                cleanup_patch = (
+                    mock.patch(
+                        "skill_magnet.platforms._cleanup_windows_native_build_workspace",
+                        side_effect=SkillMagnetError("cleanup-stage"),
+                    )
+                    if stage == "workspace-cleanup"
+                    else mock.patch(
+                        "skill_magnet.platforms._cleanup_windows_native_build_workspace",
+                        wraps=__import__(
+                            "skill_magnet.platforms", fromlist=["x"]
+                        )._cleanup_windows_native_build_workspace,
+                    )
+                )
+                completion_patch = (
+                    mock.patch(
+                        "skill_magnet.platforms._complete_native_quarantine",
+                        side_effect=SkillMagnetError("completion-stage"),
+                    )
+                    if stage == "quarantine-completion"
+                    else mock.patch(
+                        "skill_magnet.platforms._complete_native_quarantine",
+                        wraps=__import__(
+                            "skill_magnet.platforms", fromlist=["x"]
+                        )._complete_native_quarantine,
+                    )
+                )
+                with (
+                    mock.patch("skill_magnet.platforms.os.name", "nt"),
+                    mock.patch("skill_magnet.platforms._PACKAGE_ROOT", package_root),
+                    cleanup_patch,
+                    completion_patch,
+                    self.assertRaises((SkillMagnetError, SafetyError)),
+                ):
+                    install_windows_modern_context_menu(
+                        self.config_path,
+                        install_root=install_root,
+                        run=fake_run,
+                        build=True,
+                    )
+                self.assertEqual(
+                    (legacy_output / "nested" / "user-data.bin").read_bytes(),
+                    legacy_bytes,
+                )
+                self.assertTrue((legacy_output / "nested" / "empty").is_dir())
+                self.assertEqual(len(build_outputs), 1)
+                if stage == "workspace-cleanup":
+                    self.assertTrue(build_outputs[0].parent.exists())
+                else:
+                    self.assertFalse(build_outputs[0].parent.exists())
+
+    def test_installed_wheel_refuses_reparse_legacy_output_without_running(self) -> None:
+        package_root = self.root / "reparse-residue" / "site-packages" / "skill_magnet"
+        native_root = package_root / "_native" / "windows-modern-context-menu"
+        shutil.copytree(
+            Path(__file__).resolve().parents[1]
+            / "native"
+            / "windows-modern-context-menu",
+            native_root,
+            ignore=shutil.ignore_patterns("out", "__pycache__", "*.pyc"),
+        )
+        foreign_root = self.root / "foreign-native-output"
+        foreign_root.mkdir()
+        sentinel = foreign_root / "must-survive.bin"
+        sentinel.write_bytes(b"foreign\0bytes")
+        output = native_root / "out"
+        try:
+            output.symlink_to(foreign_root, target_is_directory=True)
+        except OSError as exc:
+            junction = subprocess.run(
+                ["cmd.exe", "/d", "/c", "mklink", "/J", str(output), str(foreign_root)],
+                capture_output=True,
+                text=True,
+            )
+            if junction.returncode != 0 or not output.is_junction():
+                self.skipTest(
+                    "directory symlink and junction are unavailable: "
+                    + str(exc)
+                    + " / "
+                    + (junction.stderr or junction.stdout).strip()
+                )
+        calls: list[list[str]] = []
+
+        def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+            calls.append(args)
+            return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+        with (
+            mock.patch("skill_magnet.platforms.os.name", "nt"),
+            mock.patch("skill_magnet.platforms._PACKAGE_ROOT", package_root),
+            self.assertRaisesRegex(SafetyError, "symlink or junction|recovery tree"),
+        ):
+            install_windows_modern_context_menu(
+                self.config_path,
+                install_root=self.root / "reparse-install-must-not-exist",
+                run=fake_run,
+                build=True,
+            )
+        self.assertEqual(calls, [])
+        self.assertEqual(sentinel.read_bytes(), b"foreign\0bytes")
+
+    def test_legacy_output_restore_collision_preserves_both_copies(self) -> None:
+        package_root = self.root / "restore-collision" / "site-packages" / "skill_magnet"
+        native_root = package_root / "_native" / "windows-modern-context-menu"
+        shutil.copytree(
+            Path(__file__).resolve().parents[1]
+            / "native"
+            / "windows-modern-context-menu",
+            native_root,
+            ignore=shutil.ignore_patterns("out", "__pycache__", "*.pyc"),
+        )
+        legacy_output = native_root / "out"
+        legacy_output.mkdir()
+        (legacy_output / "legacy.bin").write_bytes(b"legacy")
+        build_output: Path | None = None
+
+        def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+            nonlocal build_output
+            build_output = Path(args[args.index("-OutDir") + 1])
+            legacy_output.mkdir()
+            (legacy_output / "new.bin").write_bytes(b"new-owner")
+            (build_output / "ContractTest.obj").write_bytes(b"partial")
+            return SimpleNamespace(returncode=1, stdout="forced failure", stderr="")
+
+        with (
+            mock.patch("skill_magnet.platforms.os.name", "nt"),
+            mock.patch("skill_magnet.platforms._PACKAGE_ROOT", package_root),
+            self.assertRaisesRegex(SkillMagnetError, "both source and preserved copies"),
+        ):
+            install_windows_modern_context_menu(
+                self.config_path,
+                install_root=self.root / "collision-install",
+                run=fake_run,
+                build=True,
+            )
+        self.assertEqual((legacy_output / "new.bin").read_bytes(), b"new-owner")
+        recovery = package_root.parent / ".skill-magnet-native-recovery"
+        preserved = list(recovery.glob("legacy-out-*/legacy.bin"))
+        self.assertEqual(len(preserved), 1)
+        self.assertEqual(preserved[0].read_bytes(), b"legacy")
+        self.assertIsNotNone(build_output)
+        self.assertFalse(build_output.parent.exists())
+
+    def test_incomplete_native_quarantine_is_restored_on_next_install(self) -> None:
+        from skill_magnet.platforms import (
+            _quarantine_packaged_windows_native_output,
+            _recover_incomplete_native_quarantines,
+        )
+
+        package_root = self.root / "crash-recovery" / "site-packages" / "skill_magnet"
+        native_root = package_root / "_native" / "windows-modern-context-menu"
+        native_root.mkdir(parents=True)
+        legacy_output = native_root / "out"
+        (legacy_output / "empty").mkdir(parents=True)
+        payload = bytes(range(256))
+        (legacy_output / "opaque.bin").write_bytes(payload)
+        with mock.patch("skill_magnet.platforms._PACKAGE_ROOT", package_root):
+            record = _quarantine_packaged_windows_native_output(native_root)
+            self.assertIsNotNone(record)
+            self.assertFalse(legacy_output.exists())
+            _recover_incomplete_native_quarantines(native_root)
+            _recover_incomplete_native_quarantines(native_root)
+        self.assertEqual((legacy_output / "opaque.bin").read_bytes(), payload)
+        self.assertTrue((legacy_output / "empty").is_dir())
+        self.assertFalse(Path(record["target"]).exists())
+
+    def test_native_quarantine_process_crash_phases_recover_deterministically(
+        self,
+    ) -> None:
+        from skill_magnet.platforms import (
+            _complete_native_quarantine,
+            _quarantine_packaged_windows_native_output,
+            _recover_incomplete_native_quarantines,
+        )
+
+        for phase in ("after-journal", "after-rename", "after-completion"):
+            with self.subTest(phase=phase):
+                package_root = (
+                    self.root / phase / "site-packages" / "skill_magnet"
+                )
+                native_root = package_root / "_native" / "windows-modern-context-menu"
+                source = native_root / "out"
+                source.mkdir(parents=True)
+                (source / "opaque.bin").write_bytes(phase.encode("ascii"))
+                with mock.patch("skill_magnet.platforms._PACKAGE_ROOT", package_root):
+                    record = _quarantine_packaged_windows_native_output(native_root)
+                    self.assertIsNotNone(record)
+                    target = Path(record["target"])
+                    if phase == "after-journal":
+                        os.replace(target, source)
+                    elif phase == "after-completion":
+                        _complete_native_quarantine(record)
+                    _recover_incomplete_native_quarantines(native_root)
+                    _recover_incomplete_native_quarantines(native_root)
+                if phase == "after-completion":
+                    self.assertFalse(source.exists())
+                    self.assertEqual(
+                        (target / "opaque.bin").read_bytes(), phase.encode("ascii")
+                    )
+                else:
+                    self.assertEqual(
+                        (source / "opaque.bin").read_bytes(), phase.encode("ascii")
+                    )
+                    self.assertFalse(target.exists())
+
+    def test_corrupt_native_recovery_journal_never_deletes_preserved_output(self) -> None:
+        from skill_magnet.platforms import (
+            _quarantine_packaged_windows_native_output,
+            _recover_incomplete_native_quarantines,
+        )
+
+        package_root = self.root / "corrupt-journal" / "site-packages" / "skill_magnet"
+        native_root = package_root / "_native" / "windows-modern-context-menu"
+        legacy_output = native_root / "out"
+        legacy_output.mkdir(parents=True)
+        (legacy_output / "opaque.bin").write_bytes(b"preserve-me")
+        with mock.patch("skill_magnet.platforms._PACKAGE_ROOT", package_root):
+            record = _quarantine_packaged_windows_native_output(native_root)
+            self.assertIsNotNone(record)
+            journal = (
+                Path(record["recovery"])
+                / f"transaction-{record['nonce']}.json"
+            )
+            encoded = journal.read_text(encoding="utf-8")
+            journal.write_text(
+                encoded.replace(
+                    '"schema_version":1',
+                    '"schema_version":1,"schema_version":1',
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(SafetyError, "journal is invalid"):
+                _recover_incomplete_native_quarantines(native_root)
+        target = Path(record["target"])
+        self.assertEqual((target / "opaque.bin").read_bytes(), b"preserve-me")
+        self.assertFalse(legacy_output.exists())
+
+    def test_native_quarantine_detects_source_swap_without_deleting_either_tree(
+        self,
+    ) -> None:
+        from skill_magnet.platforms import _quarantine_packaged_windows_native_output
+
+        package_root = self.root / "source-race" / "site-packages" / "skill_magnet"
+        native_root = package_root / "_native" / "windows-modern-context-menu"
+        source = native_root / "out"
+        source.mkdir(parents=True)
+        (source / "original.bin").write_bytes(b"original")
+        stolen = native_root / "attacker-moved-original"
+        real_replace = os.replace
+
+        def racing_replace(src: object, dst: object) -> None:
+            if Path(src) == source:
+                real_replace(src, stolen)
+                source.mkdir()
+                (source / "replacement.bin").write_bytes(b"replacement")
+            real_replace(src, dst)
+
+        with (
+            mock.patch("skill_magnet.platforms._PACKAGE_ROOT", package_root),
+            mock.patch("skill_magnet.platforms.os.replace", side_effect=racing_replace),
+            self.assertRaisesRegex(SafetyError, "snapshot changed"),
+        ):
+            _quarantine_packaged_windows_native_output(native_root)
+        self.assertEqual((stolen / "original.bin").read_bytes(), b"original")
+        recovery = package_root.parent / ".skill-magnet-native-recovery"
+        replacements = list(recovery.glob("legacy-out-*/replacement.bin"))
+        self.assertEqual(len(replacements), 1)
+        self.assertEqual(replacements[0].read_bytes(), b"replacement")
+
+    def test_native_recovery_lock_blocks_concurrent_installs(self) -> None:
+        from skill_magnet.platforms import (
+            _acquire_native_recovery_lock,
+            _release_native_recovery_lock,
+        )
+
+        package_root = self.root / "concurrent" / "site-packages" / "skill_magnet"
+        native_root = package_root / "_native" / "windows-modern-context-menu"
+        native_root.mkdir(parents=True)
+        with mock.patch("skill_magnet.platforms._PACKAGE_ROOT", package_root):
+            first = _acquire_native_recovery_lock(native_root)
+            try:
+                with self.assertRaisesRegex(SkillMagnetError, "Another .* operation"):
+                    _acquire_native_recovery_lock(native_root)
+            finally:
+                _release_native_recovery_lock(first)
+            second = _acquire_native_recovery_lock(native_root)
+            _release_native_recovery_lock(second)
+
+    def test_native_recovery_lock_hardlink_never_modifies_peer(self) -> None:
+        from skill_magnet.platforms import (
+            _acquire_native_recovery_lock,
+            _ensure_native_recovery_root,
+        )
+
+        package_root = self.root / "lock-hardlink" / "site-packages" / "skill_magnet"
+        native_root = package_root / "_native" / "windows-modern-context-menu"
+        native_root.mkdir(parents=True)
+        with mock.patch("skill_magnet.platforms._PACKAGE_ROOT", package_root):
+            recovery = _ensure_native_recovery_root(native_root)
+            peer = recovery / "peer.bin"
+            peer.write_bytes(b"")
+            os.link(peer, recovery / "operation.lock")
+            with self.assertRaisesRegex(SafetyError, "lock is unsafe"):
+                _acquire_native_recovery_lock(native_root)
+        self.assertEqual(peer.read_bytes(), b"")
+
+    def test_native_recovery_lock_permission_error_reports_path_and_action(self) -> None:
+        from skill_magnet.platforms import (
+            _acquire_native_recovery_lock,
+            _ensure_native_recovery_root,
+        )
+
+        package_root = self.root / "lock-permission" / "site-packages" / "skill_magnet"
+        native_root = package_root / "_native" / "windows-modern-context-menu"
+        native_root.mkdir(parents=True)
+        with mock.patch("skill_magnet.platforms._PACKAGE_ROOT", package_root):
+            recovery = _ensure_native_recovery_root(native_root)
+            lock_path = recovery / "operation.lock"
+            with (
+                mock.patch(
+                    "skill_magnet.platforms._ensure_native_recovery_root",
+                    return_value=recovery,
+                ),
+                mock.patch.object(
+                    Path,
+                    "open",
+                    side_effect=PermissionError(13, "permission denied", str(lock_path)),
+                ),
+                self.assertRaisesRegex(
+                    SkillMagnetError,
+                    re.escape(str(lock_path)) + ".*access permissions.*disk space",
+                ),
+            ):
+                _acquire_native_recovery_lock(native_root)
+
+    def test_incomplete_native_journal_rejects_changed_or_missing_source(self) -> None:
+        from skill_magnet.platforms import (
+            _quarantine_packaged_windows_native_output,
+            _recover_incomplete_native_quarantines,
+        )
+
+        for state in ("changed", "missing"):
+            with self.subTest(state=state):
+                package_root = (
+                    self.root / f"journal-{state}" / "site-packages" / "skill_magnet"
+                )
+                native_root = package_root / "_native" / "windows-modern-context-menu"
+                source = native_root / "out"
+                source.mkdir(parents=True)
+                (source / "original.bin").write_bytes(b"original")
+                with mock.patch("skill_magnet.platforms._PACKAGE_ROOT", package_root):
+                    record = _quarantine_packaged_windows_native_output(native_root)
+                    self.assertIsNotNone(record)
+                    os.replace(record["target"], source)
+                    if state == "changed":
+                        (source / "original.bin").write_bytes(b"changed")
+                    else:
+                        missing_copy = native_root / "witness-missing-copy"
+                        os.replace(source, missing_copy)
+                    with self.assertRaisesRegex(
+                        SafetyError, "snapshot changed|copy is missing"
+                    ):
+                        _recover_incomplete_native_quarantines(native_root)
+                if state == "changed":
+                    self.assertEqual(
+                        (source / "original.bin").read_bytes(), b"changed"
+                    )
+                else:
+                    self.assertEqual(
+                        (missing_copy / "original.bin").read_bytes(), b"original"
+                    )
+
+    def test_native_quarantine_completion_rejects_modified_preserved_tree(self) -> None:
+        from skill_magnet.platforms import (
+            _complete_native_quarantine,
+            _quarantine_packaged_windows_native_output,
+        )
+
+        package_root = self.root / "completion-race" / "site-packages" / "skill_magnet"
+        native_root = package_root / "_native" / "windows-modern-context-menu"
+        source = native_root / "out"
+        source.mkdir(parents=True)
+        (source / "opaque.bin").write_bytes(b"original")
+        with mock.patch("skill_magnet.platforms._PACKAGE_ROOT", package_root):
+            record = _quarantine_packaged_windows_native_output(native_root)
+            self.assertIsNotNone(record)
+            target_file = Path(record["target"]) / "opaque.bin"
+            target_file.write_bytes(b"modified")
+            with self.assertRaisesRegex(SafetyError, "snapshot changed"):
+                _complete_native_quarantine(record)
+        self.assertEqual(target_file.read_bytes(), b"modified")
+        self.assertFalse(source.exists())
+
+    def test_native_workspace_identity_swap_is_never_recursively_deleted(self) -> None:
+        from skill_magnet.platforms import (
+            _cleanup_windows_native_build_workspace,
+            _create_windows_native_build_workspace,
+        )
+
+        created = self.root / "workspace-identity-race"
+
+        def fake_mkdtemp(**_: object) -> str:
+            created.mkdir()
+            return str(created)
+
+        with mock.patch("skill_magnet.platforms.tempfile.mkdtemp", fake_mkdtemp):
+            workspace = _create_windows_native_build_workspace(self.root)
+        original = created.with_name(created.name + "-original")
+        created.rename(original)
+        created.mkdir()
+        (created / "foreign.bin").write_bytes(b"must-survive")
+        with self.assertRaisesRegex(SafetyError, "identity changed"):
+            _cleanup_windows_native_build_workspace(workspace)
+        self.assertEqual((created / "foreign.bin").read_bytes(), b"must-survive")
+        self.assertTrue((original / ".skill-magnet-native-build.json").is_file())
+        self.assertTrue((original / "out").is_dir())
+
+    def test_native_workspace_cleanup_swap_never_deletes_replacement(self) -> None:
+        from skill_magnet.platforms import (
+            _capture_windows_native_cleanup_identity,
+            _cleanup_windows_native_build_workspace,
+            _create_windows_native_build_workspace,
+            _delete_windows_native_path_by_handle,
+        )
+
+        created = self.root / "workspace-cleanup-race"
+
+        def fake_mkdtemp(**_: object) -> str:
+            created.mkdir()
+            return str(created)
+
+        with mock.patch("skill_magnet.platforms.tempfile.mkdtemp", fake_mkdtemp):
+            workspace = _create_windows_native_build_workspace(self.root)
+        output = Path(workspace["output"])
+        (output / "ContractTest.obj").write_bytes(b"owned")
+        _capture_windows_native_cleanup_identity(workspace)
+        swapped = False
+        owned_isolate = self.root / "owned-isolate"
+
+        def swap_then_delete(
+            path: Path, expected: dict[str, int], *, directory: bool
+        ) -> None:
+            nonlocal swapped
+            if not swapped:
+                swapped = True
+                retired = path.parents[1]
+                os.replace(retired, owned_isolate)
+                (retired / "out").mkdir(parents=True)
+                (retired / "out" / "ContractTest.obj").write_bytes(b"foreign")
+                (retired / "sentinel.bin").write_bytes(b"must-survive")
+            _delete_windows_native_path_by_handle(
+                path, expected, directory=directory
+            )
+
+        with (
+            mock.patch(
+                "skill_magnet.platforms._delete_windows_native_path_by_handle",
+                side_effect=swap_then_delete,
+            ),
+            self.assertRaisesRegex(SkillMagnetError, "preserved for recovery"),
+        ):
+            _cleanup_windows_native_build_workspace(workspace)
+        retired = next(self.root.glob("workspace-cleanup-race.cleanup-*"))
+        self.assertEqual((retired / "sentinel.bin").read_bytes(), b"must-survive")
+        self.assertEqual(
+            (owned_isolate / "out" / "ContractTest.obj").read_bytes(), b"owned"
+        )
+
+    def test_native_workspace_cleanup_content_change_never_deletes_modified_file(self) -> None:
+        from skill_magnet.platforms import (
+            _capture_windows_native_cleanup_identity,
+            _cleanup_windows_native_build_workspace,
+            _create_windows_native_build_workspace,
+            _delete_windows_native_path_by_handle,
+        )
+
+        created = self.root / "workspace-content-change"
+        with mock.patch(
+            "skill_magnet.platforms.tempfile.mkdtemp",
+            side_effect=lambda **_: (created.mkdir(), str(created))[1],
+        ):
+            workspace = _create_windows_native_build_workspace(self.root)
+        output = Path(workspace["output"])
+        artifact = output / "ContractTest.obj"
+        artifact.write_bytes(b"owned")
+        _capture_windows_native_cleanup_identity(workspace)
+        changed = False
+
+        def mutate_then_delete(
+            path: Path, expected: dict[str, object], *, directory: bool
+        ) -> None:
+            nonlocal changed
+            if not directory and not changed:
+                changed = True
+                path.write_bytes(b"other")
+            _delete_windows_native_path_by_handle(path, expected, directory=directory)
+
+        with (
+            mock.patch(
+                "skill_magnet.platforms._delete_windows_native_path_by_handle",
+                side_effect=mutate_then_delete,
+            ),
+            self.assertRaisesRegex(SkillMagnetError, "preserved for recovery"),
+        ):
+            _cleanup_windows_native_build_workspace(workspace)
+        isolated = next(created.parent.glob(created.name + ".cleanup-*"))
+        self.assertEqual((isolated / "out" / artifact.name).read_bytes(), b"other")
+
+    def test_native_workspace_cleanup_rejects_unproduced_allowlisted_name(self) -> None:
+        from skill_magnet.platforms import (
+            _capture_windows_native_cleanup_identity,
+            _create_windows_native_build_workspace,
+        )
+
+        created = self.root / "workspace-unproduced-output"
+        with mock.patch(
+            "skill_magnet.platforms.tempfile.mkdtemp",
+            side_effect=lambda **_: (created.mkdir(), str(created))[1],
+        ):
+            workspace = _create_windows_native_build_workspace(self.root)
+        output = Path(workspace["output"])
+        launcher = output / "SkillMagnetLauncher.exe"
+        launcher.write_bytes(b"not produced by build.ps1")
+        with self.assertRaisesRegex(SafetyError, "unowned entries"):
+            _capture_windows_native_cleanup_identity(workspace)
+        self.assertEqual(launcher.read_bytes(), b"not produced by build.ps1")
+
+    def test_native_source_manifest_rejects_duplicate_keys(self) -> None:
+        from skill_magnet.platforms import _windows_native_build_binding
+
+        native_root = self._native_output.parent
+        manifest = self._native_output / "SkillMagnetNativeSource.json"
+        original = manifest.read_text(encoding="utf-8")
+        try:
+            for duplicate in (
+                original.replace('"schema_version":1', '"schema_version":1,"schema_version":1', 1),
+                original.replace('"path":"SkillMagnetCommand.dll"', '"path":"SkillMagnetCommand.dll","path":"SkillMagnetCommand.dll"', 1),
+            ):
+                with self.subTest(duplicate=duplicate[:80]):
+                    manifest.write_text(duplicate, encoding="utf-8")
+                    binding = _windows_native_build_binding(
+                        native_root, self._native_output
+                    )
+                    self.assertFalse(binding["native_source_manifest_valid"])
+                    self.assertFalse(binding["native_build_binding_valid"])
+        finally:
+            manifest.write_text(original, encoding="utf-8")
+
+    def test_all_windows_context_mutators_share_one_lock(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        failures: list[BaseException] = []
+
+        def held_install(*_: object, **__: object) -> dict[str, object]:
+            entered.set()
+            if not release.wait(10):
+                raise AssertionError("test did not release held install")
+            return {"installed": True}
+
+        def first() -> None:
+            try:
+                install_windows_context_menus(self.config_path)
+            except BaseException as exc:
+                failures.append(exc)
+
+        with (
+            mock.patch("skill_magnet.platforms.os.name", "nt"),
+            mock.patch(
+                "skill_magnet.platforms._install_windows_context_menus_unlocked",
+                side_effect=held_install,
+            ),
+            mock.patch(
+                "skill_magnet.platforms._rollback_windows_context_menus_unlocked",
+                return_value={"rolled_back": True},
+            ) as rollback_body,
+            mock.patch(
+                "skill_magnet.platforms._uninstall_windows_context_menus_unlocked",
+                return_value={"removed": True},
+            ) as uninstall_body,
+        ):
+            worker = threading.Thread(target=first)
+            worker.start()
+            self.assertTrue(entered.wait(10))
+            for operation in (rollback_windows_context_menus, uninstall_windows_context_menus):
+                with self.assertRaisesRegex(SkillMagnetError, "operation is active"):
+                    operation()
+            self.assertEqual(rollback_body.call_count, 0)
+            self.assertEqual(uninstall_body.call_count, 0)
+            release.set()
+            worker.join(10)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(failures, [])
+            self.assertEqual(rollback_windows_context_menus(), {"rolled_back": True})
+
+    def test_windows_context_mutation_lock_releases_after_failure(self) -> None:
+        with (
+            mock.patch("skill_magnet.platforms.os.name", "nt"),
+            mock.patch(
+                "skill_magnet.platforms._install_windows_context_menus_unlocked",
+                side_effect=[SkillMagnetError("failed"), {"installed": True}],
+            ),
+        ):
+            with self.assertRaisesRegex(SkillMagnetError, "failed"):
+                install_windows_context_menus(self.config_path)
+            self.assertEqual(
+                install_windows_context_menus(self.config_path), {"installed": True}
+            )
+
+    def test_windows_context_menu_install_returns_native_recovery_receipt(self) -> None:
+        root = self.root / "combined-recovery-receipt"
+        receipt = {
+            "usable_installed_state": True,
+            "packaged_native_build_residue_removed": False,
+            "packaged_native_build_residue_preserved": True,
+            "packaged_native_build_recovery_id": "a" * 32,
+            "packaged_native_build_recovery_directory": str(
+                self.root / ".skill-magnet-native-recovery"
+            ),
+            "legacy_certificate_thumbprints_removed": ["B" * 40],
+        }
+        readback = {"usable_installed_state": True}
+        with (
+            mock.patch("skill_magnet.platforms.os.name", "nt"),
+            mock.patch(
+                "skill_magnet.platforms._recover_windows_rollback_rotation",
+                return_value=False,
+            ),
+            mock.patch(
+                "skill_magnet.platforms._recover_windows_certificate_ownership_from_residue",
+                return_value=False,
+            ),
+            mock.patch(
+                "skill_magnet.platforms._cleanup_windows_context_residue",
+                return_value=[],
+            ),
+            mock.patch(
+                "skill_magnet.platforms._capture_windows_context_backup",
+                return_value={"package_installed": False},
+            ),
+            mock.patch(
+                "skill_magnet.platforms.install_windows_modern_context_menu",
+                return_value=receipt,
+            ),
+            mock.patch("skill_magnet.platforms.uninstall_context_menu"),
+            mock.patch(
+                "skill_magnet.platforms._windows_owned_registry_roots_present",
+                return_value=[],
+            ),
+            mock.patch(
+                "skill_magnet.platforms.windows_modern_context_menu_status",
+                return_value=readback,
+            ),
+        ):
+            result = install_windows_context_menus(
+                self.config_path, install_root=root, build=True
+            )
+        for field in (
+            "packaged_native_build_residue_removed",
+            "packaged_native_build_residue_preserved",
+            "packaged_native_build_recovery_id",
+            "packaged_native_build_recovery_directory",
+            "legacy_certificate_thumbprints_removed",
+        ):
+            self.assertEqual(result["modern"][field], receipt[field])
+
+    def test_outer_context_install_post_modern_failure_reports_native_quarantine(
+        self,
+    ) -> None:
+        recovery = self.root / ".skill-magnet-native-recovery"
+        receipt = {
+            "usable_installed_state": True,
+            "packaged_native_build_residue_preserved": True,
+            "packaged_native_build_recovery_id": "c" * 32,
+            "packaged_native_build_recovery_directory": str(recovery),
+        }
+        for stage in ("classic-cleanup", "final-readback", "rotation"):
+            with self.subTest(stage=stage):
+                root = self.root / stage / "ContextMenu"
+                if stage == "rotation":
+                    root.with_name(root.name + ".rollback").mkdir(parents=True)
+                classic_effect = (
+                    SkillMagnetError("classic cleanup failed")
+                    if stage == "classic-cleanup"
+                    else None
+                )
+                status_effect = (
+                    SkillMagnetError("final readback failed")
+                    if stage == "final-readback"
+                    else None
+                )
+                rotation_effect = (
+                    SkillMagnetError("rotation failed")
+                    if stage == "rotation"
+                    else None
+                )
+                with (
+                    mock.patch("skill_magnet.platforms.os.name", "nt"),
+                    mock.patch(
+                        "skill_magnet.platforms._recover_windows_rollback_rotation",
+                        return_value=False,
+                    ),
+                    mock.patch(
+                        "skill_magnet.platforms._recover_windows_certificate_ownership_from_residue",
+                        return_value=False,
+                    ),
+                    mock.patch(
+                        "skill_magnet.platforms._cleanup_windows_context_residue",
+                        return_value=[],
+                    ),
+                    mock.patch(
+                        "skill_magnet.platforms._capture_windows_context_backup",
+                        return_value={"package_installed": False},
+                    ),
+                    mock.patch(
+                        "skill_magnet.platforms.install_windows_modern_context_menu",
+                        return_value=receipt,
+                    ),
+                    mock.patch(
+                        "skill_magnet.platforms.uninstall_context_menu",
+                        side_effect=classic_effect,
+                    ),
+                    mock.patch(
+                        "skill_magnet.platforms._windows_owned_registry_roots_present",
+                        return_value=[],
+                    ),
+                    mock.patch(
+                        "skill_magnet.platforms.windows_modern_context_menu_status",
+                        return_value={"usable_installed_state": True},
+                        side_effect=status_effect,
+                    ),
+                    mock.patch(
+                        "skill_magnet.platforms._rotate_windows_context_backup",
+                        side_effect=rotation_effect,
+                    ),
+                    self.assertRaisesRegex(
+                        SkillMagnetError,
+                        re.escape(str(recovery)) + ".*" + "c" * 32,
+                    ),
+                ):
+                    install_windows_context_menus(
+                        self.config_path, install_root=root, build=True
+                    )
 
     def test_windows_modern_install_removes_deprecated_blocked_launcher(self) -> None:
         root = self.root / "remove-blocked-launcher"
