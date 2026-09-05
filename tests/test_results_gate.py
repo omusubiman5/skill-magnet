@@ -1148,6 +1148,20 @@ class ExplorerResultsGateTest(unittest.TestCase):
         self.assertIn("$identity.invocation_id = $InvocationId", ownership)
         self.assertIn("Fast duplicate launchers can exit before registration", ownership)
 
+    def test_field_collector_scopes_root_to_the_context_menu_it_opened(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        context = collector[
+            collector.index("function Open-ExplorerContextMenu") :
+            collector.index("function Test-ExactStringSequence")
+        ]
+        self.assertIn("$preExistingRootKeys", context)
+        self.assertIn("Get-UiaRuntimeKey", context)
+        self.assertIn("$rootByRuntime.ContainsKey", context)
+        self.assertIn("$openedMenu.pre_existing_root_keys.ContainsKey", context)
+        self.assertIn("exactly one newly visible Skill Magnet root", context)
+
     def test_field_collector_preserves_preexisting_ui_and_owner_generation(self) -> None:
         collector = (
             ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"

@@ -317,6 +317,11 @@ function Get-VisibleNamedElements([string]$Name) {
     })
 }
 
+function Get-UiaRuntimeKey($Element) {
+    try { (@($Element.GetRuntimeId()) | ForEach-Object { [string]$_ }) -join "." }
+    catch { "" }
+}
+
 function Wait-VisibleNamedElement([string]$Name, [int]$Seconds = 12) {
     $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
     do {
@@ -361,6 +366,15 @@ function Get-ExplorerElement($Window) {
 
 function Open-ExplorerContextMenu($Window, [string]$SelectedName = "") {
     $explorer = Get-ExplorerElement $Window
+    $preExistingRootKeys = @{}
+    foreach ($root in @(Get-VisibleNamedElements "Skill Magnet" | Where-Object {
+        try {
+            $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::MenuItem
+        } catch { $false }
+    })) {
+        $key = Get-UiaRuntimeKey $root
+        if ($key) { $preExistingRootKeys[$key] = $true }
+    }
     if ($SelectedName) {
         $condition = New-Object System.Windows.Automation.PropertyCondition(
             [System.Windows.Automation.AutomationElement]::NameProperty, $SelectedName
@@ -389,6 +403,11 @@ function Open-ExplorerContextMenu($Window, [string]$SelectedName = "") {
         [SkillMagnetFieldInput]::RightClick($x, $y)
     }
     Start-Sleep -Milliseconds 300
+    [ordered]@{
+        pre_existing_root_keys = $preExistingRootKeys
+        click_x = $x
+        click_y = $y
+    }
 }
 
 function Invoke-VisibleSkillMagnetRoot(
@@ -396,14 +415,25 @@ function Invoke-VisibleSkillMagnetRoot(
     [string]$SelectedName = "",
     [string]$TranscriptSource = ""
 ) {
-    Open-ExplorerContextMenu $Window $SelectedName
-    $roots = @(Get-VisibleNamedElements "Skill Magnet") | Where-Object {
+    $openedMenu = Open-ExplorerContextMenu $Window $SelectedName
+    $rootByRuntime = @{}
+    foreach ($root in @(Get-VisibleNamedElements "Skill Magnet") | Where-Object {
         try {
             $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::MenuItem
         } catch { $false }
+    }) {
+        $key = Get-UiaRuntimeKey $root
+        if ($key -and -not $rootByRuntime.ContainsKey($key)) {
+            $rootByRuntime[$key] = $root
+        }
     }
+    $roots = @($rootByRuntime.GetEnumerator() | Where-Object {
+        -not $openedMenu.pre_existing_root_keys.ContainsKey([string]$_.Key)
+    } | ForEach-Object { $_.Value })
+    $diagnostic = @($rootByRuntime.Keys | Sort-Object) -join ","
     Assert-Field ($roots.Count -eq 1) `
-        "Explorer must expose exactly one visible Skill Magnet root; observed $($roots.Count)."
+        ("Explorer must expose exactly one newly visible Skill Magnet root; " +
+         "observed $($roots.Count); all visible runtime ids: $diagnostic")
     $invoke = Get-Pattern $roots[0] ([System.Windows.Automation.InvokePattern]::Pattern)
     $expand = Get-Pattern $roots[0] ([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
     Assert-Field ($null -ne $invoke) "Skill Magnet root has no InvokePattern."
