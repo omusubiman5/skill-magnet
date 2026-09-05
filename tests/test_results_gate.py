@@ -2523,6 +2523,7 @@ $observations | ConvertTo-Json -Compress
                 check=False,
             )
         self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(completed.stdout.strip(), repr((completed.stdout, completed.stderr)))
         observation = json.loads(completed.stdout.strip())
         self.assertTrue(all(observation.values()), observation)
 
@@ -2533,6 +2534,23 @@ $observations | ConvertTo-Json -Compress
         ).read_text(encoding="utf-8-sig")
         csharp = collector.split(') -TypeDefinition @"', 1)[1].split('"@', 1)[0]
         encoded_csharp = base64.b64encode(csharp.encode("utf-8")).decode("ascii")
+        def function_source(name: str) -> str:
+            start = collector.index(f"function {name}")
+            end = collector.find("\nfunction ", start + 1)
+            return collector[start:] if end < 0 else collector[start:end]
+
+        powershell_functions = "\n".join(
+            function_source(name)
+            for name in (
+                "Assert-Field", "Get-BytesSha256", "Get-Utf8Sha256",
+                "Get-UiaRuntimeKey", "New-ExplorerRowSnapshot",
+                "Test-UiaSelfOrDescendantOfSnapshot", "Get-FieldProcessIdentity",
+                "Test-FieldProcessIdentity", "Invoke-CheckedExplorerPhysicalClick",
+            )
+        )
+        encoded_functions = base64.b64encode(
+            powershell_functions.encode("utf-8")
+        ).decode("ascii")
         probe = rf'''
 $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 Add-Type -AssemblyName System.Windows.Forms
@@ -2542,6 +2560,8 @@ $source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("{encoded_
 Add-Type -ReferencedAssemblies @(
     "UIAutomationClient", "UIAutomationTypes", "WindowsBase"
 ) -TypeDefinition $source
+$functionSource = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("{encoded_functions}"))
+. ([ScriptBlock]::Create($functionSource))
 function Sha([string]$Text) {{
     $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Text)
     [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes)).Replace("-", "").ToLowerInvariant()
@@ -2562,26 +2582,17 @@ function Run-Sequence([string]$Kind, [int]$Offset) {{
         $process = [Diagnostics.Process]::GetCurrentProcess()
         $rowUia = [Windows.Automation.AutomationElement]::FromHandle($row.Handle)
         $rowRect = $rowUia.Current.BoundingRectangle
-        $args = @(
-            $point.X, $point.Y, $button.Handle, $root.Handle, [uint32]$process.Id,
-            [IO.Path]::GetFullPath($process.MainModule.FileName),
-            [long]$process.StartTime.ToUniversalTime().Ticks, $true,
-            (Sha "selected-child"), "", "", "", "", [long]0, "",
-            [string]::Join(".", $rowUia.GetRuntimeId()),
-            [int]$rowUia.Current.ControlType.Id, (Sha $rowUia.Current.Name),
-            [double]$rowRect.X, [double]$rowRect.Y,
-            [double]$rowRect.Width, [double]$rowRect.Height
-        )
+        $window = [pscustomobject]@{{ HWND = [int64]$root.Handle }}
         [SkillMagnetFieldInput]::SetCursorPos($point.X, $point.Y) | Out-Null
         [SkillMagnetFieldInput]::FocusWindow($root.Handle) | Out-Null
-        $left = [SkillMagnetFieldInput]::CheckedClickCurrent(
-            $args[0],$args[1],$args[2],$args[3],$args[4],$args[5],$args[6],
-            $args[7],$args[8],$args[9],$args[10],$args[11],$args[12],$args[13],
-            $args[14],$args[15],$args[16],$args[17],$args[18],$args[19],$args[20],
-            $args[21],$false
-        )
+        [Windows.Forms.Application]::DoEvents()
+        $rowSnapshot = New-ExplorerRowSnapshot $rowUia $point.X $point.Y
+        Invoke-CheckedExplorerPhysicalClick `
+            $window $point.X $point.Y $false $rowSnapshot
+        $left = $true
         [Windows.Forms.Application]::DoEvents()
         if ($Kind -eq "reparent") {{ $competitor.Controls.Add($button) }}
+        elseif ($Kind -eq "move") {{ $row.SetBounds(21, 30, 260, 80) }}
         else {{
             $root.Controls.Remove($row)
             $replacement = [Windows.Forms.Panel]::new(); $replacement.Text = "selected-row"
@@ -2594,20 +2605,20 @@ function Run-Sequence([string]$Kind, [int]$Offset) {{
         [Windows.Forms.Application]::DoEvents()
         [SkillMagnetFieldInput]::SetCursorPos($point.X, $point.Y) | Out-Null
         [SkillMagnetFieldInput]::FocusWindow($root.Handle) | Out-Null
-        $right = [SkillMagnetFieldInput]::CheckedClickCurrent(
-            $args[0],$args[1],$args[2],$args[3],$args[4],$args[5],$args[6],
-            $args[7],$args[8],$args[9],$args[10],$args[11],$args[12],$args[13],
-            $args[14],$args[15],$args[16],$args[17],$args[18],$args[19],$args[20],
-            $args[21],$true
-        )
+        $rightRejected = $false
+        try {{
+            Invoke-CheckedExplorerPhysicalClick `
+                $window $point.X $point.Y $true $rowSnapshot
+        }} catch {{ $rightRejected = $true }}
         [Windows.Forms.Application]::DoEvents()
-        return $left -and -not $right
+        return $left -and $rightRejected
     }}
     finally {{ $competitor.Close(); $root.Close() }}
 }}
 $script:rightCount = 0
 [pscustomobject]@{{
     reparent = Run-Sequence "reparent" 0
+    move = Run-Sequence "move" 4
     same_name_swap = Run-Sequence "same_name_swap" 8
     right_mouse_zero = $script:rightCount -eq 0
 }} | ConvertTo-Json -Compress
@@ -2647,8 +2658,8 @@ $script:rightCount = 0
             "Get-UiaRuntimeKey $finalUia",
             "Get-Utf8Sha256 ([string]$finalUia.Current.Name)",
             "CheckedClickCurrent",
-            "Test-UiaSelfOrDescendantOf $firstUia $ExpectedElement",
-            "Test-UiaSelfOrDescendantOf $finalUia $ExpectedElement",
+            "Test-UiaSelfOrDescendantOfSnapshot $firstUia $ExpectedRowSnapshot",
+            "Test-UiaSelfOrDescendantOfSnapshot $finalUia $ExpectedRowSnapshot",
             "no mouse input was sent",
         ):
             self.assertIn(required, gate)
@@ -2659,7 +2670,7 @@ $script:rightCount = 0
         ]
         self.assertEqual(menu.count("Invoke-CheckedExplorerPhysicalClick"), 3)
         self.assertIn(
-            "Invoke-CheckedExplorerPhysicalClick $Window $x $y $true $candidates[0]",
+            "Invoke-CheckedExplorerPhysicalClick $Window $x $y $true $selectedRowSnapshot",
             menu,
         )
         self.assertIn(
@@ -2681,9 +2692,12 @@ $script:rightCount = 0
             collector.index("public static class SkillMagnetStableLog") :
             collector.index('"@', collector.index("public static class SkillMagnetStableLog"))
         ]
-        self.assertIn("FileShare.ReadWrite | FileShare.Delete", native_reader)
+        self.assertIn("FileShare.ReadWrite", native_reader)
+        self.assertNotIn("FileShare.Delete", native_reader)
         self.assertIn("GetFileInformationByHandle", native_reader)
-        self.assertIn("$snapshot = [SkillMagnetStableLog]::Read($full)", reader)
+        self.assertIn("MemoryMappedFile.CreateFromFile", native_reader)
+        self.assertIn("mappings.Add(mapping)", native_reader)
+        self.assertIn("$snapshot = $script:InvokeLogReaders[$full].Read()", reader)
         self.assertNotIn("ReadAllText", reader)
 
     @unittest.skipUnless(os.name == "nt", "requires Windows file identities")
@@ -2737,26 +2751,29 @@ try {{
     $partialTerminalCompleted = @(Read-InvokeLines $path).Count -eq 3
 
     $truncateRejected = $false
-    Write-Utf16 $path "x`r`n"
-    try {{ Read-InvokeLines $path | Out-Null }} catch {{ $truncateRejected = $true }}
+    try {{ Write-Utf16 $path "x`r`n" }} catch {{ $truncateRejected = $true }}
 
     $script:InvokeLogSnapshots = @{{}}
+    foreach ($reader in @($script:InvokeLogReaders.Values)) {{ $reader.Dispose() }}
+    $script:InvokeLogReaders = @{{}}
     Write-Utf16 $path "one`r`n"
     Read-InvokeLines $path | Out-Null
-    Write-Utf16 $path "x"
     $incompleteRewriteRejected = $false
-    try {{ Read-InvokeLines $path | Out-Null }} catch {{ $incompleteRewriteRejected = $true }}
-    Append-Utf16 $path "forged-terminal`r`n"
-    $forgedRegrowthRejected = $false
-    try {{ Read-InvokeLines $path | Out-Null }} catch {{ $forgedRegrowthRejected = $true }}
+    try {{ Write-Utf16 $path "x" }} catch {{ $incompleteRewriteRejected = $true }}
+    $forgedRegrowthRejected = $incompleteRewriteRejected -and
+        (@(Read-InvokeLines $path).Count -eq 1)
 
     $script:InvokeLogSnapshots = @{{}}
+    foreach ($reader in @($script:InvokeLogReaders.Values)) {{ $reader.Dispose() }}
+    $script:InvokeLogReaders = @{{}}
     Write-Utf16 $path "rotation-base`r`n"
     Read-InvokeLines $path | Out-Null
-    Move-Item -LiteralPath $path -Destination ($path + ".old")
-    Write-Utf16 $path "rotation-new`r`n"
     $rotationRejected = $false
-    try {{ Read-InvokeLines $path | Out-Null }} catch {{ $rotationRejected = $true }}
+    try {{
+        Move-Item -LiteralPath $path -Destination ($path + ".old")
+        Write-Utf16 $path "rotation-new`r`n"
+        Read-InvokeLines $path | Out-Null
+    }} catch {{ $rotationRejected = $true }}
 
     $growthPath = Join-Path $root "growth.log"
     Write-Utf16 $growthPath "growth-base`r`n"
@@ -2793,6 +2810,10 @@ try {{
 }}
 finally {{
     [SkillMagnetStableLog]::TestAfterReadBeforeFinalIdentity = $null
+    if ($null -ne $script:InvokeLogReaders) {{
+        foreach ($reader in @($script:InvokeLogReaders.Values)) {{ $reader.Dispose() }}
+        $script:InvokeLogReaders = @{{}}
+    }}
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }}
 '''
@@ -2810,6 +2831,7 @@ finally {{
                 check=False,
             )
         self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(completed.stdout.strip(), repr((completed.stdout, completed.stderr)))
         observation = json.loads(completed.stdout.strip())
         self.assertTrue(all(observation.values()), observation)
 

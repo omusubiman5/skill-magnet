@@ -387,6 +387,7 @@ Add-Type -ReferencedAssemblies @(
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -571,8 +572,7 @@ public static class SkillMagnetFieldInput {
                     StringComparison.Ordinal) ||
                 !SameRectangle(row.Current.BoundingRectangle, new System.Windows.Rect(
                     expectedRowX, expectedRowY, expectedRowWidth, expectedRowHeight)) ||
-                !row.Current.IsEnabled || row.Current.IsOffscreen ||
-                !UiaChainContainsHwnd(row, root)) return false;
+                !row.Current.IsEnabled || row.Current.IsOffscreen) return false;
             return true;
         }
         catch { return false; }
@@ -731,7 +731,7 @@ public static class SkillMagnetStableLog {
             BY_HANDLE_FILE_INFORMATION after;
             using (FileStream stream = new FileStream(
                 full, FileMode.Open, FileAccess.Read,
-                FileShare.ReadWrite | FileShare.Delete)) {
+                FileShare.ReadWrite)) {
                 if (!Info(stream, out before)) { result.Error = "identity_unavailable"; return result; }
                 long length = Size(before);
                 if (length < 0 || length > 16 * 1024 * 1024 || (length % 2) != 0) {
@@ -759,7 +759,7 @@ public static class SkillMagnetStableLog {
             BY_HANDLE_FILE_INFORMATION reopened;
             using (FileStream stream = new FileStream(
                 full, FileMode.Open, FileAccess.Read,
-                FileShare.ReadWrite | FileShare.Delete)) {
+                FileShare.ReadWrite)) {
                 if (!Info(stream, out reopened)) { result.Error = "identity_unavailable"; return result; }
             }
             if (!String.Equals(Identity(before), Identity(reopened), StringComparison.Ordinal) ||
@@ -778,6 +778,75 @@ public static class SkillMagnetStableLog {
         catch (IOException) { result.Error = "io_error"; return result; }
         catch (UnauthorizedAccessException) { result.Error = "access_denied"; return result; }
         catch { result.Error = "unexpected_error"; return result; }
+    }
+}
+public sealed class SkillMagnetStableLogReader : IDisposable {
+    private readonly string path;
+    private readonly FileStream guard;
+    private long lockedLength;
+    private string identity;
+    private readonly System.Collections.Generic.List<MemoryMappedFile> mappings =
+        new System.Collections.Generic.List<MemoryMappedFile>();
+    public SkillMagnetStableLogReader(string value) {
+        path = Path.GetFullPath(value);
+        FileAttributes attributes = File.GetAttributes(path);
+        if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
+            throw new IOException("invoke log must be a regular file");
+        // Keep the same file and pathname pinned for the whole observation.
+        // Writers may append, but delete/rename and replacement are denied.
+        guard = new FileStream(path, FileMode.Open, FileAccess.Read,
+            FileShare.ReadWrite);
+    }
+    private string ReadGuardText(long expectedLength) {
+        if (expectedLength < 0 || expectedLength > 16 * 1024 * 1024 ||
+            (expectedLength % 2) != 0 || guard.Length != expectedLength) return null;
+        byte[] bytes = new byte[(int)expectedLength];
+        guard.Seek(0, SeekOrigin.Begin);
+        int offset = 0;
+        while (offset < bytes.Length) {
+            int count = guard.Read(bytes, offset, bytes.Length - offset);
+            if (count <= 0) return null;
+            offset += count;
+        }
+        if (guard.Length != expectedLength) return null;
+        try { return new UnicodeEncoding(false, false, true).GetString(bytes); }
+        catch { return null; }
+    }
+    public SkillMagnetLogSnapshot Read() {
+        SkillMagnetLogSnapshot first = SkillMagnetStableLog.Read(path);
+        if (!first.Stable || !first.Complete) return first;
+        if (identity != null && !String.Equals(identity, first.Identity,
+            StringComparison.Ordinal)) {
+            first.Stable = false; first.Error = "persistent_identity_changed"; return first;
+        }
+        if (first.Length < lockedLength) {
+            first.Stable = false; first.Error = "persistent_truncation"; return first;
+        }
+        if (first.Length > lockedLength) {
+            MemoryMappedFile mapping;
+            try {
+                mapping = MemoryMappedFile.CreateFromFile(
+                    guard, null, first.Length, MemoryMappedFileAccess.Read,
+                    HandleInheritability.None, true);
+            }
+            catch { first.Stable = false; first.Error = "append_mapping_failed"; return first; }
+            string lockedText = ReadGuardText(first.Length);
+            if (!String.Equals(first.Text, lockedText, StringComparison.Ordinal)) {
+                mapping.Dispose();
+                first.Stable = false; first.Error = "changed_before_append_lock"; return first;
+            }
+            mappings.Add(mapping);
+            lockedLength = first.Length;
+            identity = first.Identity;
+            return first;
+        }
+        identity = first.Identity;
+        return first;
+    }
+    public void Dispose() {
+        foreach (MemoryMappedFile mapping in mappings) mapping.Dispose();
+        mappings.Clear();
+        guard.Dispose();
     }
 }
 "@
@@ -839,9 +908,40 @@ function Get-Pattern($Element, $Pattern) {
     return $null
 }
 
-function Test-UiaSelfOrDescendantOf($Element, $ExpectedAncestor) {
-    if ($null -eq $Element -or $null -eq $ExpectedAncestor) { return $false }
-    $expectedKey = Get-UiaRuntimeKey $ExpectedAncestor
+function New-ExplorerRowSnapshot($Element, [int]$X, [int]$Y) {
+    $rectangle = $Element.Current.BoundingRectangle
+    $point = [SkillMagnetFieldInput+POINT]::new()
+    $point.X = $X
+    $point.Y = $Y
+    $hitHwnd = [SkillMagnetFieldInput]::WindowFromPoint($point)
+    $hit = [System.Windows.Automation.AutomationElement]::FromPoint(
+        [System.Windows.Point]::new([double]$X, [double]$Y)
+    )
+    $hitRectangle = $hit.Current.BoundingRectangle
+    [pscustomobject]@{
+        runtime_key = Get-UiaRuntimeKey $Element
+        control_type = [int]$Element.Current.ControlType.Id
+        name_sha256 = Get-Utf8Sha256 ([string]$Element.Current.Name)
+        x = [double]$rectangle.X
+        y = [double]$rectangle.Y
+        width = [double]$rectangle.Width
+        height = [double]$rectangle.Height
+        child_hwnd = [int64]$hitHwnd
+        child_runtime_key = Get-UiaRuntimeKey $hit
+        child_control_type = [int]$hit.Current.ControlType.Id
+        child_name_sha256 = Get-Utf8Sha256 ([string]$hit.Current.Name)
+        child_x = [double]$hitRectangle.X
+        child_y = [double]$hitRectangle.Y
+        child_width = [double]$hitRectangle.Width
+        child_height = [double]$hitRectangle.Height
+        child_enabled = [bool]$hit.Current.IsEnabled
+        child_offscreen = [bool]$hit.Current.IsOffscreen
+    }
+}
+
+function Test-UiaSelfOrDescendantOfSnapshot($Element, $ExpectedRowSnapshot) {
+    if ($null -eq $Element -or $null -eq $ExpectedRowSnapshot) { return $false }
+    $expectedKey = [string]$ExpectedRowSnapshot.runtime_key
     if (-not $expectedKey) { return $false }
     $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
     $current = $Element
@@ -886,7 +986,7 @@ function Invoke-CheckedExplorerPhysicalClick(
     [int]$X,
     [int]$Y,
     [bool]$RightClick,
-    $ExpectedElement = $null
+    $ExpectedRowSnapshot = $null
 ) {
     $rootHandle = [IntPtr]([int64]$Window.HWND)
     $rootPid = [uint32]0
@@ -909,15 +1009,28 @@ function Invoke-CheckedExplorerPhysicalClick(
         [SkillMagnetFieldInput]::GetAncestor($firstHwnd, 2) -eq $rootHandle -and
         [int]$firstUia.Current.ProcessId -eq [int]$rootPid
     ) "Explorer click point is not bound to the expected HWND/PID/root."
-    if ($null -ne $ExpectedElement) {
-        $expectedNameSha256 = Get-Utf8Sha256 ([string]$ExpectedElement.Current.Name)
+    if ($null -ne $ExpectedRowSnapshot) {
+        $firstRectangle = $firstUia.Current.BoundingRectangle
         Assert-Field (
-            (Test-UiaSelfOrDescendantOf $firstUia $ExpectedElement) -and
-            (Get-Utf8Sha256 ([string]$ExpectedElement.Current.Name)) -ceq $expectedNameSha256
-        ) "Explorer click point is not inside the exact expected UIAutomation item."
+            $firstHwnd -eq [IntPtr]([int64]$ExpectedRowSnapshot.child_hwnd) -and
+            (Get-UiaRuntimeKey $firstUia) -ceq [string]$ExpectedRowSnapshot.child_runtime_key -and
+            [int]$firstUia.Current.ControlType.Id -eq [int]$ExpectedRowSnapshot.child_control_type -and
+            (Get-Utf8Sha256 ([string]$firstUia.Current.Name)) -ceq
+                [string]$ExpectedRowSnapshot.child_name_sha256 -and
+            [double]$firstRectangle.X -eq [double]$ExpectedRowSnapshot.child_x -and
+            [double]$firstRectangle.Y -eq [double]$ExpectedRowSnapshot.child_y -and
+            [double]$firstRectangle.Width -eq [double]$ExpectedRowSnapshot.child_width -and
+            [double]$firstRectangle.Height -eq [double]$ExpectedRowSnapshot.child_height -and
+            [bool]$firstUia.Current.IsEnabled -eq [bool]$ExpectedRowSnapshot.child_enabled -and
+            [bool]$firstUia.Current.IsOffscreen -eq [bool]$ExpectedRowSnapshot.child_offscreen -and
+            (Test-UiaSelfOrDescendantOfSnapshot $firstUia $ExpectedRowSnapshot)
+        ) `
+            "Explorer click point is not inside the immutable expected UIAutomation row."
     }
     $runtimeKey = Get-UiaRuntimeKey $firstUia
-    $nameSha256 = Get-Utf8Sha256 ([string]$firstUia.Current.Name)
+    $nameSha256 = if ($null -ne $ExpectedRowSnapshot) {
+        [string]$ExpectedRowSnapshot.child_name_sha256
+    } else { Get-Utf8Sha256 ([string]$firstUia.Current.Name) }
     Assert-Field ([SkillMagnetFieldInput]::SetCursorPos($X, $Y)) `
         "Could not move the cursor to the verified Explorer target."
     Start-Sleep -Milliseconds 40
@@ -935,29 +1048,28 @@ function Invoke-CheckedExplorerPhysicalClick(
         (Get-UiaRuntimeKey $finalUia) -ceq $runtimeKey -and
         (Get-Utf8Sha256 ([string]$finalUia.Current.Name)) -ceq $nameSha256
     ) "Explorer HWND/PID/process/UIA target changed; no mouse input was sent."
-    if ($null -ne $ExpectedElement) {
-        Assert-Field (
-            (Test-UiaSelfOrDescendantOf $finalUia $ExpectedElement) -and
-            (Get-Utf8Sha256 ([string]$ExpectedElement.Current.Name)) -ceq
-                $expectedNameSha256
-        ) "Explorer expected UIAutomation item changed; no mouse input was sent."
+    if ($null -ne $ExpectedRowSnapshot) {
+        Assert-Field (Test-UiaSelfOrDescendantOfSnapshot $finalUia $ExpectedRowSnapshot) `
+            "Explorer immutable UIAutomation row changed; no mouse input was sent."
     }
     $rowRuntimeKey = ""
     $rowControlType = 0
     $rowNameSha256 = ""
     $rowX = $rowY = $rowWidth = $rowHeight = [double]0
-    if ($null -ne $ExpectedElement) {
-        $rowRectangle = $ExpectedElement.Current.BoundingRectangle
-        $rowRuntimeKey = Get-UiaRuntimeKey $ExpectedElement
-        $rowControlType = [int]$ExpectedElement.Current.ControlType.Id
-        $rowNameSha256 = Get-Utf8Sha256 ([string]$ExpectedElement.Current.Name)
-        $rowX = [double]$rowRectangle.X
-        $rowY = [double]$rowRectangle.Y
-        $rowWidth = [double]$rowRectangle.Width
-        $rowHeight = [double]$rowRectangle.Height
+    if ($null -ne $ExpectedRowSnapshot) {
+        $rowRuntimeKey = [string]$ExpectedRowSnapshot.runtime_key
+        $rowControlType = [int]$ExpectedRowSnapshot.control_type
+        $rowNameSha256 = [string]$ExpectedRowSnapshot.name_sha256
+        $rowX = [double]$ExpectedRowSnapshot.x
+        $rowY = [double]$ExpectedRowSnapshot.y
+        $rowWidth = [double]$ExpectedRowSnapshot.width
+        $rowHeight = [double]$ExpectedRowSnapshot.height
     }
+    $expectedHwnd = if ($null -ne $ExpectedRowSnapshot) {
+        [IntPtr]([int64]$ExpectedRowSnapshot.child_hwnd)
+    } else { $firstHwnd }
     Assert-Field ([SkillMagnetFieldInput]::CheckedClickCurrent(
-        $X, $Y, $firstHwnd, $rootHandle, $rootPid,
+        $X, $Y, $expectedHwnd, $rootHandle, $rootPid,
         [string]$identity.executable_path, [long]$identity.start_time_utc_ticks,
         $false, $nameSha256, "", "", "", "", [long]0, "",
         $rowRuntimeKey, $rowControlType, $rowNameSha256,
@@ -993,9 +1105,10 @@ function Open-ExplorerContextMenu($Window, [string]$SelectedName = "") {
         $rectangle = $candidates[0].Current.BoundingRectangle
         $x = [int]($rectangle.Left + ($rectangle.Width / 2))
         $y = [int]($rectangle.Top + ($rectangle.Height / 2))
-        Invoke-CheckedExplorerPhysicalClick $Window $x $y $false $candidates[0]
+        $selectedRowSnapshot = New-ExplorerRowSnapshot $candidates[0] $x $y
+        Invoke-CheckedExplorerPhysicalClick $Window $x $y $false $selectedRowSnapshot
         Start-Sleep -Milliseconds 100
-        Invoke-CheckedExplorerPhysicalClick $Window $x $y $true $candidates[0]
+        Invoke-CheckedExplorerPhysicalClick $Window $x $y $true $selectedRowSnapshot
     }
     else {
         $rectangle = $explorer.Current.BoundingRectangle
@@ -2287,12 +2400,16 @@ function Wait-MissingSkillRecoveryDialog([int]$ExpectedProcessId, [int]$Seconds 
 function Read-InvokeLines([string]$Path) {
     $full = [IO.Path]::GetFullPath($Path)
     if ($null -eq $script:InvokeLogSnapshots) { $script:InvokeLogSnapshots = @{} }
+    if ($null -eq $script:InvokeLogReaders) { $script:InvokeLogReaders = @{} }
     $baseline = $script:InvokeLogSnapshots[$full]
     if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
         if ($null -ne $baseline) { throw "Invoke log disappeared after observation." }
         return @()
     }
-    $snapshot = [SkillMagnetStableLog]::Read($full)
+    if (-not $script:InvokeLogReaders.ContainsKey($full)) {
+        $script:InvokeLogReaders[$full] = [SkillMagnetStableLogReader]::new($full)
+    }
+    $snapshot = $script:InvokeLogReaders[$full].Read()
     if (-not $snapshot.Stable) {
         if ($snapshot.Error -in @("changed_during_read", "short_read", "io_error")) {
             if ($null -eq $baseline) { return @() }
@@ -3787,6 +3904,12 @@ finally {
         Close-FieldOwnedUiAndReleaseLease
     }
     catch { $ownedCleanupError = $_ }
+    if ($null -ne $script:InvokeLogReaders) {
+        foreach ($reader in @($script:InvokeLogReaders.Values)) {
+            try { $reader.Dispose() } catch { }
+        }
+        $script:InvokeLogReaders = @{}
+    }
     foreach ($window in $windows) {
         try { $window.Quit() } catch { }
     }
