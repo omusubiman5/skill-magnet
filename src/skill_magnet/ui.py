@@ -25,6 +25,7 @@ from .activation import (
     validate_task_workspace,
 )
 from .core import SkillMagnetError, _is_link, normalize_display_text
+from .diagnostics import record_ui_publication_event
 
 
 UI_OWNER_SCHEMA_VERSION = 2
@@ -589,6 +590,7 @@ class TkSurfacePublicationRetry:
         stopped: Callable[[], bool],
         terminal: Callable[[BaseException], None],
         succeeded: Callable[[], None] | None = None,
+        identity: Callable[[], UiSurfaceOwnerIdentity | None] | None = None,
         retry_seconds: float = 2.0,
     ) -> None:
         self.root = root
@@ -596,40 +598,120 @@ class TkSurfacePublicationRetry:
         self.stopped = stopped
         self.terminal = terminal
         self.succeeded = succeeded
+        self.identity = identity
         self.retry_seconds = retry_seconds
         self.pending = False
         self.deadline = 0.0
-        self.delay_ms = 10
+        self.delay_index = 0
+        self.attempt = 0
+        self.token = 0
+
+    def _record(
+        self, event: str, *, revision: int | None = None, winerror: int | None = None
+    ) -> None:
+        try:
+            identity = self.identity() if self.identity is not None else None
+            if identity is not None:
+                record_ui_publication_event(
+                    event,
+                    identity,
+                    revision=revision,
+                    attempt=self.attempt,
+                    winerror=winerror,
+                )
+        except Exception:
+            # Identity/diagnostic lookup is observability only.
+            return
+
+    def _schedule(self, milliseconds: int, callback: Callable[[], None]) -> bool:
+        try:
+            self.root.after(milliseconds, callback)
+            return True
+        except Exception as exc:
+            if self.stopped():
+                self.pending = False
+                self.token += 1
+                self._record("retry_stopped")
+            else:
+                self.pending = False
+                self.token += 1
+                self._record("retry_terminal", winerror=getattr(exc, "winerror", None))
+                self.terminal(exc)
+            return False
 
     def request(self) -> None:
-        if self.pending or self.stopped():
+        if self.stopped():
+            self._record("retry_stopped")
+            return
+        if self.pending:
+            self._record("retry_coalesce")
             return
         self.pending = True
         self.deadline = time.monotonic() + self.retry_seconds
-        self.delay_ms = 10
-        self.root.after_idle(self._attempt)
+        self.delay_index = 0
+        self.attempt = 0
+        self.token += 1
+        token = self.token
+        self._record("retry_request")
+        # after_idle can be starved by a continuous Tk event stream.  A timer
+        # is mandatory for the first dispatch and an independent watchdog
+        # makes a lost callback terminal instead of leaving a starting receipt.
+        if not self._schedule(0, lambda: self._attempt(token)):
+            return
+        self._schedule(
+            max(1, int(self.retry_seconds * 1000)), lambda: self._watchdog(token)
+        )
 
-    def _attempt(self) -> None:
+    def _watchdog(self, token: int) -> None:
+        if token != self.token or not self.pending:
+            return
         if self.stopped():
             self.pending = False
+            self.token += 1
+            self._record("retry_stopped")
             return
+        self.pending = False
+        self.token += 1
+        error = TimeoutError("UI receipt publication callback did not complete")
+        self._record("retry_terminal")
+        self.terminal(error)
+
+    def _attempt(self, token: int) -> None:
+        if token != self.token or not self.pending:
+            return
+        if self.stopped():
+            self.pending = False
+            self.token += 1
+            self._record("retry_stopped")
+            return
+        self.attempt += 1
+        self._record("retry_attempt")
         try:
             # Rebuild the snapshot on every attempt.  Geometry, state, owner
             # revision, and the atomic receipt must describe the same instant.
-            self.publish()
+            result = self.publish()
         except Exception as exc:
+            winerror = getattr(exc, "winerror", None)
+            self._record("retry_error", winerror=winerror)
             if (
                 _is_transient_ui_owner_publication_error(exc)
                 and time.monotonic() < self.deadline
             ):
-                delay = self.delay_ms
-                self.delay_ms = min(self.delay_ms * 2, 50)
-                self.root.after(delay, self._attempt)
+                delays = (13, 31, 47)
+                delay = delays[min(self.delay_index, len(delays) - 1)]
+                self.delay_index += 1
+                self._record("retry_scheduled", winerror=winerror)
+                self._schedule(delay, lambda: self._attempt(token))
                 return
             self.pending = False
+            self.token += 1
+            self._record("retry_terminal", winerror=winerror)
             self.terminal(exc)
             return
         self.pending = False
+        self.token += 1
+        revision = result.get("revision") if isinstance(result, dict) else None
+        self._record("retry_success", revision=revision)
         if self.succeeded is not None:
             self.succeeded()
 
@@ -2338,10 +2420,10 @@ def show_context_selection(
 
     surface_publication: TkSurfacePublicationRetry | None = None
 
-    def publish_surface_now() -> None:
+    def publish_surface_now() -> dict[str, Any] | None:
         if surface_identity is None or closing:
-            return
-        publish_tk_ui_surface(
+            return None
+        return publish_tk_ui_surface(
             surface_identity,
             root,
             widgets=surface_widgets,
@@ -2410,6 +2492,7 @@ def show_context_selection(
         publish_surface_now,
         stopped=lambda: closing,
         terminal=publication_failed,
+        identity=lambda: surface_identity,
     )
 
     cancel_button.configure(command=close_context_window)

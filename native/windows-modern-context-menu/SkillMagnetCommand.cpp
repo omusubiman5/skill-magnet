@@ -84,12 +84,12 @@ static std::wstring NewInvocationId() noexcept {
     return length == 32 ? std::wstring(token, 32) : L"unavailable";
 }
 
-static void LogInvokeEvent(const wchar_t* event, const std::wstring& command_digest,
+static DWORD LogInvokeEvent(const wchar_t* event, const std::wstring& command_digest,
                            DWORD detail = 0, const wchar_t* selection_source = L"none",
                            const wchar_t* project_digest = L"none",
                            const wchar_t* invocation_id = L"none") noexcept {
     const std::wstring path = InvokeLogPath();
-    if (path.empty()) return;
+    if (path.empty()) return ERROR_PATH_NOT_FOUND;
     SYSTEMTIME timestamp{};
     GetSystemTime(&timestamp);
     wchar_t line[512]{};
@@ -101,14 +101,21 @@ static void LogInvokeEvent(const wchar_t* event, const std::wstring& command_dig
         timestamp.wMinute, timestamp.wSecond, timestamp.wMilliseconds, event,
         command_digest.c_str(), static_cast<unsigned long>(detail), selection_source,
         project_digest, invocation_id);
-    if (length <= 0) return;
+    if (length <= 0) return ERROR_INVALID_DATA;
     HANDLE file = CreateFileW(path.c_str(), FILE_APPEND_DATA,
                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                               nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) return;
+    if (file == INVALID_HANDLE_VALUE) return GetLastError();
     DWORD written = 0;
-    WriteFile(file, line, static_cast<DWORD>(length * sizeof(wchar_t)), &written, nullptr);
+    const DWORD expected = static_cast<DWORD>(length * sizeof(wchar_t));
+    const BOOL write_ok = WriteFile(file, line, expected, &written, nullptr);
+    const DWORD write_error = !write_ok
+        ? GetLastError()
+        : (written == expected ? ERROR_SUCCESS : ERROR_WRITE_FAULT);
+    const BOOL flush_ok = write_error == ERROR_SUCCESS && FlushFileBuffers(file);
+    const DWORD flush_error = flush_ok ? ERROR_SUCCESS : GetLastError();
     CloseHandle(file);
+    return write_error != ERROR_SUCCESS ? write_error : flush_error;
 }
 
 static HRESULT CopyString(const std::wstring& value, PWSTR* output) noexcept {
@@ -341,8 +348,20 @@ public:
         const std::wstring template_digest = Sha256Digest(command_);
         const wchar_t* selection_source = items ? L"selected_item" : L"background_site";
         const std::wstring invocation_id = NewInvocationId();
-        LogInvokeEvent(L"invoke_enter", template_digest, 0, selection_source,
-                       L"unavailable", invocation_id.c_str());
+        const DWORD enter_log_error = LogInvokeEvent(
+            L"invoke_enter", template_digest, 0, selection_source,
+            L"unavailable", invocation_id.c_str());
+        if (enter_log_error != ERROR_SUCCESS) {
+            ShowRecoverableError(
+                L"右クリックの診断記録を開始できないため、安全に実行を中止しました。\n\n"
+                L"原因:\n診断ログを開くか書き込む処理がWindowsエラー " +
+                std::to_wstring(enter_log_error) +
+                L" で失敗しました。\n\n復旧手順:\n"
+                L"1. invoke.logを開いているアプリと他のSkill Magnet処理を閉じます。\n"
+                L"2. 元のフォルダーをもう一度右クリックします。\n\n"
+                L"診断ログ: %LOCALAPPDATA%\\SkillMagnet\\ContextMenu\\invoke.log");
+            return HRESULT_FROM_WIN32(enter_log_error);
+        }
         std::wstring project;
         std::wstring project_digest = L"unavailable";
         HRESULT result = SelectedPath(items, site_, &project);

@@ -36,6 +36,7 @@ from skill_magnet.activation import (
 )
 from skill_magnet.cli import exit_process, main as cli_main
 from skill_magnet.core import Config, Pack, SafetyError, SkillMagnetError
+from skill_magnet.diagnostics import record_ui_publication_event
 from skill_magnet.platforms import (
     _capture_windows_context_backup,
     _recover_windows_rollback_rotation,
@@ -3628,15 +3629,17 @@ class ActivationEndToEndTest(unittest.TestCase):
         )
         publication.request()
         publication.request()
-        self.assertEqual(len(root.idle), 1)
-        root.idle.pop()()  # type: ignore[operator]
+        self.assertEqual(len(root.idle), 0)
+        self.assertEqual(len(root.timers), 2)
+        root.timers.pop(0)()  # type: ignore[operator]
         self.assertEqual(attempts, [1])
-        self.assertEqual(len(root.timers), 1)
+        self.assertEqual(len(root.timers), 2)
         self.assertTrue(publication.pending)
         root.timers.pop()()  # type: ignore[operator]
         self.assertEqual(attempts, [1, 2])
         self.assertFalse(publication.pending)
         self.assertEqual(terminal, [])
+        root.timers.clear()
 
         permanent: list[BaseException] = []
         failed = TkSurfacePublicationRetry(
@@ -3648,9 +3651,10 @@ class ActivationEndToEndTest(unittest.TestCase):
             terminal=permanent.append,
         )
         failed.request()
-        root.idle.pop()()  # type: ignore[operator]
+        root.timers.pop(0)()  # type: ignore[operator]
         self.assertEqual(len(permanent), 1)
         self.assertFalse(failed.pending)
+        root.timers.clear()
 
         expired_errors: list[BaseException] = []
         transient = PermissionError("held through deadline")
@@ -3663,9 +3667,9 @@ class ActivationEndToEndTest(unittest.TestCase):
             retry_seconds=-1,
         )
         expired.request()
-        root.idle.pop()()  # type: ignore[operator]
+        root.timers.pop(0)()  # type: ignore[operator]
         self.assertEqual(expired_errors, [transient])
-        self.assertEqual(root.timers, [])
+        root.timers.clear()
 
         stopped = False
         stopped_attempts: list[bool] = []
@@ -3677,9 +3681,10 @@ class ActivationEndToEndTest(unittest.TestCase):
         )
         closing_publication.request()
         stopped = True
-        root.idle.pop()()  # type: ignore[operator]
+        root.timers.pop(0)()  # type: ignore[operator]
         self.assertEqual(stopped_attempts, [])
         self.assertFalse(closing_publication.pending)
+        root.timers.clear()
 
         retry_root = Root()
         closed_after_contention = False
@@ -3699,8 +3704,8 @@ class ActivationEndToEndTest(unittest.TestCase):
             terminal=retry_terminals.append,
         )
         scheduled_then_closed.request()
-        retry_root.idle.pop()()  # type: ignore[operator]
-        self.assertEqual(len(retry_root.timers), 1)
+        retry_root.timers.pop(0)()  # type: ignore[operator]
+        self.assertEqual(len(retry_root.timers), 2)
         closed_after_contention = True
         retry_root.timers.pop()()  # type: ignore[operator]
         self.assertEqual(retry_calls, [True])
@@ -3737,12 +3742,12 @@ class ActivationEndToEndTest(unittest.TestCase):
                 )
                 try:
                     actual.request()
-                    actual_root.idle.pop()()  # type: ignore[operator]
+                    actual_root.timers.pop(0)()  # type: ignore[operator]
                     self.assertEqual(
                         json.loads(owner_path.read_text(encoding="utf-8"))["attempt"],
                         1,
                     )
-                    self.assertEqual(len(actual_root.timers), 1)
+                    self.assertEqual(len(actual_root.timers), 2)
                 finally:
                     ctypes.windll.kernel32.CloseHandle(handle)
                 actual_root.timers.pop()()  # type: ignore[operator]
@@ -3751,6 +3756,114 @@ class ActivationEndToEndTest(unittest.TestCase):
                     2,
                 )
                 self.assertEqual(actual_errors, [])
+
+        watchdog_root = Root()
+        watchdog_errors: list[BaseException] = []
+        watchdog = TkSurfacePublicationRetry(
+            watchdog_root,
+            lambda: self.fail("dropped first callback must not publish"),
+            stopped=lambda: False,
+            terminal=watchdog_errors.append,
+        )
+        watchdog.request()
+        watchdog_root.timers.pop(0)  # simulate a lost first-dispatch callback
+        watchdog_root.timers.pop()()  # type: ignore[operator]
+        self.assertEqual(len(watchdog_errors), 1)
+        self.assertIsInstance(watchdog_errors[0], TimeoutError)
+        self.assertFalse(watchdog.pending)
+
+        flood_root = Root()
+        flood_attempts: list[bool] = []
+        flood = TkSurfacePublicationRetry(
+            flood_root,
+            lambda: flood_attempts.append(True),
+            stopped=lambda: False,
+            terminal=terminal.append,
+        )
+        flood.request()
+        flood_root.timers.pop(0)()  # type: ignore[operator]
+        self.assertEqual(flood_attempts, [True])
+        self.assertFalse(flood.pending)
+
+        telemetry_root = Root()
+        telemetry_identity = SimpleNamespace(
+            owner_path=Path("owner.json"),
+            process_instance_id="1" * 32,
+            generation="2" * 32,
+            phase="context_selection",
+        )
+        telemetry_error = PermissionError("held")
+        telemetry_error.winerror = 5  # type: ignore[attr-defined]
+        telemetry_calls = 0
+
+        def telemetry_publish() -> dict[str, int]:
+            nonlocal telemetry_calls
+            telemetry_calls += 1
+            if telemetry_calls == 1:
+                raise telemetry_error
+            return {"revision": 7}
+
+        with mock.patch(
+            "skill_magnet.ui.record_ui_publication_event"
+        ) as diagnostic:
+            telemetry = TkSurfacePublicationRetry(
+                telemetry_root,
+                telemetry_publish,
+                stopped=lambda: False,
+                terminal=terminal.append,
+                identity=lambda: telemetry_identity,
+            )
+            telemetry.request()
+            telemetry.request()
+            telemetry_root.timers.pop(0)()  # first attempt
+            telemetry_root.timers.pop()()  # retry
+        self.assertEqual(
+            [call.args[0] for call in diagnostic.call_args_list],
+            [
+                "retry_request", "retry_coalesce", "retry_attempt", "retry_error",
+                "retry_scheduled", "retry_attempt", "retry_success",
+            ],
+        )
+        self.assertEqual(diagnostic.call_args_list[-1].kwargs["revision"], 7)
+
+    def test_ui_publication_diagnostic_is_strict_hashed_append_only_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
+            os.environ, {"LOCALAPPDATA": temporary}
+        ):
+            owner = Path(temporary) / "private owner" / "owner.json"
+            identity = SimpleNamespace(
+                owner_path=owner,
+                process_instance_id="1" * 32,
+                generation="2" * 32,
+                phase="library_manager",
+            )
+            record_ui_publication_event("retry_request", identity)
+            record_ui_publication_event(
+                "retry_error", identity, attempt=1, winerror=5
+            )
+            path = (
+                Path(temporary)
+                / "SkillMagnet"
+                / "ContextMenu"
+                / "ui-diagnostic.jsonl"
+            )
+            raw = path.read_text(encoding="utf-8")
+            records = [json.loads(line) for line in raw.splitlines()]
+            self.assertEqual([record["event"] for record in records], [
+                "retry_request", "retry_error"
+            ])
+            self.assertEqual(records[1]["winerror"], 5)
+            self.assertEqual(records[1]["attempt"], 1)
+            self.assertNotIn("private owner", raw)
+            self.assertNotIn("owner.json", raw)
+            self.assertEqual(
+                set(records[0]),
+                {
+                    "schema_version", "seq", "timestamp_utc", "event", "pid",
+                    "process_instance_id", "generation", "owner_path_sha256",
+                    "phase", "revision", "attempt", "winerror",
+                },
+            )
 
     def test_ui_surface_republishes_same_generation_after_tk_is_mapped(self) -> None:
         selected = self.root / "mapped-selected"

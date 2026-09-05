@@ -53,6 +53,28 @@ class ExplorerResultsGateTest(unittest.TestCase):
             observed_selection_kinds=["package", "skill"],
             observed_pack_skill_counts=[1, 9, 12], observed_version="0.5.9")
 
+    def test_field_collector_records_root_dispatch_without_raw_content(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        menu = collector[
+            collector.index("function Invoke-VisibleSkillMagnetRoot") :
+            collector.index("function Test-ExactStringSequence")
+        ]
+        for event in (
+            "uia_root_bound", "invoke_call_enter", "invoke_call_return",
+            "invoke_call_error",
+        ):
+            self.assertIn(f'Write-FieldActionDiagnostic "{event}"', menu)
+        helper = collector[
+            collector.index("function Write-FieldActionDiagnostic") :
+            collector.index("function New-FieldUiIdentityAnchor")
+        ]
+        self.assertIn("runtime_key_sha256", helper)
+        self.assertIn("[IO.FileMode]::Append", helper)
+        self.assertNotIn("SelectedName", helper)
+        self.assertNotIn("request", helper.casefold())
+
     @staticmethod
     def _write_runtime_repository(root: Path) -> tuple[Path, Path]:
         package = root / "src" / "skill_magnet"

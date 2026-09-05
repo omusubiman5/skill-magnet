@@ -42,6 +42,46 @@ function Get-FieldTargetSha256([string]$Path) {
     Get-Utf8Sha256 $normalized
 }
 
+function Write-FieldActionDiagnostic(
+    [string]$Event,
+    [string]$Role,
+    [int]$ProcessId,
+    [string]$RuntimeKeySha256
+) {
+    if (-not $script:FieldActionDiagnostic) { return }
+    $allowedEvents = @(
+        "uia_root_bound", "invoke_call_enter", "invoke_call_return", "invoke_call_error"
+    )
+    Assert-Field ($allowedEvents -contains $Event) "Invalid field action diagnostic event."
+    Assert-Field ($Role -match '^[a-z_]+$') "Invalid field action diagnostic role."
+    Assert-Field ($RuntimeKeySha256 -match '^[0-9a-f]{64}$') `
+        "Invalid field action runtime digest."
+    $script:FieldActionDiagnosticSequence++
+    $record = [ordered]@{
+        schema_version = 1
+        seq = $script:FieldActionDiagnosticSequence
+        timestamp_utc = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+        event = $Event
+        role = $Role
+        process_id = $ProcessId
+        runtime_key_sha256 = $RuntimeKeySha256
+    }
+    $line = (ConvertTo-Json -InputObject $record -Compress) + "`n"
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($line)
+    Assert-Field ($bytes.Length -le 1024) "Field action diagnostic record is too large."
+    $stream = [IO.File]::Open(
+        $script:FieldActionDiagnostic,
+        [IO.FileMode]::Append,
+        [IO.FileAccess]::Write,
+        [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+    )
+    try {
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+    }
+    finally { $stream.Dispose() }
+}
+
 function New-FieldUiIdentityAnchor(
     [string]$NativeRole,
     [string]$ActualPath,
@@ -1465,6 +1505,14 @@ function Invoke-VisibleSkillMagnetRoot(
     Assert-Field ($null -ne $invoke) "Skill Magnet root has no InvokePattern."
     Assert-Field ($null -eq $expand) "Skill Magnet root unexpectedly exposes a submenu."
     $rootSnapshot = Get-UiaElementSnapshot $roots[0]
+    $actionRole = if ($TranscriptSource) { $TranscriptSource } elseif ($SelectedName) {
+        "selected_item"
+    } else { "background_site" }
+    $runtimeDigest = Get-Utf8Sha256 (
+        ConvertTo-Json -InputObject @($rootSnapshot.runtime_id) -Compress
+    )
+    Write-FieldActionDiagnostic "uia_root_bound" $actionRole `
+        ([int]$rootSnapshot.process_id) $runtimeDigest
     if ($TranscriptSource) {
         Add-UiaTranscriptEvent "context_menu_root_observed" $TranscriptSource ([ordered]@{
             element = $rootSnapshot
@@ -1474,7 +1522,18 @@ function Invoke-VisibleSkillMagnetRoot(
             submenu_item_count = 0
         })
     }
-    $invoke.Invoke()
+    Write-FieldActionDiagnostic "invoke_call_enter" $actionRole `
+        ([int]$rootSnapshot.process_id) $runtimeDigest
+    try {
+        $invoke.Invoke()
+        Write-FieldActionDiagnostic "invoke_call_return" $actionRole `
+            ([int]$rootSnapshot.process_id) $runtimeDigest
+    }
+    catch {
+        Write-FieldActionDiagnostic "invoke_call_error" $actionRole `
+            ([int]$rootSnapshot.process_id) $runtimeDigest
+        throw
+    }
     if ($TranscriptSource) {
         Add-UiaTranscriptEvent "root_invoke_dispatched" $TranscriptSource ([ordered]@{
             runtime_id = @($rootSnapshot.runtime_id)
@@ -3035,6 +3094,10 @@ function Assert-BusyMessageAndClose([int]$ExpectedProcessId) {
 $configPath = Assert-FieldRegularPathBoundary $Config
 $InvokeEvidence = [IO.Path]::GetFullPath($InvokeEvidence)
 $FieldBundle = [IO.Path]::GetFullPath($FieldBundle)
+$script:FieldActionDiagnostic = $FieldBundle + ".actions.jsonl"
+$script:FieldActionDiagnosticSequence = 0
+[IO.Directory]::CreateDirectory((Split-Path -Parent $script:FieldActionDiagnostic)) | Out-Null
+[IO.File]::WriteAllBytes($script:FieldActionDiagnostic, [byte[]]@())
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $expectedNativeSource = Get-NativeSourceManifest $repositoryRoot
 $script:FieldSessionId = [guid]::NewGuid().ToString("N")

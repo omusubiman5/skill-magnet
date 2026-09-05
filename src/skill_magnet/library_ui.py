@@ -2532,13 +2532,15 @@ def show_library_manager(
         for identity in tuple(surface_identities):
             key = str(identity.owner_path)
             if key not in manager_surface_publications:
-                def publish_one(identity: UiSurfaceOwnerIdentity = identity) -> None:
+                def publish_one(
+                    identity: UiSurfaceOwnerIdentity = identity,
+                ) -> dict[str, Any]:
                     state = {
                         "processing": busy,
                         "stage": action_stage.get(),
                         "register_selected": register_selected,
                     }
-                    publish_tk_ui_surface(
+                    return publish_tk_ui_surface(
                         identity,
                         root,
                         widgets=manager_surface_widgets,
@@ -2555,6 +2557,7 @@ def show_library_manager(
                     succeeded=lambda identity=identity: manager_publication_succeeded(
                         identity
                     ),
+                    identity=lambda identity=identity: identity,
                 )
             manager_surface_publications[key].request()
 
@@ -2601,7 +2604,7 @@ def show_library_manager(
         if publication_error_scheduled:
             return
         publication_error_scheduled = True
-        root.after_idle(show_manager_publication_error)
+        root.after(0, show_manager_publication_error)
 
     def manager_publication_succeeded(identity: UiSurfaceOwnerIdentity) -> None:
         publication_failures.pop(str(identity.owner_path), None)
