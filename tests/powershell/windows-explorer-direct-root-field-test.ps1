@@ -631,6 +631,174 @@ function Wait-ProcessExited([int]$ProcessId, [int]$Seconds = 30) {
     throw "Explorer-launched process remained alive after its UI was closed: $ProcessId"
 }
 
+function Get-FieldProcessIdentity([int]$TargetProcessId) {
+    $process = Get-Process -Id $TargetProcessId -ErrorAction SilentlyContinue
+    if ($null -eq $process) { return $null }
+    try {
+        $path = [IO.Path]::GetFullPath([string]$process.Path)
+        $started = $process.StartTime.ToUniversalTime().Ticks
+    }
+    catch {
+        # A process which cannot be identified is never safe for the collector
+        # to claim or terminate.
+        return $null
+    }
+    [ordered]@{
+        process_id = [int]$process.Id
+        executable_path = $path
+        start_time_utc_ticks = [long]$started
+    }
+}
+
+function Test-FieldProcessIdentity([System.Collections.IDictionary]$Identity) {
+    if ($null -eq $Identity) { return $false }
+    $current = Get-FieldProcessIdentity ([int]$Identity.process_id)
+    if ($null -eq $current) { return $false }
+    (
+        [string]$current.executable_path -ieq [string]$Identity.executable_path -and
+        [long]$current.start_time_utc_ticks -eq [long]$Identity.start_time_utc_ticks
+    )
+}
+
+function Read-FieldContextOwner() {
+    if (-not $script:FieldContextOwnerPath -or -not (
+        Test-Path -LiteralPath $script:FieldContextOwnerPath -PathType Leaf
+    )) { return $null }
+    try {
+        Get-Content -LiteralPath $script:FieldContextOwnerPath -Raw |
+            ConvertFrom-Json
+    }
+    catch { return $null }
+}
+
+function Register-FieldOwnedProcess([int]$TargetProcessId, [string]$InvocationId) {
+    $identity = Get-FieldProcessIdentity $TargetProcessId
+    if ($null -eq $identity) {
+        # Fast duplicate launchers can exit before registration.  There is
+        # nothing left for cleanup and no ownership is inferred from a PID.
+        return
+    }
+    if ([string]$identity.executable_path -ine $script:FieldExpectedExecutablePath) {
+        return
+    }
+    $key = [string]$TargetProcessId
+    $preExisting = $script:FieldPreExistingProcessIdentities[$key]
+    if ($null -ne $preExisting -and
+        [long]$preExisting.start_time_utc_ticks -eq [long]$identity.start_time_utc_ticks -and
+        [string]$preExisting.executable_path -ieq [string]$identity.executable_path) {
+        # Never claim a process which existed before this field session.
+        return
+    }
+    $identity.invocation_id = $InvocationId
+    $script:FieldOwnedProcessIdentities[$key] = $identity
+
+    $owner = Read-FieldContextOwner
+    if ($null -ne $owner -and [int]$owner.pid -eq $TargetProcessId -and
+        [string]$owner.generation -match '^[0-9a-f]{32}$' -and
+        [string]$owner.generation -ne $script:FieldPreExistingOwnerGeneration) {
+        $script:FieldOwnedOwnerTokens[[string]$owner.generation] = [ordered]@{
+            process_id = $TargetProcessId
+            invocation_id = $InvocationId
+        }
+    }
+}
+
+function Close-FieldOwnedUiAndReleaseLease() {
+    # Close only windows whose process identity was observed in this field
+    # session.  A title match alone must never close a user's pre-existing UI.
+    $publishedOwner = Read-FieldContextOwner
+    if ($null -ne $publishedOwner -and
+        [string]$publishedOwner.generation -match '^[0-9a-f]{32}$' -and
+        [string]$publishedOwner.generation -ne $script:FieldPreExistingOwnerGeneration) {
+        $publishedIdentity = $script:FieldOwnedProcessIdentities[
+            [string][int]$publishedOwner.pid
+        ]
+        if ($null -ne $publishedIdentity -and
+            (Test-FieldProcessIdentity $publishedIdentity)) {
+            # Record the generation while its exact PID/start-time/executable
+            # identity is still alive.  Never infer ownership after exit.
+            $script:FieldOwnedOwnerTokens[[string]$publishedOwner.generation] = [ordered]@{
+                process_id = [int]$publishedOwner.pid
+                invocation_id = [string]$publishedIdentity.invocation_id
+            }
+        }
+    }
+    for ($pass = 0; $pass -lt 3; $pass += 1) {
+        $windowCondition = New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [System.Windows.Automation.ControlType]::Window
+        )
+        $topLevel = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+            [System.Windows.Automation.TreeScope]::Children, $windowCondition
+        )
+        foreach ($window in @($topLevel)) {
+            try {
+                $key = [string][int]$window.Current.ProcessId
+                $identity = $script:FieldOwnedProcessIdentities[$key]
+                if ($null -eq $identity -or -not (Test-FieldProcessIdentity $identity)) {
+                    continue
+                }
+                $pattern = Get-Pattern $window ([System.Windows.Automation.WindowPattern]::Pattern)
+                if ($null -ne $pattern) { $pattern.Close() }
+            }
+            catch {
+                # Continue through every owned window; the identity-checked
+                # process fallback below releases a lease after a broken UI.
+            }
+        }
+        Start-Sleep -Milliseconds 300
+    }
+
+    $deadline = [DateTime]::UtcNow.AddSeconds(3)
+    do {
+        $live = @($script:FieldOwnedProcessIdentities.Values | Where-Object {
+            Test-FieldProcessIdentity $_
+        })
+        if ($live.Count -eq 0) { break }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    foreach ($identity in @($script:FieldOwnedProcessIdentities.Values)) {
+        if (-not (Test-FieldProcessIdentity $identity)) { continue }
+        # This is not a broad Python kill: executable path, PID and immutable
+        # process start time must all still match the field-owned child.
+        Stop-Process -Id ([int]$identity.process_id) -Force -ErrorAction SilentlyContinue
+    }
+
+    $deadline = [DateTime]::UtcNow.AddSeconds(3)
+    do {
+        $live = @($script:FieldOwnedProcessIdentities.Values | Where-Object {
+            Test-FieldProcessIdentity $_
+        })
+        if ($live.Count -eq 0) { break }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    $owner = Read-FieldContextOwner
+    if ($null -ne $owner -and
+        $script:FieldOwnedOwnerTokens.ContainsKey([string]$owner.generation)) {
+        $token = $script:FieldOwnedOwnerTokens[[string]$owner.generation]
+        $identity = $script:FieldOwnedProcessIdentities[[string][int]$token.process_id]
+        if ($null -ne $identity -and -not (Test-FieldProcessIdentity $identity)) {
+            # The OS byte lock has been released by process exit.  Remove only
+            # the exact owner generation observed while that identity was live.
+            Remove-Item -LiteralPath $script:FieldContextOwnerPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+    $remaining = @($script:FieldOwnedProcessIdentities.Values | Where-Object {
+        Test-FieldProcessIdentity $_
+    })
+    if ($remaining.Count -gt 0) {
+        $remainingIds = @($remaining | ForEach-Object {
+            [string]$_.process_id
+        }) -join ", "
+        throw (
+            "Field cleanup could not stop its owned process(es): $remainingIds. " +
+            "Close only these PIDs in Task Manager, then rerun the field test."
+        )
+    }
+}
+
 function Get-UiaControlValues($Window, $ControlType) {
     $condition = New-Object System.Windows.Automation.PropertyCondition(
         [System.Windows.Automation.AutomationElement]::ControlTypeProperty, $ControlType
@@ -801,6 +969,33 @@ function Parse-InvokeLine([string]$Line) {
     $values
 }
 
+function Register-FieldOwnedProcessesFromInvokeLog() {
+    $records = @(Read-InvokeLines $script:FieldInvokeLog |
+        Select-Object -Skip $script:FieldInitialInvokeLineCount |
+        ForEach-Object { Parse-InvokeLine $_ })
+    foreach ($invocationId in @($records | ForEach-Object {
+        [string]$_.invocation_id
+    } | Where-Object { $_ -match '^[0-9a-f]{32}$' } | Sort-Object -Unique)) {
+        $group = @($records | Where-Object {
+            [string]$_.invocation_id -eq $invocationId
+        })
+        $selection = @($group | Where-Object {
+            [string]$_.event -eq "selection_succeeded"
+        } | Select-Object -First 1)
+        $created = @($group | Where-Object {
+            [string]$_.event -eq "create_process_succeeded"
+        } | Select-Object -First 1)
+        if ($selection.Count -ne 1 -or $created.Count -ne 1) { continue }
+        if (-not $script:FieldOwnedProjectDigests.ContainsKey(
+            [string]$selection[0].project_sha256
+        )) { continue }
+        $createdProcessId = 0
+        if (-not [int]::TryParse([string]$created[0].detail, [ref]$createdProcessId) -or
+            $createdProcessId -le 0) { continue }
+        Register-FieldOwnedProcess $createdProcessId $invocationId
+    }
+}
+
 function Wait-NativeSequence(
     [string]$Path,
     [string]$Source,
@@ -832,6 +1027,7 @@ function Wait-NativeSequence(
                 }
                 Assert-Field ($processId -gt 0 -and $terminalDetailValid) `
                     "Native success sequence does not identify one successful child process."
+                Register-FieldOwnedProcess $processId $id
                 return @{
                     invocation_id = $id
                     project_sha256 = $group[1].project_sha256
@@ -1017,23 +1213,49 @@ $selectedFolder = Join-Path $selectedParent "selected folder 日本語"
 $backgroundFolder = Join-Path $testRoot "background folder 日本語"
 $differentFolder = Join-Path $testRoot "different folder"
 $managerBusyFolder = Join-Path $testRoot "manager busy folder"
-[IO.Directory]::CreateDirectory($selectedFolder) | Out-Null
-[IO.Directory]::CreateDirectory($backgroundFolder) | Out-Null
-[IO.Directory]::CreateDirectory($differentFolder) | Out-Null
-[IO.Directory]::CreateDirectory($managerBusyFolder) | Out-Null
 $stateRoot = Join-Path ([Environment]::GetFolderPath("UserProfile")) ".skill-magnet"
 $runtimeSkillFolder = Join-Path ([Environment]::GetFolderPath("UserProfile")) ".codex\skills\cma-004"
-Assert-Field (Test-Path -LiteralPath $runtimeSkillFolder -PathType Container) `
-    "Read-only runtime-skill field folder is missing: cma-004"
+$script:FieldExpectedExecutablePath = [IO.Path]::GetFullPath([string]$status.command_target)
+$script:FieldContextOwnerPath = Join-Path $stateRoot "context-launcher.owner.json"
+$script:FieldInvokeLog = $invokeLog
+$script:FieldInitialInvokeLineCount = $initialLineCount
+$script:FieldOwnedProjectDigests = @{}
+$script:FieldOwnedProcessIdentities = @{}
+$script:FieldOwnedOwnerTokens = @{}
+$script:FieldPreExistingProcessIdentities = @{}
+$script:FieldPreExistingOwnerGeneration = ""
 $windows = @()
 try {
+    [IO.Directory]::CreateDirectory($selectedFolder) | Out-Null
+    [IO.Directory]::CreateDirectory($backgroundFolder) | Out-Null
+    [IO.Directory]::CreateDirectory($differentFolder) | Out-Null
+    [IO.Directory]::CreateDirectory($managerBusyFolder) | Out-Null
+    Assert-Field (Test-Path -LiteralPath $runtimeSkillFolder -PathType Container) `
+        "Read-only runtime-skill field folder is missing: cma-004"
+    foreach ($fieldPath in @(
+        $selectedFolder, $backgroundFolder, $differentFolder,
+        $managerBusyFolder, $runtimeSkillFolder
+    )) {
+        $script:FieldOwnedProjectDigests[(Get-Utf16Sha256 $fieldPath)] = $true
+    }
+    foreach ($process in @(Get-Process)) {
+        $identity = Get-FieldProcessIdentity ([int]$process.Id)
+        if ($null -ne $identity) {
+            $script:FieldPreExistingProcessIdentities[[string]$process.Id] = $identity
+        }
+    }
+    $initialOwner = Read-FieldContextOwner
+    $script:FieldPreExistingOwnerGeneration = if ($null -ne $initialOwner) {
+        [string]$initialOwner.generation
+    } else { "" }
+
     $selectedWindow = Open-ExplorerFolder $selectedParent
     $windows += $selectedWindow
     $before = @(Read-InvokeLines $invokeLog).Count
     $selectedMenu = Invoke-VisibleSkillMagnetRoot `
         $selectedWindow (Split-Path $selectedFolder -Leaf) "selected_item"
-    $selectedGui = Inspect-UnifiedGui $selectedFolder $expectedChoices "selected_item"
     $selectedSequence = Wait-NativeSequence $invokeLog "selected_item" $before
+    $selectedGui = Inspect-UnifiedGui $selectedFolder $expectedChoices "selected_item"
     Assert-Field ($selectedSequence.project_sha256 -eq (Get-Utf16Sha256 $selectedFolder)) `
         "Selected-folder native digest does not match the Explorer path."
     Assert-Field ([int]$selectedGui.element.Current.ProcessId -eq $selectedSequence.process_id) `
@@ -1124,8 +1346,8 @@ try {
     $windows += $backgroundWindow
     $before = @(Read-InvokeLines $invokeLog).Count
     $backgroundMenu = Invoke-VisibleSkillMagnetRoot $backgroundWindow "" "background_site"
-    $backgroundGui = Inspect-UnifiedGui $backgroundFolder $expectedChoices "background_site"
     $backgroundSequence = Wait-NativeSequence $invokeLog "background_site" $before
+    $backgroundGui = Inspect-UnifiedGui $backgroundFolder $expectedChoices "background_site"
     Assert-Field ($backgroundSequence.project_sha256 -eq (Get-Utf16Sha256 $backgroundFolder)) `
         "Background-folder native digest does not match the Explorer path."
     Assert-Field ([int]$backgroundGui.element.Current.ProcessId -eq $backgroundSequence.process_id) `
@@ -1196,8 +1418,8 @@ try {
     Wait-ProcessExited $backgroundProcessId
     $before = @(Read-InvokeLines $invokeLog).Count
     Invoke-VisibleSkillMagnetRoot $backgroundWindow | Out-Null
-    $relaunched = Inspect-UnifiedGui $backgroundFolder $expectedChoices
     $relaunchSequence = Wait-NativeSequence $invokeLog "background_site" $before
+    $relaunched = Inspect-UnifiedGui $backgroundFolder $expectedChoices
     Assert-Field ([int]$relaunched.element.Current.ProcessId -eq $relaunchSequence.process_id) `
         "Relaunched GUI does not belong to the new native child process."
     Assert-Field ($relaunchSequence.process_id -ne $backgroundProcessId) `
@@ -1228,8 +1450,8 @@ try {
     $before = @(Read-InvokeLines $invokeLog).Count
     $registrationMenu = Invoke-VisibleSkillMagnetRoot `
         $selectedWindow (Split-Path $selectedFolder -Leaf)
-    $registrationGui = Inspect-UnifiedGui $selectedFolder $expectedChoices
     $registrationSequence = Wait-NativeSequence $invokeLog "selected_item" $before
+    $registrationGui = Inspect-UnifiedGui $selectedFolder $expectedChoices
     Assert-Field (
         $registrationSequence.project_sha256 -eq (Get-Utf16Sha256 $selectedFolder)
     ) "Registration invocation did not bind the selected empty folder."
@@ -1292,8 +1514,8 @@ try {
     $before = @(Read-InvokeLines $invokeLog).Count
     $runtimeMenu = Invoke-VisibleSkillMagnetRoot `
         $runtimeWindow (Split-Path $runtimeSkillFolder -Leaf)
-    $runtimeGui = Inspect-UnifiedGui $runtimeSkillFolder $expectedChoices
     $runtimeSequence = Wait-NativeSequence $invokeLog "selected_item" $before
+    $runtimeGui = Inspect-UnifiedGui $runtimeSkillFolder $expectedChoices
     Assert-Field (
         $runtimeSequence.project_sha256 -eq (Get-Utf16Sha256 $runtimeSkillFolder)
     ) "Runtime-skill native digest does not bind the clicked folder."
@@ -1732,6 +1954,12 @@ print(json.dumps(result, separators=(",", ":")))
     Write-Output $fieldStatus
 }
 finally {
+    $ownedCleanupError = $null
+    try {
+        Register-FieldOwnedProcessesFromInvokeLog
+        Close-FieldOwnedUiAndReleaseLease
+    }
+    catch { $ownedCleanupError = $_ }
     foreach ($window in $windows) {
         try { $window.Quit() } catch { }
     }
@@ -1739,4 +1967,5 @@ finally {
     if (Test-Path -LiteralPath $testRoot -PathType Container) {
         Remove-Item -LiteralPath $testRoot -Recurse -Force
     }
+    if ($null -ne $ownedCleanupError) { throw $ownedCleanupError }
 }

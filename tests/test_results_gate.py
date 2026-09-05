@@ -1065,6 +1065,89 @@ class ExplorerResultsGateTest(unittest.TestCase):
         self.assertRegex(probe, r"--invoke\s+\$contractProbeRoot")
         self.assertIn('isolated_contract_probe_mode = "full-invoke"', collector)
 
+    def test_field_collector_normal_exit_uses_the_owned_cleanup_boundary(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8")
+        finalizer = collector[collector.rindex("finally {") :]
+        self.assertLess(
+            finalizer.index("Register-FieldOwnedProcessesFromInvokeLog"),
+            finalizer.index("Close-FieldOwnedUiAndReleaseLease"),
+        )
+        self.assertLess(
+            finalizer.index("Close-FieldOwnedUiAndReleaseLease"),
+            finalizer.index("$window.Quit()"),
+        )
+        self.assertLess(finalizer.index("$window.Quit()"), finalizer.index("Remove-Item"))
+
+    def test_field_collector_mid_assert_recovers_launched_processes_from_log(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8")
+        recovery = collector[
+            collector.index("function Register-FieldOwnedProcessesFromInvokeLog") :
+            collector.index("function Wait-NativeSequence")
+        ]
+        self.assertIn("$script:FieldInitialInvokeLineCount", recovery)
+        self.assertIn('event -eq "selection_succeeded"', recovery)
+        self.assertIn('event -eq "create_process_succeeded"', recovery)
+        self.assertIn("$script:FieldOwnedProjectDigests.ContainsKey", recovery)
+        self.assertIn("Register-FieldOwnedProcess", recovery)
+
+    def test_field_collector_user_closed_process_is_an_idempotent_cleanup(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8")
+        identity_test = collector[
+            collector.index("function Test-FieldProcessIdentity") :
+            collector.index("function Read-FieldContextOwner")
+        ]
+        cleanup = collector[
+            collector.index("function Close-FieldOwnedUiAndReleaseLease") :
+            collector.index("function Get-UiaControlValues")
+        ]
+        self.assertIn("if ($null -eq $current) { return $false }", identity_test)
+        self.assertIn("if (-not (Test-FieldProcessIdentity $identity)) { continue }", cleanup)
+        self.assertIn("-ErrorAction SilentlyContinue", cleanup)
+
+    def test_field_collector_duplicate_launches_are_registered_by_invocation(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8")
+        sequence = collector[
+            collector.index("function Wait-NativeSequence") :
+            collector.index("function Assert-BusyMessageAndClose")
+        ]
+        ownership = collector[
+            collector.index("function Register-FieldOwnedProcess") :
+            collector.index("function Close-FieldOwnedUiAndReleaseLease")
+        ]
+        self.assertIn("Register-FieldOwnedProcess $processId $id", sequence)
+        self.assertIn("$identity.invocation_id = $InvocationId", ownership)
+        self.assertIn("Fast duplicate launchers can exit before registration", ownership)
+
+    def test_field_collector_preserves_preexisting_ui_and_owner_generation(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8")
+        ownership = collector[
+            collector.index("function Register-FieldOwnedProcess") :
+            collector.index("function Close-FieldOwnedUiAndReleaseLease")
+        ]
+        cleanup = collector[
+            collector.index("function Close-FieldOwnedUiAndReleaseLease") :
+            collector.index("function Get-UiaControlValues")
+        ]
+        self.assertIn("$script:FieldPreExistingProcessIdentities[$key]", ownership)
+        self.assertIn("start_time_utc_ticks", ownership)
+        self.assertIn("$script:FieldExpectedExecutablePath", ownership)
+        self.assertIn("$script:FieldPreExistingOwnerGeneration", ownership)
+        self.assertIn("Test-FieldProcessIdentity $identity", cleanup)
+        self.assertIn("$script:FieldOwnedOwnerTokens.ContainsKey", cleanup)
+        self.assertIn("Never infer ownership after exit", cleanup)
+        self.assertNotIn("$ownedIdentity", cleanup)
+        self.assertNotIn('Get-VisibleNamedElements "Skill Magnet', cleanup)
+
     def test_field_bundle_rejects_native_dll_binding_marker_tampering(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             ledger, bundle_path, invoke_log, bundle, _ = self._field_fixture(Path(temporary))
