@@ -9,6 +9,7 @@ import threading
 import time
 import webbrowser
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote, urlencode
@@ -23,7 +24,130 @@ from .activation import (
     _RuntimeFailed,
     validate_task_workspace,
 )
-from .core import SkillMagnetError, normalize_display_text
+from .core import SkillMagnetError, _is_link, normalize_display_text
+
+
+UI_OWNER_SCHEMA_VERSION = 2
+UI_OWNER_MAX_BYTES = 256 * 1024
+UI_OWNER_BIND_MAX_AGE_SECONDS = 300
+_PROCESS_INSTANCE_ID = os.urandom(16).hex()
+_PROCESS_STARTED_AT_UNIX_NS = time.time_ns()
+
+
+def _owner_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _path_identity_sha256(path: Path) -> str:
+    normalized = os.path.normcase(os.path.normpath(str(path.resolve())))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _owner_json_loads(raw: bytes) -> dict[str, Any]:
+    if len(raw) > UI_OWNER_MAX_BYTES:
+        raise SkillMagnetError("UI owner record is too large")
+
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise SkillMagnetError(f"UI owner record contains duplicate key: {key}")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicates)
+    except (UnicodeDecodeError, ValueError) as exc:
+        if isinstance(exc, SkillMagnetError):
+            raise
+        raise SkillMagnetError("UI owner record is not valid JSON") from exc
+    if not isinstance(value, dict):
+        raise SkillMagnetError("UI owner record must be a JSON object")
+    return value
+
+
+def _read_ui_owner_record(path: Path) -> dict[str, Any]:
+    if os.path.lexists(path) and _is_link(path):
+        raise SkillMagnetError(f"UI owner record is a link or junction: {path}")
+    try:
+        # Enforce the bound while reading.  Reading the whole file and checking
+        # afterwards lets a corrupt receipt consume unbounded memory before the
+        # guard can run.
+        with path.open("rb") as stream:
+            raw = stream.read(UI_OWNER_MAX_BYTES + 1)
+    except OSError as exc:
+        raise SkillMagnetError("UI owner record is unavailable") from exc
+    return _owner_json_loads(raw)
+
+
+def _atomic_write_ui_owner_record(path: Path, payload: dict[str, Any]) -> None:
+    """Write an owner record without following or replacing a reparse target."""
+
+    parent = path.parent
+    if _is_link(parent):
+        raise SkillMagnetError(f"UI state directory is a link or junction: {parent}")
+    if os.path.lexists(path) and _is_link(path):
+        raise SkillMagnetError(f"UI owner record is a link or junction: {path}")
+    encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n"
+    if len(encoded) > UI_OWNER_MAX_BYTES:
+        raise SkillMagnetError("UI owner record is too large")
+    temporary = path.with_name(
+        f".{path.name}.{payload.get('generation', 'unknown')}.{os.urandom(8).hex()}.tmp"
+    )
+    try:
+        if os.path.lexists(temporary):
+            raise SkillMagnetError("UI owner temporary path already exists")
+        with temporary.open("xb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if _is_link(temporary):
+            raise SkillMagnetError("UI owner temporary path became a link or junction")
+        if os.path.lexists(path) and _is_link(path):
+            raise SkillMagnetError(f"UI owner record became a link or junction: {path}")
+        os.replace(temporary, path)
+    finally:
+        if os.path.lexists(temporary) and not _is_link(temporary):
+            temporary.unlink(missing_ok=True)
+
+
+def _new_ui_owner_record(
+    *, owner_kind: str, target_digest: str, phase: str
+) -> dict[str, Any]:
+    return {
+        "schema_version": UI_OWNER_SCHEMA_VERSION,
+        "owner_kind": owner_kind,
+        "pid": os.getpid(),
+        "process_instance_id": _PROCESS_INSTANCE_ID,
+        "process_started_at_unix_ns": _PROCESS_STARTED_AT_UNIX_NS,
+        "target_sha256": target_digest,
+        "generation": os.urandom(16).hex(),
+        "phase": phase,
+        "window_handle": 0,
+        "revision": 1,
+        "published_at_utc": _owner_timestamp(),
+    }
+
+
+def _is_current_ui_owner(
+    payload: dict[str, Any], expected: dict[str, Any], *, require_window: bool = True
+) -> bool:
+    keys = ["schema_version", "pid", "process_instance_id", "generation"]
+    if require_window:
+        keys.extend(("phase", "window_handle"))
+    return (
+        payload.get("schema_version") == UI_OWNER_SCHEMA_VERSION
+        and all(payload.get(key) == expected.get(key) for key in keys)
+    )
+
+
+def _remove_owned_ui_owner_record(path: Path, expected: dict[str, Any]) -> None:
+    if not os.path.lexists(path):
+        return
+    current = _read_ui_owner_record(path)
+    if not _is_current_ui_owner(current, expected):
+        return
+    path.unlink(missing_ok=True)
 
 
 def start_context_background_operation(
@@ -91,7 +215,18 @@ class ContextUiLease:
         if not isinstance(window_handle, int) or window_handle <= 0:
             raise SkillMagnetError("Visible UI window handle is unavailable")
         payload = dict(self.owner)
-        payload.update(phase=phase, window_handle=window_handle)
+        if self.owner_path is not None and self.owner_path.exists():
+            current = _read_ui_owner_record(self.owner_path)
+            if not _is_current_ui_owner(current, self.owner, require_window=False):
+                raise SkillMagnetError("Context UI owner changed before phase publication")
+            payload = current
+        payload.pop("ui_surface", None)
+        payload.update(
+            phase=phase,
+            window_handle=window_handle,
+            revision=int(payload.get("revision", 0)) + 1,
+            published_at_utc=_owner_timestamp(),
+        )
         encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n"
         self.handle.seek(1)
         self.handle.truncate()
@@ -99,18 +234,7 @@ class ContextUiLease:
         self.handle.flush()
         os.fsync(self.handle.fileno())
         if self.owner_path is not None:
-            temporary = self.owner_path.with_name(
-                f".{self.owner_path.name}.{payload['generation']}.tmp"
-            )
-            try:
-                with temporary.open("w", encoding="utf-8", newline="\n") as stream:
-                    json.dump(payload, stream, ensure_ascii=False)
-                    stream.write("\n")
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.replace(temporary, self.owner_path)
-            finally:
-                temporary.unlink(missing_ok=True)
+            _atomic_write_ui_owner_record(self.owner_path, payload)
         self.owner = payload
 
     def release(self) -> None:
@@ -119,8 +243,8 @@ class ContextUiLease:
         try:
             if self.owner_path is not None:
                 try:
-                    self.owner_path.unlink(missing_ok=True)
-                except OSError:
+                    _remove_owned_ui_owner_record(self.owner_path, self.owner)
+                except (OSError, SkillMagnetError):
                     pass
         finally:
             try:
@@ -137,6 +261,264 @@ class ContextUiLease:
                         pass
                 self.handle = None
                 self.acquired = False
+
+
+UI_SURFACE_SCHEMA_VERSION = 1
+
+
+@dataclass(frozen=True)
+class UiSurfaceOwnerIdentity:
+    """Identity of the live owner record a visible UI surface belongs to."""
+
+    owner_path: Path
+    generation: str
+    pid: int
+    process_instance_id: str
+    phase: str
+    window_handle: int
+
+
+@dataclass(frozen=True)
+class UiWidgetSpec:
+    """A stable, user-visible widget entry for the recovery receipt.
+
+    Values are opt-in.  In particular, the request entry is deliberately
+    represented without a value so user instructions can never be copied into
+    the process-owner record.
+    """
+
+    identifier: str
+    widget: Any
+    role: str
+    text: str | Callable[[], str] | None = None
+    value: str | Callable[[], str] | None = None
+    values: tuple[str, ...] | Callable[[], tuple[str, ...]] | None = None
+    hash_text: bool = False
+    hash_value: bool = False
+    hash_values: bool = False
+
+
+def ui_surface_owner_identity(
+    owner_path: Path,
+    *,
+    phase: str,
+    window_handle: int,
+) -> UiSurfaceOwnerIdentity:
+    """Bind a surface publisher to one live, already-published UI generation."""
+
+    payload = _read_ui_owner_record(owner_path)
+    pid = payload.get("pid")
+    generation = payload.get("generation")
+    process_instance_id = payload.get("process_instance_id")
+    published_at = payload.get("published_at_utc")
+    try:
+        published = datetime.fromisoformat(str(published_at).replace("Z", "+00:00"))
+        age_seconds = (datetime.now(timezone.utc) - published).total_seconds()
+    except (TypeError, ValueError):
+        age_seconds = UI_OWNER_BIND_MAX_AGE_SECONDS + 1
+    if (
+        payload.get("schema_version") != UI_OWNER_SCHEMA_VERSION
+        or pid != os.getpid()
+        or not isinstance(generation, str)
+        or not generation
+        or process_instance_id != _PROCESS_INSTANCE_ID
+        or age_seconds < -5
+        or age_seconds > UI_OWNER_BIND_MAX_AGE_SECONDS
+        or payload.get("phase") != phase
+        or payload.get("window_handle") != window_handle
+    ):
+        raise SkillMagnetError("Visible UI owner record changed before publication")
+    return UiSurfaceOwnerIdentity(
+        owner_path=owner_path,
+        generation=generation,
+        pid=pid,
+        process_instance_id=process_instance_id,
+        phase=phase,
+        window_handle=window_handle,
+    )
+
+
+def _screen_rect(widget: Any, *, window: bool = False) -> dict[str, int]:
+    """Return a real native screen rectangle, with a Tk geometry fallback."""
+
+    handle = int(widget.winfo_id())
+    if os.name == "nt" and handle > 0:
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            user32 = ctypes.windll.user32
+            if window:
+                handle = int(user32.GetAncestor(handle, 2)) or handle  # GA_ROOT
+            rect = wintypes.RECT()
+            if user32.IsWindow(handle) and user32.GetWindowRect(handle, ctypes.byref(rect)):
+                return {
+                    "x": int(rect.left),
+                    "y": int(rect.top),
+                    "width": int(rect.right - rect.left),
+                    "height": int(rect.bottom - rect.top),
+                }
+        except (AttributeError, OSError, TypeError, ValueError):
+            pass
+    return {
+        "x": int(widget.winfo_rootx()),
+        "y": int(widget.winfo_rooty()),
+        "width": int(widget.winfo_width()),
+        "height": int(widget.winfo_height()),
+    }
+
+
+def tk_top_level_window_handle(root: Any) -> int:
+    """Return the native top-level HWND rather than a Tk child wrapper."""
+
+    handle = int(root.winfo_id())
+    if os.name == "nt" and handle > 0:
+        try:
+            import ctypes
+
+            return int(ctypes.windll.user32.GetAncestor(handle, 2)) or handle
+        except (AttributeError, OSError, TypeError, ValueError):
+            pass
+    return handle
+
+
+def _surface_value(value: str | Callable[[], str] | None) -> str | None:
+    if callable(value):
+        return str(value())
+    return value
+
+
+def _surface_sha256(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def build_tk_ui_surface(
+    root: Any,
+    *,
+    identity: UiSurfaceOwnerIdentity,
+    widgets: tuple[UiWidgetSpec, ...],
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a semantic and geometric snapshot of one visible Tk window."""
+
+    root.update_idletasks()
+    client_screen = {
+        "x": int(root.winfo_rootx()),
+        "y": int(root.winfo_rooty()),
+        "width": int(root.winfo_width()),
+        "height": int(root.winfo_height()),
+    }
+    entries: list[dict[str, Any]] = []
+    for spec in widgets:
+        widget = spec.widget
+        if widget is None:
+            continue
+        screen = _screen_rect(widget)
+        try:
+            configured_state = str(widget.cget("state"))
+        except Exception:
+            configured_state = "normal"
+        try:
+            enabled = bool(widget.instate(("!disabled",)))
+        except Exception:
+            enabled = configured_state != "disabled"
+        display_text = _surface_value(spec.text) or ""
+        entry: dict[str, Any] = {
+            "id": spec.identifier,
+            "role": spec.role,
+            "state": {"configured": configured_state, "enabled": enabled},
+            "viewable": bool(widget.winfo_viewable()),
+            "hwnd": int(widget.winfo_id()),
+            "client": {
+                "x": screen["x"] - client_screen["x"],
+                "y": screen["y"] - client_screen["y"],
+                "width": screen["width"],
+                "height": screen["height"],
+            },
+            "screen": screen,
+        }
+        if spec.hash_text:
+            entry["text_sha256"] = _surface_sha256(display_text)
+            entry["text_length"] = len(display_text)
+        else:
+            entry["text"] = display_text
+        selected_value = _surface_value(spec.value)
+        if selected_value is not None:
+            if spec.hash_value:
+                entry["value_sha256"] = _surface_sha256(selected_value)
+                entry["value_length"] = len(selected_value)
+            else:
+                entry["value"] = selected_value
+        available_values = spec.values() if callable(spec.values) else spec.values
+        if available_values is not None:
+            normalized_values = [str(value) for value in available_values]
+            if spec.hash_values:
+                canonical_values = json.dumps(
+                    normalized_values,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                entry["values_sha256"] = _surface_sha256(canonical_values)
+                entry["value_count"] = len(normalized_values)
+            else:
+                entry["values"] = normalized_values
+        entries.append(entry)
+    return {
+        "schema_version": UI_SURFACE_SCHEMA_VERSION,
+        "generation": identity.generation,
+        "pid": identity.pid,
+        "phase": identity.phase,
+        "window": {
+            "hwnd": identity.window_handle,
+            "title": str(root.title()),
+            "client": client_screen,
+            "screen": _screen_rect(root, window=True),
+        },
+        "state": dict(state),
+        "widgets": entries,
+    }
+
+
+def publish_tk_ui_surface(
+    identity: UiSurfaceOwnerIdentity,
+    root: Any,
+    *,
+    widgets: tuple[UiWidgetSpec, ...],
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    """Atomically attach the latest surface to the matching owner generation."""
+
+    if tk_top_level_window_handle(root) != identity.window_handle:
+        raise SkillMagnetError("Visible UI top-level window changed before publication")
+    surface = build_tk_ui_surface(
+        root, identity=identity, widgets=widgets, state=state
+    )
+    current = _read_ui_owner_record(identity.owner_path)
+    if any(
+        (
+            current.get("schema_version") != UI_OWNER_SCHEMA_VERSION,
+            current.get("generation") != identity.generation,
+            current.get("pid") != identity.pid,
+            current.get("process_instance_id") != identity.process_instance_id,
+            current.get("phase") != identity.phase,
+            current.get("window_handle") != identity.window_handle,
+        )
+    ):
+        raise SkillMagnetError("Visible UI owner changed; stale surface was not published")
+    previous_revision = current.get("revision", 0)
+    next_revision = (
+        int(previous_revision) + 1
+        if isinstance(previous_revision, int) and previous_revision >= 0
+        else 1
+    )
+    published_at = _owner_timestamp()
+    surface["revision"] = next_revision
+    surface["published_at_utc"] = published_at
+    current["ui_surface"] = surface
+    current["revision"] = next_revision
+    current["published_at_utc"] = published_at
+    _atomic_write_ui_owner_record(identity.owner_path, current)
+    return surface
 
 
 def _try_lock_context_ui_file(handle: Any) -> bool:
@@ -178,54 +560,67 @@ def _unlock_context_ui_file(handle: Any) -> None:
 def acquire_context_ui_lease(state_dir: Path, project: Path) -> ContextUiLease:
     """Allow one root-launcher process and recover automatically after exit."""
 
+    if os.path.lexists(state_dir) and _is_link(state_dir):
+        raise SkillMagnetError(f"Context UI state directory is a link or junction: {state_dir}")
     state_dir = state_dir.resolve()
     state_dir.mkdir(parents=True, exist_ok=True)
     path = state_dir / "context-launcher.lock"
     owner_path = state_dir / "context-launcher.owner.json"
-    payload = {
-        "pid": os.getpid(),
-        "project": str(project.resolve()),
-        "generation": os.urandom(16).hex(),
-        "phase": "context_starting",
-        "window_handle": 0,
-    }
+    if os.path.lexists(path) and _is_link(path):
+        raise SkillMagnetError(f"Context UI lock is a link or junction: {path}")
+    payload = _new_ui_owner_record(
+        owner_kind="context_launcher",
+        target_digest=_path_identity_sha256(project),
+        phase="context_starting",
+    )
     path.touch(exist_ok=True)
     handle = path.open("r+b")
     if path.stat().st_size == 0:
         handle.write(b"\0")
         handle.flush()
     if _try_lock_context_ui_file(handle):
-        handle.seek(1)
-        handle.truncate()
-        handle.write(json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-        owner_path.write_text(
-            json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8"
-        )
+        try:
+            handle.seek(1)
+            handle.truncate()
+            handle.write(json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+            _atomic_write_ui_owner_record(owner_path, payload)
+        except Exception:
+            _unlock_context_ui_file(handle)
+            handle.close()
+            raise
         return ContextUiLease(path, True, payload, handle, owner_path)
     owner: dict[str, Any] = {}
     for _ in range(10):
         try:
             with path.open("rb") as reader:
                 reader.seek(1)
-                owner = json.loads(reader.read().decode("utf-8"))
-        except (OSError, ValueError):
+                owner = _owner_json_loads(reader.read(UI_OWNER_MAX_BYTES + 1))
+        except (OSError, SkillMagnetError):
             owner = {}
         if _try_lock_context_ui_file(handle):
-            handle.seek(1)
-            handle.truncate()
-            handle.write(json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-            owner_path.write_text(
-                json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8"
-            )
+            try:
+                handle.seek(1)
+                handle.truncate()
+                handle.write(json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+                _atomic_write_ui_owner_record(owner_path, payload)
+            except Exception:
+                _unlock_context_ui_file(handle)
+                handle.close()
+                raise
             return ContextUiLease(path, True, payload, handle, owner_path)
         time.sleep(0.02)
+    legacy_project = owner.get("project")
     owner["same_request"] = bool(
-        os.path.normcase(os.path.normpath(str(payload["project"])))
-        == os.path.normcase(os.path.normpath(str(owner.get("project", ""))))
+        payload["target_sha256"] == owner.get("target_sha256")
+        or (
+            isinstance(legacy_project, str)
+            and os.path.normcase(os.path.normpath(str(project.resolve())))
+            == os.path.normcase(os.path.normpath(legacy_project))
+        )
     )
     handle.close()
     return ContextUiLease(path, False, owner, owner_path=owner_path)
@@ -466,6 +861,23 @@ def context_selection_choice_map(
                 collision += 1
         choices[label] = (candidate_pack, candidate_skill)
     return choices
+
+
+def _initial_context_selection(
+    choices: dict[str, tuple[str, str | None]],
+    *,
+    pack_id: str | None,
+    skill_id: str | None,
+) -> tuple[str, str, str]:
+    """Return one internally consistent initial selector state."""
+
+    if pack_id is not None:
+        return pack_id, skill_id or "", ""
+    label = next(iter(choices), "")
+    selected = choices.get(label)
+    if selected is None:
+        return "", "", ""
+    return selected[0], selected[1] or "", label
 
 
 def context_ui_details(language: str, details: dict[str, object]) -> str:
@@ -1224,9 +1636,14 @@ def show_context_selection(
     root = tk.Tk()
     root.resizable(True, True)
     selection_choices = context_selection_choice_map(engine)
-    selected_pack = tk.StringVar(value=pack_id or "")
-    selected_skill = tk.StringVar(value=skill_id or "")
-    selected_skill_label = tk.StringVar()
+    initial_pack, initial_skill, default_label = _initial_context_selection(
+        selection_choices,
+        pack_id=pack_id,
+        skill_id=skill_id,
+    )
+    selected_pack = tk.StringVar(value=initial_pack)
+    selected_skill = tk.StringVar(value=initial_skill)
+    selected_skill_label = tk.StringVar(value=default_label)
     selected_runtime = tk.StringVar(value=runtime.title() if runtime else "")
     purpose = tk.StringVar()
     language_choice = tk.StringVar(value="日本語")
@@ -1245,15 +1662,19 @@ def show_context_selection(
     verified_details: dict[str, object] | None = None
     active_context_worker: threading.Thread | None = None
     active_context_cancel: threading.Event | None = None
+    surface_identity: UiSurfaceOwnerIdentity | None = None
+    processing_active = False
     closing = False
 
     def current_language() -> str:
         return "en" if language_choice.get() == "English" else "ja"
 
-    ttk.Label(root, textvariable=project_label).grid(
+    project_text_label = ttk.Label(root, textvariable=project_label)
+    project_text_label.grid(
         row=0, column=0, columnspan=2, padx=12, pady=8, sticky="w"
     )
-    ttk.Label(root, textvariable=language_label).grid(row=0, column=2, padx=6, sticky="e")
+    language_text_label = ttk.Label(root, textvariable=language_label)
+    language_text_label.grid(row=0, column=2, padx=6, sticky="e")
     language_box = ttk.Combobox(
         root,
         textvariable=language_choice,
@@ -1263,7 +1684,8 @@ def show_context_selection(
     )
     language_box.grid(row=0, column=3, padx=12, pady=8, sticky="w")
     root.columnconfigure(1, weight=1)
-    ttk.Label(root, textvariable=selection_label).grid(
+    selection_text_label = ttk.Label(root, textvariable=selection_label)
+    selection_text_label.grid(
         row=1, column=0, padx=12, sticky="w"
     )
     if pack_id is not None:
@@ -1271,7 +1693,8 @@ def show_context_selection(
         selected_skill_label.set(
             pack.skill_display_name(skill_id) if skill_id is not None else pack.menu_label
         )
-        ttk.Label(root, textvariable=selected_skill_label).grid(
+        selection_widget = ttk.Label(root, textvariable=selected_skill_label)
+        selection_widget.grid(
             row=1, column=1, columnspan=3, padx=12, sticky="w"
         )
     else:
@@ -1283,6 +1706,7 @@ def show_context_selection(
             width=42,
         )
         skill_box.grid(row=1, column=1, columnspan=3, padx=12, pady=4, sticky="ew")
+        selection_widget = skill_box
 
         def choose_skill(_: object = None) -> None:
             nonlocal verified_details, details_visible
@@ -1299,13 +1723,16 @@ def show_context_selection(
                     context_ui_text(current_language(), "details_show")
                 )
             refresh_selection()
+            publish_surface()
 
         skill_box.bind("<<ComboboxSelected>>", choose_skill)
 
-    ttk.Label(root, textvariable=skill_purpose_label, wraplength=560).grid(
+    purpose_text_label = ttk.Label(root, textvariable=skill_purpose_label, wraplength=560)
+    purpose_text_label.grid(
         row=2, column=0, columnspan=4, padx=12, pady=(4, 8), sticky="w"
     )
-    ttk.Label(root, textvariable=runtime_label).grid(
+    runtime_text_label = ttk.Label(root, textvariable=runtime_label)
+    runtime_text_label.grid(
         row=3, column=0, padx=12, sticky="w"
     )
     runtime_box = ttk.Combobox(
@@ -1315,14 +1742,16 @@ def show_context_selection(
         state="readonly",
     )
     runtime_box.grid(row=3, column=1, columnspan=3, padx=12, pady=4, sticky="w")
-    ttk.Label(root, textvariable=request_label).grid(
+    request_text_label = ttk.Label(root, textvariable=request_label)
+    request_text_label.grid(
         row=4, column=0, padx=12, sticky="w"
     )
     request_entry = ttk.Entry(root, textvariable=purpose, width=48)
     request_entry.grid(
         row=4, column=1, columnspan=3, padx=12, pady=4, sticky="w"
     )
-    ttk.Label(root, textvariable=verification_label, wraplength=560).grid(
+    verification_text_label = ttk.Label(root, textvariable=verification_label, wraplength=560)
+    verification_text_label.grid(
         row=5, column=0, columnspan=4, padx=12, pady=8, sticky="w"
     )
 
@@ -1382,6 +1811,7 @@ def show_context_selection(
                 details_button_text.set(
                     context_ui_text(current_language(), "details_hide")
                 )
+                publish_surface()
 
             run_context_background(
                 "検証情報を取得しています…",
@@ -1395,6 +1825,7 @@ def show_context_selection(
             details_button_text.set(
                 context_ui_text(current_language(), "details_show")
             )
+            publish_surface()
 
     details_button = ttk.Button(root, textvariable=details_button_text, command=toggle_details)
     details_button.grid(row=6, column=0, columnspan=4, padx=12, pady=4, sticky="w")
@@ -1418,7 +1849,9 @@ def show_context_selection(
         controls.append(skill_box)
 
     def set_processing(label: str | None) -> None:
+        nonlocal processing_active
         busy = label is not None
+        processing_active = busy
         processing_status.set(f"処理中：{label}" if busy else "待機中")
         for control in controls:
             try:
@@ -1439,6 +1872,7 @@ def show_context_selection(
             if pack_id is None:
                 skill_box.configure(state="readonly")
         root.update_idletasks()
+        publish_surface()
 
     def run_context_background(
         label: str,
@@ -1532,8 +1966,15 @@ def show_context_selection(
             context_ui_text(language, "details_hide" if details_visible else "details_show")
         )
         refresh_selection()
+        publish_surface()
 
     language_box.bind("<<ComboboxSelected>>", apply_language)
+
+    def selection_state_changed(_: object = None) -> None:
+        publish_surface()
+
+    runtime_box.bind("<<ComboboxSelected>>", selection_state_changed)
+    purpose.trace_add("write", lambda *_: publish_surface())
 
     def confirm() -> None:
         language = current_language()
@@ -1653,9 +2094,137 @@ def show_context_selection(
         register_button.grid(row=8, column=2, columnspan=2, padx=12, pady=(8, 0))
     confirm_button.grid(row=9, column=0, columnspan=2, padx=12, pady=12)
     cancel_button.grid(row=9, column=2, columnspan=2, padx=12, pady=12)
-    ttk.Label(root, textvariable=processing_status, anchor="w").grid(
+    status_label = ttk.Label(root, textvariable=processing_status, anchor="w")
+    status_label.grid(
         row=10, column=0, columnspan=4, padx=12, pady=(0, 8), sticky="ew"
     )
+
+    surface_widgets = (
+        UiWidgetSpec(
+            "project",
+            project_text_label,
+            "label",
+            text=lambda: (
+                project_label.get()
+                if normalized_project is None
+                else context_ui_text(current_language(), "project", project="（選択済み）")
+            ),
+        ),
+        UiWidgetSpec(
+            "language_label",
+            language_text_label,
+            "label",
+            text=lambda: language_label.get(),
+        ),
+        UiWidgetSpec(
+            "selection_label",
+            selection_text_label,
+            "label",
+            text=lambda: selection_label.get(),
+        ),
+        UiWidgetSpec(
+            "skill_purpose",
+            purpose_text_label,
+            "label",
+            text=lambda: skill_purpose_label.get(),
+            hash_text=True,
+        ),
+        UiWidgetSpec(
+            "runtime_label",
+            runtime_text_label,
+            "label",
+            text=lambda: runtime_label.get(),
+        ),
+        UiWidgetSpec(
+            "request_label",
+            request_text_label,
+            "label",
+            text=lambda: request_label.get(),
+        ),
+        UiWidgetSpec(
+            "verification",
+            verification_text_label,
+            "label",
+            text=lambda: verification_label.get(),
+        ),
+        UiWidgetSpec(
+            "language_choice",
+            language_box,
+            "combobox",
+            value=lambda: language_choice.get(),
+            values=("日本語", "English"),
+        ),
+        UiWidgetSpec(
+            "selection_choice",
+            selection_widget,
+            "combobox" if pack_id is None else "label",
+            value=lambda: selected_skill_label.get(),
+            values=(lambda: tuple(selection_choices)) if pack_id is None else None,
+            hash_value=True,
+            hash_values=pack_id is None,
+        ),
+        UiWidgetSpec(
+            "runtime_choice",
+            runtime_box,
+            "combobox",
+            value=lambda: selected_runtime.get(),
+            values=("Codex", "Claude"),
+        ),
+        # Request text is intentionally absent.  Only presence and length are
+        # recorded in state below so a recovery receipt cannot disclose it.
+        UiWidgetSpec("request", request_entry, "entry"),
+        UiWidgetSpec(
+            "details", details_button, "button", text=lambda: details_button_text.get()
+        ),
+        UiWidgetSpec(
+            "library_manager", manager_button, "button", text="Library Manager"
+        ),
+        UiWidgetSpec(
+            "register_selected",
+            register_button,
+            "button",
+            text="このフォルダーのスキルを登録",
+        ),
+        UiWidgetSpec(
+            "confirm",
+            confirm_button,
+            "button",
+            text=lambda: str(confirm_button.cget("text")),
+        ),
+        UiWidgetSpec(
+            "cancel",
+            cancel_button,
+            "button",
+            text=lambda: str(cancel_button.cget("text")),
+        ),
+        UiWidgetSpec(
+            "status", status_label, "status", text=lambda: processing_status.get()
+        ),
+    )
+
+    def publish_surface() -> None:
+        if surface_identity is None or closing:
+            return
+        try:
+            publish_tk_ui_surface(
+                surface_identity,
+                root,
+                widgets=surface_widgets,
+                state={
+                    "language": current_language(),
+                    "selection_mode": "dynamic" if pack_id is None else "fixed",
+                    "processing": processing_active,
+                    "details_visible": details_visible,
+                    "request_present": bool(purpose.get()),
+                    "request_length": len(purpose.get()),
+                },
+            )
+        except Exception:
+            # The owner may already be in the next phase or closing.  Geometry
+            # publication is observational and must never break user recovery,
+            # even if a platform-specific Tk query fails unexpectedly.
+            return
+
     def close_context_window() -> None:
         nonlocal closing
         closing = True
@@ -1669,7 +2238,14 @@ def show_context_selection(
     if window_ready is not None:
         try:
             root.update_idletasks()
-            window_ready(int(root.winfo_id()))
+            window_handle = tk_top_level_window_handle(root)
+            window_ready(window_handle)
+            surface_identity = ui_surface_owner_identity(
+                engine.state_dir / "context-launcher.owner.json",
+                phase="context_selection",
+                window_handle=window_handle,
+            )
+            publish_surface()
         except Exception:
             root.destroy()
             raise

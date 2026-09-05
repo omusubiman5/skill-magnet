@@ -188,6 +188,8 @@ class LibraryManagerTests(unittest.TestCase):
             self.assertTrue(duplicate.same_request)
             self.assertEqual(duplicate.owner["phase"], "library_manager")
             self.assertEqual(duplicate.owner["window_handle"], 24680)
+            self.assertNotIn("selected_source", duplicate.owner)
+            self.assertRegex(duplicate.owner["target_sha256"], r"^[0-9a-f]{64}$")
 
             other = self.root / "other-skill"
             other.mkdir()
@@ -202,6 +204,27 @@ class LibraryManagerTests(unittest.TestCase):
         self.assertTrue(recovered.acquired)
         recovered.release()
         self.assertTrue((state / "library-manager.lock").exists())
+
+    def test_library_ui_lease_rejects_linked_lock_without_touching_target(self) -> None:
+        state = self.root / "linked-library-lease"
+        state.mkdir()
+        outside = self.root / "outside-library-lock.txt"
+        outside.write_text("preserve-me", encoding="utf-8")
+        lock_path = state / "library-manager.lock"
+        try:
+            os.symlink(outside, lock_path)
+        except OSError:
+            lock_path.touch()
+            with mock.patch.dict(
+                acquire_library_ui_lease.__globals__,
+                {"_is_link": lambda path: Path(path).name == "library-manager.lock"},
+            ):
+                with self.assertRaisesRegex(SkillMagnetError, "link or junction"):
+                    acquire_library_ui_lease(state, self.root / "selected")
+        else:
+            with self.assertRaisesRegex(SkillMagnetError, "link or junction"):
+                acquire_library_ui_lease(state, self.root / "selected")
+        self.assertEqual(outside.read_text(encoding="utf-8"), "preserve-me")
 
     def test_library_ui_lease_blocks_other_process_and_recovers_after_exit(self) -> None:
         state = self.root / "process-lease-state"

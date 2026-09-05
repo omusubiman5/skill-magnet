@@ -64,7 +64,13 @@ from skill_magnet.platforms import (
 )
 from skill_magnet.ui import (
     ContextUiAction,
+    UiWidgetSpec,
+    _initial_context_selection,
+    _atomic_write_ui_owner_record,
+    _owner_json_loads,
+    _read_ui_owner_record,
     acquire_context_ui_lease,
+    build_tk_ui_surface,
     codex_desktop_deep_link,
     confirm_context_selection,
     context_error_message,
@@ -78,11 +84,13 @@ from skill_magnet.ui import (
     context_ui_request_error,
     context_ui_text,
     launch_context_leaf,
+    publish_tk_ui_surface,
     start_context_background_operation,
     deliver_codex_desktop_prompt,
     deliver_prepared_codex_handoff,
     claude_desktop_deep_link,
     deliver_claude_desktop_prompt,
+    ui_surface_owner_identity,
 )
 from tests.e2e_guard import E2ECycleTeardown, assert_e2e_clean
 
@@ -2440,6 +2448,12 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertTrue(all("bounded-pack" not in label for label in choices))
         self.assertTrue(all("unused-pack" not in label for label in choices))
         self.assertTrue(all("suffix-pack" not in label for label in choices))
+        first_label = next(iter(choices))
+        selected_pack, selected_skill, selected_label = _initial_context_selection(
+            choices, pack_id=None, skill_id=None
+        )
+        self.assertEqual(selected_label, first_label)
+        self.assertEqual((selected_pack, selected_skill or None), choices[first_label])
         self.assertEqual(
             set(choices.values()),
             {
@@ -3577,7 +3591,8 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertFalse(second.acquired)
         self.assertTrue(second.owner["same_request"])
         self.assertEqual(second.owner["pid"], os.getpid())
-        self.assertEqual(second.owner["project"], str(self.project.resolve()))
+        self.assertNotIn("project", second.owner)
+        self.assertRegex(second.owner["target_sha256"], r"^[0-9a-f]{64}$")
         first.release()
         recovered = acquire_context_ui_lease(lease_dir, self.project)
         self.assertTrue(recovered.acquired)
@@ -3632,6 +3647,190 @@ class ActivationEndToEndTest(unittest.TestCase):
         final = acquire_context_ui_lease(lease_dir, self.project)
         self.assertTrue(final.acquired)
         final.release()
+
+    def test_ui_surface_receipt_is_atomic_generation_bound_and_secret_free(self) -> None:
+        secret = "SECRET-request-token-123"
+        selected = self.root / f"selected-{secret}"
+        selected.mkdir()
+        lease_dir = self.root / "semantic-owner"
+        lease = acquire_context_ui_lease(lease_dir, selected)
+
+        class Widget:
+            def __init__(self, handle: int, *, value: str = "normal") -> None:
+                self.handle = handle
+                self.configured_state = value
+
+            def winfo_id(self) -> int:
+                return self.handle
+
+            def winfo_rootx(self) -> int:
+                return 100 + self.handle % 10
+
+            def winfo_rooty(self) -> int:
+                return 200 + self.handle % 10
+
+            def winfo_width(self) -> int:
+                return 80
+
+            def winfo_height(self) -> int:
+                return 24
+
+            def winfo_viewable(self) -> bool:
+                return True
+
+            def cget(self, key: str) -> str:
+                if key != "state":
+                    raise KeyError(key)
+                return self.configured_state
+
+            def instate(self, states: tuple[str, ...]) -> bool:
+                return "!disabled" in states and self.configured_state != "disabled"
+
+        class Root(Widget):
+            def update_idletasks(self) -> None:
+                pass
+
+            def title(self) -> str:
+                return "Skill Magnet"
+
+        try:
+            lease.publish_window(phase="context_selection", window_handle=991991)
+            owner_path = lease_dir / "context-launcher.owner.json"
+            identity = ui_surface_owner_identity(
+                owner_path,
+                phase="context_selection",
+                window_handle=991991,
+            )
+            choices = (f"Private {secret}", "Second private skill")
+            widgets = (
+                UiWidgetSpec(
+                    "selection_choice",
+                    Widget(991992),
+                    "combobox",
+                    value=choices[0],
+                    values=choices,
+                    hash_value=True,
+                    hash_values=True,
+                ),
+                UiWidgetSpec("request", Widget(991993), "entry"),
+            )
+            surface = publish_tk_ui_surface(
+                identity,
+                Root(991991),
+                widgets=widgets,
+                state={"request_present": True, "request_length": len(secret)},
+            )
+            record = json.loads(owner_path.read_text(encoding="utf-8"))
+            selector = surface["widgets"][0]
+            self.assertEqual(selector["value_count"], 2)
+            self.assertNotIn("value", selector)
+            self.assertNotIn("values", selector)
+            self.assertEqual(surface["generation"], record["generation"])
+            self.assertEqual(surface["revision"], record["revision"])
+            self.assertEqual(surface["window"]["hwnd"], record["window_handle"])
+            self.assertNotIn(secret, owner_path.read_text(encoding="utf-8"))
+            lease.handle.seek(1)
+            self.assertNotIn(
+                secret,
+                lease.handle.read().decode("utf-8", errors="ignore"),
+            )
+            self.assertNotIn("project", record)
+            fixed = build_tk_ui_surface(
+                Root(991991),
+                identity=identity,
+                widgets=(
+                    UiWidgetSpec(
+                        "selection_choice",
+                        Widget(991994),
+                        "label",
+                        value=f"Fixed {secret}",
+                        hash_value=True,
+                    ),
+                ),
+                state={"selection_mode": "fixed"},
+            )
+            self.assertEqual(fixed["widgets"][0]["role"], "label")
+            self.assertNotIn(secret, json.dumps(fixed))
+
+            stale = dict(record)
+            stale["published_at_utc"] = "2000-01-01T00:00:00Z"
+            _atomic_write_ui_owner_record(owner_path, stale)
+            with self.assertRaisesRegex(SkillMagnetError, "changed"):
+                ui_surface_owner_identity(
+                    owner_path,
+                    phase="context_selection",
+                    window_handle=991991,
+                )
+            reused_pid = dict(record)
+            reused_pid["process_instance_id"] = "0" * 32
+            _atomic_write_ui_owner_record(owner_path, reused_pid)
+            with self.assertRaisesRegex(SkillMagnetError, "changed"):
+                ui_surface_owner_identity(
+                    owner_path,
+                    phase="context_selection",
+                    window_handle=991991,
+                )
+
+            tampered = dict(record)
+            tampered["generation"] = "f" * 32
+            _atomic_write_ui_owner_record(owner_path, tampered)
+            with self.assertRaisesRegex(SkillMagnetError, "changed"):
+                publish_tk_ui_surface(
+                    identity, Root(991991), widgets=widgets, state={}
+                )
+            lease.release()
+            self.assertTrue(owner_path.exists(), "old owner must not delete a replacement")
+            self.assertEqual(
+                json.loads(owner_path.read_text(encoding="utf-8"))["generation"],
+                "f" * 32,
+            )
+        finally:
+            if lease.acquired:
+                lease.release()
+
+    def test_ui_owner_atomic_failure_and_invalid_json_preserve_previous_record(self) -> None:
+        lease_dir = self.root / "atomic-owner"
+        lease = acquire_context_ui_lease(lease_dir, self.project)
+        owner_path = lease_dir / "context-launcher.owner.json"
+        before = owner_path.read_bytes()
+        payload = json.loads(before)
+        payload["revision"] += 1
+        try:
+            with mock.patch("skill_magnet.ui.os.replace", side_effect=OSError("replace failed")):
+                with self.assertRaisesRegex(OSError, "replace failed"):
+                    _atomic_write_ui_owner_record(owner_path, payload)
+            self.assertEqual(owner_path.read_bytes(), before)
+            with self.assertRaisesRegex(SkillMagnetError, "duplicate key"):
+                _owner_json_loads(b'{"pid":1,"pid":2}')
+            with self.assertRaisesRegex(SkillMagnetError, "too large"):
+                _owner_json_loads(b"{" + b" " * (256 * 1024) + b"}")
+            oversized = lease_dir / "oversized-owner.json"
+            oversized.write_bytes(b"{" + b" " * (256 * 1024) + b"}")
+            with self.assertRaisesRegex(SkillMagnetError, "too large"):
+                _read_ui_owner_record(oversized)
+        finally:
+            lease.release()
+
+    def test_context_ui_owner_rejects_linked_lock_without_touching_target(self) -> None:
+        lease_dir = self.root / "linked-owner"
+        lease_dir.mkdir()
+        outside = self.root / "outside-lock.txt"
+        outside.write_text("preserve-me", encoding="utf-8")
+        lock_path = lease_dir / "context-launcher.lock"
+        try:
+            os.symlink(outside, lock_path)
+        except OSError:
+            lock_path.touch()
+            with mock.patch.dict(
+                acquire_context_ui_lease.__globals__,
+                {"_is_link": lambda path: Path(path).name == "context-launcher.lock"},
+            ):
+                with self.assertRaisesRegex(SkillMagnetError, "link or junction"):
+                    acquire_context_ui_lease(lease_dir, self.project)
+        else:
+            with self.assertRaisesRegex(SkillMagnetError, "link or junction"):
+                acquire_context_ui_lease(lease_dir, self.project)
+        self.assertEqual(outside.read_text(encoding="utf-8"), "preserve-me")
 
     def test_duplicate_root_launcher_focuses_existing_window_without_second_ui(self) -> None:
         lease = acquire_context_ui_lease(self.state, self.project)
@@ -3725,7 +3924,8 @@ class ActivationEndToEndTest(unittest.TestCase):
         error_ui.assert_called_once()
         message = error_ui.call_args.args[0]
         self.assertIn("別のフォルダー", message)
-        self.assertIn(str(self.project.resolve()), message)
+        self.assertIn("処理中フォルダー: 不明", message)
+        self.assertNotIn(str(self.project.resolve()), message)
         self.assertIn(str(other_project.resolve()), message)
         self.assertIn("もう一度右クリック", message)
 

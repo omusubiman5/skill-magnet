@@ -25,6 +25,48 @@ function Get-Utf16Sha256([string]$Value) {
     Get-BytesSha256 ([Text.Encoding]::Unicode.GetBytes($Value))
 }
 
+function Get-Utf8Sha256([string]$Value) {
+    Get-BytesSha256 ([Text.UTF8Encoding]::new($false).GetBytes($Value))
+}
+
+function Get-CanonicalStringArraySha256([object[]]$Values) {
+    $normalized = @($Values | ForEach-Object { [string]$_ })
+    $canonical = ConvertTo-Json -InputObject $normalized -Compress
+    Get-Utf8Sha256 $canonical
+}
+
+function Get-FieldTargetSha256([string]$Path) {
+    # Mirrors pathlib.Path.resolve + os.path.normpath/normcase in the installed
+    # Windows UI without persisting the selected path in its recovery receipt.
+    $normalized = [IO.Path]::GetFullPath($Path).TrimEnd('\').ToLowerInvariant()
+    Get-Utf8Sha256 $normalized
+}
+
+function Assert-FieldRegularPathBoundary(
+    [string]$Path,
+    [bool]$AllowMissingLeaf = $false
+) {
+    $full = [IO.Path]::GetFullPath($Path)
+    $parent = Split-Path -Parent $full
+    Assert-Field ($parent -and (Test-Path -LiteralPath $parent -PathType Container)) `
+        "Field path parent does not exist: $parent"
+    $parentItem = Get-Item -LiteralPath $parent -Force
+    Assert-Field (
+        ($parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0
+    ) "Field path parent must not be a link, junction, or reparse point: $parent"
+    if (Test-Path -LiteralPath $full) {
+        $item = Get-Item -LiteralPath $full -Force
+        Assert-Field (
+            -not $item.PSIsContainer -and
+            ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0
+        ) "Field path must not be a link, junction, or reparse point: $full"
+    }
+    else {
+        Assert-Field $AllowMissingLeaf "Required field path is missing: $full"
+    }
+    $full
+}
+
 function Get-NormalizedTextFileSha256([string]$Path) {
     $text = [IO.File]::ReadAllText(
         $Path,
@@ -94,8 +136,12 @@ function New-ArtifactSnapshot(
 }
 
 function Get-ZipEntryBytes($Archive, [string]$Name) {
-    $entry = $Archive.GetEntry($Name)
-    Assert-Field ($null -ne $entry) "Signed MSIX entry is missing: $Name"
+    $matches = @($Archive.Entries | Where-Object {
+        [string]$_.FullName -ceq $Name
+    })
+    Assert-Field ($matches.Count -eq 1) `
+        "Signed MSIX entry is missing or ambiguous: $Name (count=$($matches.Count))"
+    $entry = $matches[0]
     $stream = $entry.Open()
     $buffer = [IO.MemoryStream]::new()
     try {
@@ -167,7 +213,7 @@ function New-AttestationPayload([System.Collections.IDictionary]$Bundle) {
     $selected = @($Bundle.explorer_observations | Where-Object source -eq "selected_item")[0]
     $background = @($Bundle.explorer_observations | Where-Object source -eq "background_site")[0]
     $values = @(
-        @("contract", "skill-magnet-windows-explorer-field-v4"),
+        @("contract", "skill-magnet-windows-explorer-field-v5"),
         @("schema_version", $Bundle.schema_version),
         @("release_version", $Bundle.release_version),
         @("release_code_sha", $Bundle.release_code_sha),
@@ -211,12 +257,27 @@ function New-AttestationPayload([System.Collections.IDictionary]$Bundle) {
         @("native_source_binding.status_native_build_binding_valid", $Bundle.native_source_binding.status_native_build_binding_valid),
         @("selected_item.invocation_id", $selected.invocation_id),
         @("selected_item.project_sha256", $selected.project_sha256),
+        @("selected_item.selection_choice_values_sha256", $selected.selection_choice_values_sha256),
+        @("selected_item.selected_choice_value_sha256", $selected.selected_choice_value_sha256),
+        @("selected_item.library_manager_button_text_sha256", $selected.library_manager_button_text_sha256),
+        @("selected_item.register_button_text_sha256", $selected.register_button_text_sha256),
         @("background_site.invocation_id", $background.invocation_id),
         @("background_site.project_sha256", $background.project_sha256),
+        @("background_site.selection_choice_values_sha256", $background.selection_choice_values_sha256),
+        @("background_site.selected_choice_value_sha256", $background.selected_choice_value_sha256),
+        @("background_site.library_manager_button_text_sha256", $background.library_manager_button_text_sha256),
+        @("background_site.register_button_text_sha256", $background.register_button_text_sha256),
         @("selector.choice_map_sha256", $Bundle.selector_contract.choice_map_sha256),
+        @("selector.ordered_label_sha256", $Bundle.selector_contract.ordered_label_sha256),
+        @("selector.choice_count", $Bundle.selector_contract.choice_count),
+        @("selector.selected_label_sha256", $Bundle.selector_contract.selected_label_sha256),
         @("selector.exact_selector_combo_count", $Bundle.selector_contract.exact_selector_combo_count),
-        @("library_manager.configured_remote", $Bundle.library_manager_observation.configured_remote),
+        @("library_manager.configured_remote_sha256", $Bundle.library_manager_observation.configured_remote_sha256),
         @("library_manager.configured_remote_visible", $Bundle.library_manager_observation.configured_remote_visible),
+        @("library_manager.create_button_text_sha256", $Bundle.library_manager_observation.create_button_text_sha256),
+        @("library_manager.update_button_text_sha256", $Bundle.library_manager_observation.update_button_text_sha256),
+        @("library_manager.delete_button_text_sha256", $Bundle.library_manager_observation.delete_button_text_sha256),
+        @("library_manager.reload_button_text_sha256", $Bundle.library_manager_observation.reload_button_text_sha256),
         @("library_manager.same_folder_repeat_focused_existing_manager", $Bundle.library_manager_observation.same_folder_repeat_focused_existing_manager),
         @("library_manager.different_folder_actionable_recovery_visible", $Bundle.library_manager_observation.different_folder_actionable_recovery_visible),
         @("library_manager.no_persistent_mutation", $Bundle.library_manager_observation.no_persistent_mutation),
@@ -288,15 +349,55 @@ Add-Type -AssemblyName UIAutomationTypes
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 public static class SkillMagnetFieldInput {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT { public int X; public int Y; }
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(
+        IntPtr hWnd, out uint processId);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(
+        IntPtr hWnd, out RECT rectangle);
+    [DllImport("user32.dll")] public static extern IntPtr GetAncestor(
+        IntPtr hWnd, uint flags);
+    [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
+    [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT point);
     [DllImport("user32.dll")] public static extern void mouse_event(
         uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowTextLength(IntPtr hWnd);
+    public static string WindowText(IntPtr hWnd) {
+        int length = GetWindowTextLength(hWnd);
+        StringBuilder text = new StringBuilder(length + 1);
+        GetWindowText(hWnd, text, text.Capacity);
+        return text.ToString();
+    }
     public static void LeftClick(int x, int y) {
         SetCursorPos(x, y); mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
         mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
+    }
+    public static bool CheckedClickCurrent(
+        int x, int y, IntPtr widget, IntPtr root, uint expectedProcessId) {
+        POINT cursor;
+        if (!GetCursorPos(out cursor) || cursor.X != x || cursor.Y != y) return false;
+        if (GetForegroundWindow() != root) return false;
+        POINT point = new POINT { X = x, Y = y };
+        IntPtr hit = WindowFromPoint(point);
+        if (hit != widget || GetAncestor(hit, 2) != root) return false;
+        uint processId;
+        GetWindowThreadProcessId(hit, out processId);
+        if (processId != expectedProcessId) return false;
+        mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
+        mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
+        return true;
     }
     public static void RightClick(int x, int y) {
         SetCursorPos(x, y); mouse_event(0x0008, 0, 0, 0, UIntPtr.Zero);
@@ -319,6 +420,22 @@ function Get-VisibleNamedElements([string]$Name, [int]$ProcessId = 0) {
             )
         } catch { $false }
     })
+}
+
+function New-HashedArtifactSnapshot(
+    [string]$Source,
+    [string]$FileName,
+    [string]$Path
+) {
+    Assert-Field (Test-Path -LiteralPath $Path -PathType Leaf) `
+        "Installed field artifact is missing: $FileName"
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    [ordered]@{
+        source = $Source
+        file_name = $FileName
+        size = $bytes.Length
+        sha256 = Get-BytesSha256 $bytes
+    }
 }
 
 function Get-UiaRuntimeKey($Element) {
@@ -486,90 +603,28 @@ function Test-ExactStringSequence([object[]]$Actual, [object[]]$Expected) {
     return $true
 }
 
-function Get-SelectionChoiceContract($Gui, [object[]]$ExpectedChoices) {
-    $condition = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-        [System.Windows.Automation.ControlType]::ComboBox
-    )
-    $combos = $Gui.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+function Get-SelectionChoiceContract($Surface, [object[]]$ExpectedChoices) {
     $expectedLabels = @($ExpectedChoices | ForEach-Object { [string]$_.label })
-    $matching = [Collections.Generic.List[object]]::new()
-    $observed = [Collections.Generic.List[object]]::new()
-    foreach ($combo in @($combos)) {
-        $expand = Get-Pattern $combo ([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
-        if ($null -eq $expand) { continue }
-        try {
-            $expand.Expand()
-            $comboProcessId = [int]$combo.Current.ProcessId
-            $items = @()
-            $listDeadline = [DateTime]::UtcNow.AddSeconds(3)
-            do {
-                $listCondition = New-Object System.Windows.Automation.PropertyCondition(
-                    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-                    [System.Windows.Automation.ControlType]::ListItem
-                )
-                $visible = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
-                    [System.Windows.Automation.TreeScope]::Descendants, $listCondition
-                )
-                $items = @($visible | Where-Object {
-                    try {
-                        -not $_.Current.IsOffscreen -and
-                        [int]$_.Current.ProcessId -eq $comboProcessId
-                    } catch { $false }
-                } | ForEach-Object { [string]$_.Current.Name })
-                if (Test-ExactStringSequence $items $expectedLabels) { break }
-                Start-Sleep -Milliseconds 100
-            } while ([DateTime]::UtcNow -lt $listDeadline)
-            $entry = [ordered]@{
-                element = Get-UiaElementSnapshot $combo
-                labels = $items
-            }
-            $null = $observed.Add($entry)
-            if (Test-ExactStringSequence $items $expectedLabels) {
-                $null = $matching.Add($entry)
-            }
-            $expand.Collapse()
-        }
-        catch {
-            try { $expand.Collapse() } catch { }
-        }
-    }
-    $diagnostic = ConvertTo-Json @($observed) -Depth 6 -Compress
-    $expectedDiagnostic = ConvertTo-Json @($expectedLabels) -Compress
-    $descendantDiagnostic = @($Gui.FindAll(
-        [System.Windows.Automation.TreeScope]::Descendants,
-        [System.Windows.Automation.Condition]::TrueCondition
-    ) | Select-Object -First 80 | ForEach-Object {
-        try {
-            $rectangle = $_.Current.BoundingRectangle
-            $valuePattern = Get-Pattern $_ ([System.Windows.Automation.ValuePattern]::Pattern)
-            [ordered]@{
-                name = [string]$_.Current.Name
-                type = [string]$_.Current.ControlType.ProgrammaticName
-                class = [string]$_.Current.ClassName
-                automation_id = [string]$_.Current.AutomationId
-                hwnd = [int]$_.Current.NativeWindowHandle
-                rect = "{0},{1},{2},{3}" -f [int]$rectangle.Left, [int]$rectangle.Top,
-                    [int]$rectangle.Width, [int]$rectangle.Height
-                patterns = @($_.GetSupportedPatterns() | ForEach-Object {
-                    [string]$_.ProgrammaticName
-                })
-                value = if ($null -ne $valuePattern) {
-                    [string]$valuePattern.Current.Value
-                } else { "" }
-            }
-        } catch { [ordered]@{ error = [string]$_.Exception.Message } }
-    })
-    $descendantDiagnosticJson = ConvertTo-Json $descendantDiagnostic -Compress
-    Assert-Field ($matching.Count -eq 1) `
-        ("Exactly one combo box must expose the configured selector labels; " +
-         "observed $($matching.Count); expected=$expectedDiagnostic; combos=$diagnostic; " +
-         "descendants=$descendantDiagnosticJson")
+    $selection = Get-FieldUiSurfaceWidget $Surface "selection_choice" "combobox"
+    Assert-Field ([bool]$selection.viewable) `
+        "The receipt-bound selection control is not visible."
+    $expectedValuesSha256 = Get-CanonicalStringArraySha256 $expectedLabels
+    Assert-Field (
+        [int]$selection.value_count -eq $expectedLabels.Count -and
+        [string]$selection.values_sha256 -ceq $expectedValuesSha256
+    ) "Receipt-bound selection choices do not match the configured ordered choice digest."
+    $selectedLabel = if ($expectedLabels.Count -gt 0) { $expectedLabels[0] } else { "" }
+    Assert-Field (
+        [string]$selection.value_sha256 -ceq (Get-Utf8Sha256 $selectedLabel) -and
+        [int]$selection.value_length -eq $selectedLabel.Length
+    ) "Receipt-bound selected choice does not match the configured default choice digest."
     [ordered]@{
         configured_choices = @($ExpectedChoices)
-        labels = @($matching[0].labels)
-        exact_match_count = $matching.Count
-        combo_box_count = @($combos).Count
+        labels = $expectedLabels
+        values_sha256 = $expectedValuesSha256
+        selected_value_sha256 = Get-Utf8Sha256 $selectedLabel
+        exact_match_count = 1
+        combo_box_count = 1
     }
 }
 
@@ -591,31 +646,54 @@ function Inspect-UnifiedGui(
     [string]$ProjectPath,
     [object[]]$ExpectedChoices,
     [int]$ExpectedProcessId,
-    [string]$TranscriptSource = ""
+    [string]$TranscriptSource = "",
+    [bool]$ExpectProjectless = $false
 ) {
     $gui = Wait-VisibleWindowByPrefix "Skill Magnet — 実行確認" $ExpectedProcessId
-    $projectBound = $false
-    $descendants = $gui.FindAll(
-        [System.Windows.Automation.TreeScope]::Descendants,
-        [System.Windows.Automation.Condition]::TrueCondition
-    )
-    foreach ($element in @($descendants)) {
-        try {
-            if ($element.Current.Name -like "*$ProjectPath*") { $projectBound = $true }
-        } catch { }
+    $receipt = Wait-FieldUiSurface $ExpectedProcessId "context_selection" $gui
+    $surface = $receipt.surface
+    $projectWidget = Get-FieldUiSurfaceWidget $surface "project" "label"
+    $projectBound = [string]$receipt.owner.target_sha256 -ceq `
+        (Get-FieldTargetSha256 $ProjectPath)
+    $projectSemanticVisible = if ($ExpectProjectless) {
+        [string]$projectWidget.text -like "*作業対象フォルダー: 指定なし*" -and
+        [string]$projectWidget.text -like "*デスクトップアプリが新規タスク用領域を自動作成*"
+    } else {
+        [string]$projectWidget.text -like "*（選択済み）*"
     }
-    $selectionContract = Get-SelectionChoiceContract $gui $ExpectedChoices
+    $selectionContract = Get-SelectionChoiceContract $surface $ExpectedChoices
+    $managerButton = Get-FieldUiSurfaceWidget $surface "library_manager" "button"
+    $registerButton = Get-FieldUiSurfaceWidget $surface "register_selected" "button"
     $observation = @{
         element = $gui
+        ui_surface = $surface
+        ui_surface_generation = [string]$receipt.owner.generation
+        ui_surface_sha256 = [string]$receipt.receipt_sha256
+        selection_choice_values_sha256 = [string]$selectionContract.values_sha256
+        selected_choice_value_sha256 = [string]$selectionContract.selected_value_sha256
+        library_manager_button_text_sha256 = Get-Utf8Sha256 "Library Manager"
+        register_button_text_sha256 = Get-Utf8Sha256 "このフォルダーのスキルを登録"
         gui_visible = $true
         gui_title = $gui.Current.Name
         project_binding_visible = $projectBound
         selection_choice_count = @($selectionContract.labels).Count
-        selection_choice_labels = @($selectionContract.labels)
         selection_combo_exact_match_count = [int]$selectionContract.exact_match_count
-        library_manager_button_count = Get-ButtonCount $gui "Library Manager"
-        register_button_count = Get-ButtonCount $gui "このフォルダーのスキルを登録"
+        library_manager_button_count = if (
+            [bool]$managerButton.viewable -and [string]$managerButton.text -ceq "Library Manager"
+        ) { 1 } else { 0 }
+        register_button_count = if (
+            [bool]$registerButton.viewable -and
+            [string]$registerButton.text -ceq "このフォルダーのスキルを登録"
+        ) { 1 } else { 0 }
     }
+    Assert-Field $projectBound `
+        "Receipt-bound context UI target digest does not bind the Explorer-selected folder."
+    Assert-Field $projectSemanticVisible `
+        "Receipt-bound context UI does not display the expected selected/projectless state."
+    Assert-Field ($observation.library_manager_button_count -eq 1) `
+        "Receipt-bound context UI does not expose one Library Manager button."
+    Assert-Field ($observation.register_button_count -eq 1) `
+        "Receipt-bound context UI does not expose one registration button."
     if ($TranscriptSource) {
         Add-UiaTranscriptEvent "unified_gui_observed" $TranscriptSource ([ordered]@{
             element = Get-UiaElementSnapshot $gui
@@ -624,10 +702,14 @@ function Inspect-UnifiedGui(
             gui_title = $observation.gui_title
             project_binding_visible = $observation.project_binding_visible
             selection_choice_count = $observation.selection_choice_count
-            selection_choice_labels = @($observation.selection_choice_labels)
+            selection_choice_values_sha256 = $observation.selection_choice_values_sha256
+            selected_choice_value_sha256 = $observation.selected_choice_value_sha256
             selection_combo_exact_match_count = $observation.selection_combo_exact_match_count
             library_manager_button_count = $observation.library_manager_button_count
+            library_manager_button_text_sha256 = `
+                $observation.library_manager_button_text_sha256
             register_button_count = $observation.register_button_count
+            register_button_text_sha256 = $observation.register_button_text_sha256
         })
     }
     $observation
@@ -638,26 +720,6 @@ function Close-UiaWindow($Element) {
     Assert-Field ($null -ne $window) "Visible Skill Magnet window has no WindowPattern."
     $window.Close()
     Start-Sleep -Milliseconds 300
-}
-
-function Invoke-NamedButton($Window, [string]$Name) {
-    $nameCondition = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::NameProperty, $Name
-    )
-    $typeCondition = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-        [System.Windows.Automation.ControlType]::Button
-    )
-    $condition = New-Object System.Windows.Automation.AndCondition(
-        $nameCondition, $typeCondition
-    )
-    $buttons = @($Window.FindAll(
-        [System.Windows.Automation.TreeScope]::Descendants, $condition
-    ))
-    Assert-Field ($buttons.Count -eq 1) "Expected one '$Name' button; observed $($buttons.Count)."
-    $invoke = Get-Pattern $buttons[0] ([System.Windows.Automation.InvokePattern]::Pattern)
-    Assert-Field ($null -ne $invoke) "Button '$Name' has no InvokePattern."
-    $invoke.Invoke()
 }
 
 function Get-VisibleWindowsByPrefix([string]$Prefix, [int]$ProcessId = 0) {
@@ -751,6 +813,451 @@ function Read-FieldContextOwner() {
             ConvertFrom-Json
     }
     catch { return $null }
+}
+
+function Read-ValidatedFieldContextOwner() {
+    if (-not (Test-Path -LiteralPath $script:FieldContextOwnerPath -PathType Leaf)) {
+        return $null
+    }
+    $item = Get-Item -LiteralPath $script:FieldContextOwnerPath -Force
+    $parentItem = Get-Item -LiteralPath $item.Directory.FullName -Force
+    Assert-Field (
+        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and
+        ($parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0
+    ) "Context UI owner receipt and its state directory must not be reparse points."
+    $stream = [IO.FileStream]::new(
+        $item.FullName,
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::Read
+    )
+    try {
+        Assert-Field ($stream.Length -gt 0 -and $stream.Length -le 262144) `
+            "Context UI owner receipt size is outside the accepted range."
+        $buffer = [IO.MemoryStream]::new()
+        try {
+            $stream.CopyTo($buffer)
+            $beforeBytes = $buffer.ToArray()
+        }
+        finally { $buffer.Dispose() }
+        $pinnedItem = Get-Item -LiteralPath $script:FieldContextOwnerPath -Force
+        Assert-Field (
+            ($pinnedItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and
+            [long]$pinnedItem.Length -eq $stream.Length
+        ) "Context UI owner receipt path changed while its pinned handle was open."
+    }
+    finally { $stream.Dispose() }
+    $encoded = [Convert]::ToBase64String($beforeBytes)
+    $validator = @'
+import base64
+import json
+import sys
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key: " + key)
+        result[key] = value
+    return result
+
+payload = base64.b64decode(sys.stdin.read().strip(), validate=True)
+value = json.loads(payload.decode("utf-8"), object_pairs_hook=unique_object)
+if not isinstance(value, dict):
+    raise ValueError("owner receipt root must be an object")
+print(json.dumps(value, ensure_ascii=True, separators=(",", ":")))
+'@
+    $validatedJson = $encoded |
+        & $script:FieldExpectedExecutablePath -I -c $validator | Out-String
+    Assert-Field ($LASTEXITCODE -eq 0) `
+        "Context UI owner receipt is not strict duplicate-free UTF-8 JSON."
+    [ordered]@{
+        owner = $validatedJson | ConvertFrom-Json
+        sha256 = Get-BytesSha256 $beforeBytes
+    }
+}
+
+function Get-FieldUiSurfaceWidget($Surface, [string]$Id, [string]$Role = "") {
+    $matches = @($Surface.widgets | Where-Object { [string]$_.id -ceq $Id })
+    Assert-Field ($matches.Count -eq 1) `
+        "UI receipt must expose exactly one '$Id' widget; observed $($matches.Count)."
+    $widget = $matches[0]
+    if ($Role) {
+        Assert-Field ([string]$widget.role -ceq $Role) `
+            "UI receipt widget '$Id' role mismatch: $($widget.role)"
+    }
+    $widget
+}
+
+function Test-FieldScreenRectangle($Actual, $Expected, [int]$Tolerance = 2) {
+    if ($null -eq $Actual -or $null -eq $Expected) { return $false }
+    foreach ($key in @("x", "y", "width", "height")) {
+        $actualValue = 0
+        $expectedValue = 0
+        if (-not [int]::TryParse([string]$Actual.$key, [ref]$actualValue) -or
+            -not [int]::TryParse([string]$Expected.$key, [ref]$expectedValue) -or
+            [Math]::Abs($actualValue - $expectedValue) -gt $Tolerance) {
+            return $false
+        }
+    }
+    $true
+}
+
+function Test-FieldRectangleWithin($Inner, $Outer) {
+    if ($null -eq $Inner -or $null -eq $Outer) { return $false }
+    $innerRight = [int]$Inner.x + [int]$Inner.width
+    $innerBottom = [int]$Inner.y + [int]$Inner.height
+    $outerRight = [int]$Outer.x + [int]$Outer.width
+    $outerBottom = [int]$Outer.y + [int]$Outer.height
+    (
+        [int]$Inner.width -gt 0 -and [int]$Inner.height -gt 0 -and
+        [int]$Inner.x -ge [int]$Outer.x -and [int]$Inner.y -ge [int]$Outer.y -and
+        $innerRight -le $outerRight -and $innerBottom -le $outerBottom
+    )
+}
+
+function Get-UiaScreenRectangle($Element) {
+    $rectangle = $Element.Current.BoundingRectangle
+    [ordered]@{
+        x = [int]$rectangle.Left
+        y = [int]$rectangle.Top
+        width = [int]$rectangle.Width
+        height = [int]$rectangle.Height
+    }
+}
+
+function Wait-FieldUiSurface(
+    [int]$ExpectedProcessId,
+    [string]$ExpectedPhase,
+    $TopLevelWindow,
+    [int]$Seconds = 12
+) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+    do {
+        $validatedOwner = Read-ValidatedFieldContextOwner
+        if ($null -eq $validatedOwner) {
+            Start-Sleep -Milliseconds 100
+            continue
+        }
+        $owner = $validatedOwner.owner
+        if ([int]$owner.pid -ne $ExpectedProcessId) {
+            throw (
+                "Context UI receipt belongs to unexpected process: " +
+                "expected=$ExpectedProcessId; observed=$($owner.pid); " +
+                "generation=$($owner.generation)"
+            )
+        }
+        $generation = [string]$owner.generation
+        Assert-Field ($generation -match '^[0-9a-f]{32}$') `
+            "Context UI receipt generation is invalid: $generation"
+        Assert-Field ($generation -ne $script:FieldPreExistingOwnerGeneration) `
+            "Context UI receipt reused the pre-field owner generation."
+        $script:FieldOwnedOwnerTokens[$generation] = [ordered]@{
+            process_id = $ExpectedProcessId
+            invocation_id = [string](
+                $script:FieldOwnedProcessIdentities[[string]$ExpectedProcessId].invocation_id
+            )
+        }
+        if ([string]$owner.phase -ne $ExpectedPhase -or $null -eq $owner.ui_surface) {
+            Start-Sleep -Milliseconds 100
+            continue
+        }
+        $surface = $owner.ui_surface
+        Assert-Field (
+            [int]$owner.schema_version -eq 2 -and
+            [string]$owner.owner_kind -ceq "context_launcher" -and
+            [string]$owner.process_instance_id -match '^[0-9a-f]{32}$' -and
+            [int64]$owner.process_started_at_unix_ns -gt 0 -and
+            [string]$owner.target_sha256 -match '^[0-9a-f]{64}$'
+        ) "Context UI owner identity schema is incomplete or invalid."
+        $receiptProcessIdentity = $script:FieldOwnedProcessIdentities[
+            [string]$ExpectedProcessId
+        ]
+        Assert-Field (
+            $null -ne $receiptProcessIdentity -and
+            (Test-FieldProcessIdentity $receiptProcessIdentity)
+        ) "Context UI receipt is not bound to the field-owned executable/start identity."
+        $unixEpochTicks = [DateTime]::new(
+            1970, 1, 1, 0, 0, 0, [DateTimeKind]::Utc
+        ).Ticks
+        $observedProcessStartNs = [int64](
+            ([int64]$receiptProcessIdentity.start_time_utc_ticks - $unixEpochTicks) * 100
+        )
+        $ownerProcessStartNs = [int64]$owner.process_started_at_unix_ns
+        Assert-Field (
+            $ownerProcessStartNs -ge ($observedProcessStartNs - [int64]5000000000) -and
+            $ownerProcessStartNs -le ($observedProcessStartNs + [int64]120000000000)
+        ) "Context UI receipt process-start marker does not match the live process epoch."
+        Assert-Field ([int]$surface.schema_version -eq 1) `
+            "Context UI receipt schema version is not 1."
+        Assert-Field ([int64]$surface.revision -gt 0) `
+            "Context UI receipt revision is not positive."
+        Assert-Field (
+            [int64]$owner.revision -eq [int64]$surface.revision -and
+            [string]$owner.published_at_utc -ceq [string]$surface.published_at_utc
+        ) "Context UI owner and nested surface revisions do not match."
+        $publishedText = [string]$surface.published_at_utc
+        Assert-Field (
+            $publishedText -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$'
+        ) "Context UI receipt publication time is not canonical UTC Z format."
+        $publishedAt = [DateTime]::MinValue
+        Assert-Field (
+            [DateTime]::TryParse(
+                [string]$surface.published_at_utc,
+                [Globalization.CultureInfo]::InvariantCulture,
+                ([Globalization.DateTimeStyles]::AdjustToUniversal -bor
+                 [Globalization.DateTimeStyles]::AssumeUniversal),
+                [ref]$publishedAt
+            ) -and
+            $publishedAt.Kind -eq [DateTimeKind]::Utc -and
+            $publishedAt -le [DateTime]::UtcNow.AddSeconds(2) -and
+            $publishedAt -ge [DateTime]::UtcNow.AddMinutes(-2)
+        ) "Context UI receipt publication time is stale or invalid."
+        Assert-Field (
+            [string]$surface.generation -ceq $generation -and
+            [int]$surface.pid -eq $ExpectedProcessId -and
+            [string]$surface.phase -ceq $ExpectedPhase
+        ) "Context UI receipt identity does not match its lease owner."
+        $ownerHandle = [int64]$owner.window_handle
+        $surfaceHandle = [int64]$surface.window.hwnd
+        $uiaSnapshot = Get-UiaElementSnapshot $TopLevelWindow
+        Assert-Field (
+            $ownerHandle -gt 0 -and $surfaceHandle -eq $ownerHandle -and
+            [int64]$uiaSnapshot.native_window_handle -eq $ownerHandle -and
+            [int]$uiaSnapshot.process_id -eq $ExpectedProcessId
+        ) "Context UI receipt HWND/PID does not match the observed top-level window."
+        $nativePid = [uint32]0
+        $nativeHandle = [IntPtr]$ownerHandle
+        Assert-Field ([SkillMagnetFieldInput]::IsWindow($nativeHandle)) `
+            "Context UI receipt top-level HWND is not a live window."
+        $null = [SkillMagnetFieldInput]::GetWindowThreadProcessId(
+            $nativeHandle, [ref]$nativePid
+        )
+        Assert-Field ([int]$nativePid -eq $ExpectedProcessId) `
+            "Context UI receipt top-level HWND belongs to another process."
+        Assert-Field (
+            [SkillMagnetFieldInput]::GetAncestor($nativeHandle, 2) -eq $nativeHandle
+        ) "Context UI receipt HWND is not a top-level root window."
+        $nativeTitle = [SkillMagnetFieldInput]::WindowText($nativeHandle)
+        $expectedTitle = switch ($ExpectedPhase) {
+            "context_selection" { "Skill Magnet — 実行確認" }
+            "library_manager" { "Library Manager" }
+            default { throw "Unsupported UI receipt phase: $ExpectedPhase" }
+        }
+        Assert-Field (
+            $nativeTitle -ceq $expectedTitle -and
+            [string]$surface.window.title -ceq $nativeTitle -and
+            [string]$uiaSnapshot.name -ceq $nativeTitle
+        ) "Context UI receipt title does not match the phase-authorized live root window."
+        $nativeRectangle = [SkillMagnetFieldInput+RECT]::new()
+        Assert-Field ([SkillMagnetFieldInput]::GetWindowRect(
+            $nativeHandle, [ref]$nativeRectangle
+        )) "Could not read the live root-window rectangle."
+        $nativeScreen = [ordered]@{
+            x = $nativeRectangle.Left
+            y = $nativeRectangle.Top
+            width = $nativeRectangle.Right - $nativeRectangle.Left
+            height = $nativeRectangle.Bottom - $nativeRectangle.Top
+        }
+        Assert-Field (Test-FieldScreenRectangle $nativeScreen $surface.window.screen 0) `
+            "Context UI receipt root rectangle differs from the live Win32 window."
+        $virtualScreen = [ordered]@{
+            x = [SkillMagnetFieldInput]::GetSystemMetrics(76)
+            y = [SkillMagnetFieldInput]::GetSystemMetrics(77)
+            width = [SkillMagnetFieldInput]::GetSystemMetrics(78)
+            height = [SkillMagnetFieldInput]::GetSystemMetrics(79)
+        }
+        Assert-Field (Test-FieldRectangleWithin $nativeScreen $virtualScreen) `
+            "Context UI receipt root window is outside the virtual screen."
+        $widgetIds = @($surface.widgets | ForEach-Object { [string]$_.id })
+        Assert-Field (
+            $widgetIds.Count -gt 0 -and
+            @($widgetIds | Sort-Object -Unique).Count -eq $widgetIds.Count
+        ) "Context UI receipt widget ids are missing or duplicated."
+        $requestWidgets = @($surface.widgets | Where-Object { [string]$_.id -ceq "request" })
+        if ($ExpectedPhase -ceq "context_selection") {
+            Assert-Field ($requestWidgets.Count -eq 1) `
+                "Context UI receipt must describe exactly one request widget."
+            $requestFields = @($requestWidgets[0].PSObject.Properties.Name)
+            foreach ($forbiddenRequestField in @(
+                "text", "value", "values", "text_sha256", "value_sha256", "values_sha256"
+            )) {
+                Assert-Field ($requestFields -notcontains $forbiddenRequestField) `
+                    "Context UI receipt must not persist request content or its digest."
+            }
+        }
+        else {
+            Assert-Field ($requestWidgets.Count -eq 0) `
+                "Non-context UI receipt unexpectedly contains a request widget."
+        }
+        $uiaChildren = @($TopLevelWindow.FindAll(
+            [System.Windows.Automation.TreeScope]::Descendants,
+            [System.Windows.Automation.Condition]::TrueCondition
+        ))
+        foreach ($widget in @($surface.widgets | Where-Object { [bool]$_.viewable })) {
+            $widgetHandle = [int64]$widget.hwnd
+            Assert-Field (
+                [string]$widget.id -and [string]$widget.role -and
+                $widgetHandle -gt 0 -and [int]$widget.screen.width -gt 0 -and
+                [int]$widget.screen.height -gt 0
+            ) "A visible UI receipt widget has incomplete identity or geometry."
+            Assert-Field (
+                (Test-FieldRectangleWithin $widget.screen $nativeScreen) -and
+                (Test-FieldRectangleWithin $widget.screen $virtualScreen)
+            ) "UI receipt widget '$($widget.id)' lies outside its root or virtual screen."
+            $widgetNativePid = [uint32]0
+            $null = [SkillMagnetFieldInput]::GetWindowThreadProcessId(
+                [IntPtr]$widgetHandle, [ref]$widgetNativePid
+            )
+            Assert-Field ([int]$widgetNativePid -eq $ExpectedProcessId) `
+                "UI receipt widget '$($widget.id)' HWND belongs to another process."
+            Assert-Field (
+                [SkillMagnetFieldInput]::GetAncestor([IntPtr]$widgetHandle, 2) -eq
+                $nativeHandle
+            ) "UI receipt widget '$($widget.id)' does not belong to the receipt root HWND."
+            $uiaMatches = @($uiaChildren | Where-Object {
+                try {
+                    [int64]$_.Current.NativeWindowHandle -eq $widgetHandle -and
+                    [string]$_.Current.ClassName -ceq "TkChild" -and
+                    -not [bool]$_.Current.IsOffscreen -and
+                    (Test-FieldScreenRectangle `
+                        (Get-UiaScreenRectangle $_) $widget.screen 0)
+                } catch { $false }
+            })
+            Assert-Field ($uiaMatches.Count -eq 1) `
+                ("UI receipt widget '$($widget.id)' is not bound to exactly one " +
+                 "live UIAutomation child; observed $($uiaMatches.Count).")
+        }
+        return [ordered]@{
+            owner = $owner
+            surface = $surface
+            element = $TopLevelWindow
+            element_snapshot = $uiaSnapshot
+            receipt_sha256 = Get-BytesSha256 (
+                [Text.UTF8Encoding]::new($false).GetBytes(
+                    (ConvertTo-Json $surface -Depth 12 -Compress)
+                )
+            )
+            owner_sha256 = [string]$validatedOwner.sha256
+        }
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "Context UI receipt did not publish phase '$ExpectedPhase' for PID $ExpectedProcessId."
+}
+
+function Invoke-FieldUiSurfaceWidget(
+    [int]$ExpectedProcessId,
+    [string]$ExpectedPhase,
+    $TopLevelWindow,
+    [string]$ExpectedGeneration,
+    [string]$Id,
+    [string]$ExpectedTargetSha256,
+    [string]$ExpectedNextPhase = "",
+    [string]$ExpectedNextTitlePrefix = ""
+) {
+    # The field workflow is observational.  Only its two explicit navigation
+    # actions are eligible for physical mouse input; CRUD controls are inspected
+    # but never clicked or admitted through this boundary.
+    $expectedTextById = @{
+        library_manager = "Library Manager"
+        register_selected = "このフォルダーのスキルを登録"
+    }
+    $allowedIds = @($expectedTextById.Keys)
+    Assert-Field ($allowedIds -contains $Id) `
+        "UI receipt click id is not allowlisted: $Id"
+    $expectedWidgetText = [string]$expectedTextById[$Id]
+    for ($attempt = 0; $attempt -lt 3; $attempt += 1) {
+        $receipt = Wait-FieldUiSurface $ExpectedProcessId $ExpectedPhase $TopLevelWindow
+        Assert-Field ([string]$receipt.owner.generation -ceq $ExpectedGeneration) `
+            "UI receipt generation changed before '$Id' was invoked."
+        Assert-Field (
+            [string]$receipt.owner.target_sha256 -ceq $ExpectedTargetSha256
+        ) "UI receipt target changed before '$Id' was invoked."
+        $widget = Get-FieldUiSurfaceWidget $receipt.surface $Id "button"
+        Assert-Field (
+            [bool]$widget.viewable -and [bool]$widget.state.enabled -and
+            [string]$widget.text -ceq $expectedWidgetText
+        ) "UI receipt widget '$Id' is not the expected visible/enabled action."
+        $x = [int]$widget.screen.x + [int]([int]$widget.screen.width / 2)
+        $y = [int]$widget.screen.y + [int]([int]$widget.screen.height / 2)
+        $windowHandle = [IntPtr]([int64]$receipt.owner.window_handle)
+        $widgetHandle = [IntPtr]([int64]$widget.hwnd)
+        $identity = $script:FieldOwnedProcessIdentities[[string]$ExpectedProcessId]
+        Assert-Field ($null -ne $identity -and (Test-FieldProcessIdentity $identity)) `
+            "Receipt-bound process identity changed before '$Id'."
+        Assert-Field ([SkillMagnetFieldInput]::SetForegroundWindow($windowHandle)) `
+            "Could not foreground the receipt-bound window before '$Id'."
+        Start-Sleep -Milliseconds 100
+        Assert-Field ([SkillMagnetFieldInput]::GetForegroundWindow() -eq $windowHandle) `
+            "Receipt-bound window did not remain foreground before '$Id'."
+        $point = [SkillMagnetFieldInput+POINT]::new()
+        $point.X = $x
+        $point.Y = $y
+        $firstHit = [SkillMagnetFieldInput]::WindowFromPoint($point)
+        Assert-Field ($firstHit -eq $widgetHandle) `
+            "Receipt-bound '$Id' center is covered or does not hit its exact widget HWND."
+        Assert-Field ([SkillMagnetFieldInput]::SetCursorPos($x, $y)) `
+            "Could not move the cursor to receipt-bound '$Id'."
+        $fresh = Wait-FieldUiSurface $ExpectedProcessId $ExpectedPhase $TopLevelWindow
+        $freshWidget = Get-FieldUiSurfaceWidget $fresh.surface $Id "button"
+        $unchanged = (
+            [string]$fresh.owner.generation -ceq $ExpectedGeneration -and
+            [string]$fresh.owner.target_sha256 -ceq $ExpectedTargetSha256 -and
+            [int64]$fresh.surface.revision -eq [int64]$receipt.surface.revision -and
+            [string]$fresh.owner_sha256 -ceq [string]$receipt.owner_sha256 -and
+            [int64]$freshWidget.hwnd -eq [int64]$widget.hwnd -and
+            [string]$freshWidget.text -ceq $expectedWidgetText -and
+            [bool]$freshWidget.viewable -and [bool]$freshWidget.state.enabled -and
+            (Test-FieldScreenRectangle $freshWidget.screen $widget.screen 0)
+        )
+        if (-not $unchanged) { continue }
+        Assert-Field (Test-FieldProcessIdentity $identity) `
+            "Receipt-bound process identity changed after '$Id' revalidation."
+        Assert-Field ([SkillMagnetFieldInput]::GetForegroundWindow() -eq $windowHandle) `
+            "Receipt-bound window lost foreground before '$Id'."
+        $secondHit = [SkillMagnetFieldInput]::WindowFromPoint($point)
+        Assert-Field ($secondHit -eq $widgetHandle) `
+            "Receipt-bound '$Id' hit-test changed before click."
+        $uiaPoint = [System.Windows.Point]::new([double]$x, [double]$y)
+        $uiaHit = [System.Windows.Automation.AutomationElement]::FromPoint($uiaPoint)
+        Assert-Field (
+            $null -ne $uiaHit -and
+            [int64]$uiaHit.Current.NativeWindowHandle -eq [int64]$widget.hwnd -and
+            [int]$uiaHit.Current.ProcessId -eq $ExpectedProcessId -and
+            [string]$uiaHit.Current.Name -ceq $expectedWidgetText -and
+            [string]$uiaHit.Current.ClassName -ceq "TkChild" -and
+            [bool]$uiaHit.Current.IsEnabled -and -not [bool]$uiaHit.Current.IsOffscreen -and
+            (Test-FieldScreenRectangle (Get-UiaScreenRectangle $uiaHit) $widget.screen 0)
+        ) "Receipt-bound '$Id' UIAutomation hit-test does not match its live Tk child."
+        $pointPid = [uint32]0
+        $null = [SkillMagnetFieldInput]::GetWindowThreadProcessId($secondHit, [ref]$pointPid)
+        Assert-Field (
+            [int]$pointPid -eq $ExpectedProcessId -and
+            [SkillMagnetFieldInput]::GetAncestor($secondHit, 2) -eq $windowHandle
+        ) "Receipt-bound '$Id' point belongs to another process or root window."
+        Assert-Field (Test-FieldProcessIdentity $identity) `
+            "Receipt-bound process identity changed immediately before '$Id'."
+        Assert-Field ([SkillMagnetFieldInput]::CheckedClickCurrent(
+            $x, $y, $widgetHandle, $windowHandle, [uint32]$ExpectedProcessId
+        )) "Receipt-bound '$Id' cursor/hit identity changed; no mouse input was sent."
+        if ($ExpectedNextPhase -and $ExpectedNextTitlePrefix) {
+            $nextWindow = Wait-VisibleWindowByPrefix `
+                $ExpectedNextTitlePrefix $ExpectedProcessId 30
+            $nextReceipt = Wait-FieldUiSurface `
+                $ExpectedProcessId $ExpectedNextPhase $nextWindow 30
+            Assert-Field (
+                [string]$nextReceipt.owner.generation -ceq $ExpectedGeneration -and
+                [string]$nextReceipt.owner.target_sha256 -ceq $ExpectedTargetSha256 -and
+                [int64]$nextReceipt.surface.revision -gt [int64]$fresh.surface.revision
+            ) "Receipt-bound '$Id' did not transition to a new '$ExpectedNextPhase' window."
+            return [ordered]@{
+                widget = $widget
+                next_window = $nextWindow
+                next_surface = $nextReceipt.surface
+            }
+        }
+        return [ordered]@{ widget = $widget }
+    }
+    throw "UI receipt changed repeatedly before '$Id'; no mouse input was sent."
 }
 
 function Register-FieldOwnedProcess([int]$TargetProcessId, [string]$InvocationId) {
@@ -881,20 +1388,6 @@ function Close-FieldOwnedUiAndReleaseLease() {
     }
 }
 
-function Get-UiaControlValues($Window, $ControlType) {
-    $condition = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::ControlTypeProperty, $ControlType
-    )
-    $elements = $Window.FindAll(
-        [System.Windows.Automation.TreeScope]::Descendants, $condition
-    )
-    @($elements | ForEach-Object {
-        $value = Get-Pattern $_ ([System.Windows.Automation.ValuePattern]::Pattern)
-        if ($null -ne $value) { [string]$value.Current.Value }
-        else { [string]$_.Current.Name }
-    })
-}
-
 function Get-VisibleDescendantText($Window) {
     $values = [Collections.Generic.List[string]]::new()
     try { $null = $values.Add([string]$Window.Current.Name) } catch { }
@@ -964,29 +1457,62 @@ function Inspect-LibraryManager(
     [int]$ExpectedProcessId
 ) {
     $manager = Wait-VisibleWindowByPrefix "Library Manager" $ExpectedProcessId
-    $editValues = @(Get-UiaControlValues $manager ([System.Windows.Automation.ControlType]::Edit))
-    $remoteMatches = @($editValues | Where-Object { $_ -ceq $ExpectedRemote }).Count
-    Assert-Field ($remoteMatches -eq 1) `
-        "Library Manager must show the one configured GitHub URL; observed $remoteMatches matches."
-    $crud = [ordered]@{
-        create_button_count = Get-ButtonCount $manager "新規登録"
-        update_button_count = Get-ButtonCount $manager "選択項目を更新"
-        delete_button_count = Get-ButtonCount $manager "選択項目を削除"
-        reload_button_count = Get-ButtonCount $manager "再読込"
+    $receipt = Wait-FieldUiSurface $ExpectedProcessId "library_manager" $manager
+    $surface = $receipt.surface
+    $remoteWidget = Get-FieldUiSurfaceWidget $surface "configured_remote" "entry"
+    $expectedRemoteSha256 = Get-Utf8Sha256 $ExpectedRemote
+    $remoteVisible = (
+        [bool]$remoteWidget.viewable -and
+        [string]$remoteWidget.value_sha256 -ceq $expectedRemoteSha256 -and
+        [int]$remoteWidget.value_length -eq $ExpectedRemote.Length
+    )
+    Assert-Field $remoteVisible `
+        "Library Manager configured-remote digest does not match release configuration."
+    $sourceWidget = Get-FieldUiSurfaceWidget $surface "registration_source" "entry"
+    Assert-Field ([string]$sourceWidget.value_sha256 -match '^[0-9a-f]{64}$') `
+        "Library Manager registration-source digest is unavailable."
+    $buttonContracts = [ordered]@{
+        new_registration = "新規登録"
+        update = "選択項目を更新"
+        delete = "選択項目を削除"
+        reload = "再読込"
     }
-    foreach ($key in @($crud.Keys)) {
-        Assert-Field ([int]$crud[$key] -eq 1) "Library Manager CRUD control '$key' is not unique."
+    $crud = [ordered]@{
+        create_button_count = 0
+        update_button_count = 0
+        delete_button_count = 0
+        reload_button_count = 0
+    }
+    $buttonTextHashes = [ordered]@{}
+    foreach ($identifier in @($buttonContracts.Keys)) {
+        $button = Get-FieldUiSurfaceWidget $surface $identifier "button"
+        Assert-Field (
+            [bool]$button.viewable -and
+            [string]$button.text -ceq [string]$buttonContracts[$identifier]
+        ) "Library Manager CRUD control '$identifier' is not uniquely visible."
+        $crudKey = if ($identifier -ceq "new_registration") {
+            "create_button_count"
+        } else { "${identifier}_button_count" }
+        $crud[$crudKey] = 1
+        $buttonTextHashes[$identifier] = Get-Utf8Sha256 ([string]$buttonContracts[$identifier])
     }
     [ordered]@{
         element = $manager
         element_snapshot = Get-UiaElementSnapshot $manager
-        configured_remote = $ExpectedRemote
-        configured_remote_visible = $true
+        ui_surface = $surface
+        ui_surface_generation = [string]$receipt.owner.generation
+        configured_remote_sha256 = $expectedRemoteSha256
+        configured_remote_visible = $remoteVisible
         create_button_count = $crud.create_button_count
         update_button_count = $crud.update_button_count
         delete_button_count = $crud.delete_button_count
         reload_button_count = $crud.reload_button_count
-        edit_values = $editValues
+        create_button_text_sha256 = [string]$buttonTextHashes.new_registration
+        update_button_text_sha256 = [string]$buttonTextHashes.update
+        delete_button_text_sha256 = [string]$buttonTextHashes.delete
+        reload_button_text_sha256 = [string]$buttonTextHashes.reload
+        registration_source_sha256 = [string]$sourceWidget.value_sha256
+        registration_source_length = [int]$sourceWidget.value_length
     }
 }
 
@@ -1197,7 +1723,9 @@ function Assert-BusyMessageAndClose([int]$ExpectedProcessId) {
     $observation
 }
 
-$configPath = (Resolve-Path -LiteralPath $Config).Path
+$configPath = Assert-FieldRegularPathBoundary $Config
+$InvokeEvidence = [IO.Path]::GetFullPath($InvokeEvidence)
+$FieldBundle = [IO.Path]::GetFullPath($FieldBundle)
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $expectedNativeSource = Get-NativeSourceManifest $repositoryRoot
 $script:FieldSessionId = [guid]::NewGuid().ToString("N")
@@ -1294,6 +1822,55 @@ Assert-Field (-not $modulePath.StartsWith(
     [StringComparison]::OrdinalIgnoreCase
 )) "Installed menu Python runtime resolves into the repository checkout."
 
+# Prove the installed Python payload is this checkout's release payload before
+# the collector opens Explorer or sends any mouse input.  The final gate repeats
+# the comparison independently, but a post-click rejection is too late for a
+# physical-input safety boundary.
+$releaseRuntimeProbe = @'
+import hashlib
+import pathlib
+import sys
+
+repository = pathlib.Path(sys.argv[1]).resolve()
+entries = {}
+package_source = repository / "src" / "skill_magnet"
+for path in package_source.rglob("*.py"):
+    if "__pycache__" not in path.parts:
+        entries["skill_magnet/" + path.relative_to(package_source).as_posix()] = path.read_bytes()
+native_source = repository / "native" / "windows-modern-context-menu"
+blocked_names = {".git", "out", "__pycache__"}
+blocked_suffixes = {".obj", ".lib", ".exp", ".pyc"}
+for path in native_source.rglob("*"):
+    relative = path.relative_to(native_source)
+    if (not path.is_file() or any(part in blocked_names for part in relative.parts)
+            or path.suffix.lower() in blocked_suffixes):
+        continue
+    entries["skill_magnet/_native/windows-modern-context-menu/" + relative.as_posix()] = path.read_bytes()
+entries["skill_magnet/skill-magnet.json"] = (repository / "skill-magnet.json").read_bytes()
+digest = hashlib.sha256()
+for name in sorted(entries):
+    content = entries[name]
+    if b"\0" not in content:
+        try:
+            content.decode("utf-8")
+        except UnicodeDecodeError:
+            pass
+        else:
+            content = content.replace(b"\r\n", b"\n")
+    digest.update(name.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(content)
+    digest.update(b"\0")
+print(digest.hexdigest())
+'@
+$releaseRuntimeDigest = ($releaseRuntimeProbe |
+    & ([string]$status.command_target) -I - $repositoryRoot | Out-String).Trim()
+Assert-Field (
+    $LASTEXITCODE -eq 0 -and
+    $releaseRuntimeDigest -match '^[0-9a-f]{64}$' -and
+    [string]$runtime.payload_sha256 -ceq $releaseRuntimeDigest
+) "Installed Python payload differs from release inputs; no Explorer input was sent."
+
 $selectionProbe = @'
 import hashlib
 import json
@@ -1332,7 +1909,8 @@ $configuredRemote = [string]$selectionContract.configured_remote
 Assert-Field ($configuredRemote -match '^https://github\.com/[^/]+/[^/]+(?:\.git)?$') `
     "Release config does not identify one GitHub repository for Library Manager."
 
-$invokeLog = Join-Path $env:LOCALAPPDATA "SkillMagnet\ContextMenu\invoke.log"
+$invokeLog = Assert-FieldRegularPathBoundary `
+    (Join-Path $env:LOCALAPPDATA "SkillMagnet\ContextMenu\invoke.log") $true
 $initialLineCount = @(Read-InvokeLines $invokeLog).Count
 $testRoot = Join-Path $env:TEMP ("SkillMagnet-Explorer-Field-" + [guid]::NewGuid())
 $selectedParent = Join-Path $testRoot "selected parent"
@@ -1399,7 +1977,11 @@ try {
     # control must be visible, and closing without a mutation must leave all
     # persistent product surfaces byte-equivalent.
     $managerStateBefore = Get-PersistentMutationSnapshot $configPath $stateRoot
-    Invoke-NamedButton $selectedGui.element "Library Manager"
+    Invoke-FieldUiSurfaceWidget `
+        $selectedSequence.process_id "context_selection" $selectedGui.element `
+        $selectedGui.ui_surface_generation "library_manager" `
+        (Get-FieldTargetSha256 $selectedFolder) `
+        "library_manager" "Library Manager" | Out-Null
     $managerGui = Inspect-LibraryManager $configuredRemote $selectedSequence.process_id
     $managerSnapshot = $managerGui.element_snapshot
 
@@ -1454,12 +2036,16 @@ try {
         "Opening and closing Library Manager changed config, library, or transaction state."
     Add-UiaTranscriptEvent "library_manager_flow_observed" "library_manager_flow" ([ordered]@{
         element = $managerSnapshot
-        configured_remote = $configuredRemote
+        configured_remote_sha256 = $managerGui.configured_remote_sha256
         configured_remote_visible = $managerGui.configured_remote_visible
         create_button_count = $managerGui.create_button_count
+        create_button_text_sha256 = $managerGui.create_button_text_sha256
         update_button_count = $managerGui.update_button_count
+        update_button_text_sha256 = $managerGui.update_button_text_sha256
         delete_button_count = $managerGui.delete_button_count
+        delete_button_text_sha256 = $managerGui.delete_button_text_sha256
         reload_button_count = $managerGui.reload_button_count
+        reload_button_text_sha256 = $managerGui.reload_button_text_sha256
         same_folder_repeat_invocation_id = $managerSameSequence.invocation_id
         same_folder_repeat_project_sha256 = $managerSameSequence.project_sha256
         same_folder_repeat_native_sequence_sha256 = Get-NativeSequenceSha256 $managerSameSequence
@@ -1609,15 +2195,21 @@ try {
         [int]$registrationGui.element.Current.ProcessId -eq $registrationSequence.process_id
     ) "Registration selector does not belong to the native child process."
     $registrationGuiSnapshot = Get-UiaElementSnapshot $registrationGui.element
-    Invoke-NamedButton $registrationGui.element "このフォルダーのスキルを登録"
+    Invoke-FieldUiSurfaceWidget `
+        $registrationSequence.process_id "context_selection" $registrationGui.element `
+        $registrationGui.ui_surface_generation "register_selected" `
+        (Get-FieldTargetSha256 $selectedFolder) `
+        "library_manager" "Library Manager" | Out-Null
     $registrationManager = Inspect-LibraryManager `
         $configuredRemote $registrationSequence.process_id
-    $registrationEditValues = @($registrationManager.edit_values)
-    $selectedPathMatches = @($registrationEditValues | Where-Object {
-        $_ -ceq ([IO.Path]::GetFullPath($selectedFolder))
-    }).Count
+    $selectedPath = [IO.Path]::GetFullPath($selectedFolder)
+    $selectedPathMatches = if (
+        [string]$registrationManager.registration_source_sha256 -ceq
+            (Get-Utf8Sha256 $selectedPath) -and
+        [int]$registrationManager.registration_source_length -eq $selectedPath.Length
+    ) { 1 } else { 0 }
     Assert-Field ($selectedPathMatches -eq 1) `
-        "Registration Manager did not carry the Explorer-selected folder exactly once."
+        "Registration Manager did not carry the Explorer-selected-folder digest exactly once."
     $missingSkillDialog = Wait-MissingSkillRecoveryDialog $registrationSequence.process_id
     Close-UiaWindow $missingSkillDialog.element
     Close-UiaWindow $registrationManager.element
@@ -1666,14 +2258,16 @@ try {
         $runtimeWindow (Split-Path $runtimeSkillFolder -Leaf)
     $runtimeSequence = Wait-NativeSequence $invokeLog "selected_item" $before
     $runtimeGui = Inspect-UnifiedGui `
-        $runtimeSkillFolder $expectedChoices $runtimeSequence.process_id
+        $runtimeSkillFolder $expectedChoices $runtimeSequence.process_id "" $true
     Assert-Field (
         $runtimeSequence.project_sha256 -eq (Get-Utf16Sha256 $runtimeSkillFolder)
     ) "Runtime-skill native digest does not bind the clicked folder."
     Assert-Field (
         [int]$runtimeGui.element.Current.ProcessId -eq $runtimeSequence.process_id
     ) "Runtime-skill GUI does not belong to the native child process."
-    $runtimeText = Get-VisibleDescendantText $runtimeGui.element
+    $runtimeProjectWidget = Get-FieldUiSurfaceWidget `
+        $runtimeGui.ui_surface "project" "label"
+    $runtimeText = [string]$runtimeProjectWidget.text
     $runtimePathHidden = $runtimeText -notlike "*$runtimeSkillFolder*"
     $projectlessVisible = (
         $runtimeText -like "*作業対象フォルダー: 指定なし*" -and
@@ -1733,6 +2327,7 @@ try {
         (($evidenceLines -join "`r`n") + "`r`n")
     )
     [IO.Directory]::CreateDirectory((Split-Path -Parent $InvokeEvidence)) | Out-Null
+    $InvokeEvidence = Assert-FieldRegularPathBoundary $InvokeEvidence $true
     [IO.File]::WriteAllBytes($InvokeEvidence, $invokeBytes)
 
     Assert-Field ($script:UiaTranscriptLines.Count -eq 14) `
@@ -1837,7 +2432,7 @@ print(json.dumps(result, separators=(",", ":")))
             sha256 = Get-BytesSha256 $contractProbeBytes
             bytes_base64 = [Convert]::ToBase64String($contractProbeBytes)
         }
-        config = New-ArtifactSnapshot `
+        config = New-HashedArtifactSnapshot `
             "collector_config_argument" "skill-magnet.json" $configPath
     }
     $packageExternalArtifactsEqual = (
@@ -1928,10 +2523,14 @@ print(json.dumps(result, separators=(",", ":")))
             gui_title = $selectedGui.gui_title
             project_binding_visible = $selectedGui.project_binding_visible
             selection_choice_count = $selectedGui.selection_choice_count
-            selection_choice_labels = @($selectedGui.selection_choice_labels)
+            selection_choice_values_sha256 = $selectedGui.selection_choice_values_sha256
+            selected_choice_value_sha256 = $selectedGui.selected_choice_value_sha256
             selection_combo_exact_match_count = $selectedGui.selection_combo_exact_match_count
             library_manager_button_count = $selectedGui.library_manager_button_count
+            library_manager_button_text_sha256 = `
+                $selectedGui.library_manager_button_text_sha256
             register_button_count = $selectedGui.register_button_count
+            register_button_text_sha256 = $selectedGui.register_button_text_sha256
         },
         [ordered]@{
             source = "background_site"
@@ -1945,20 +2544,25 @@ print(json.dumps(result, separators=(",", ":")))
             gui_title = $backgroundGui.gui_title
             project_binding_visible = $backgroundGui.project_binding_visible
             selection_choice_count = $backgroundGui.selection_choice_count
-            selection_choice_labels = @($backgroundGui.selection_choice_labels)
+            selection_choice_values_sha256 = $backgroundGui.selection_choice_values_sha256
+            selected_choice_value_sha256 = $backgroundGui.selected_choice_value_sha256
             selection_combo_exact_match_count = $backgroundGui.selection_combo_exact_match_count
             library_manager_button_count = $backgroundGui.library_manager_button_count
+            library_manager_button_text_sha256 = `
+                $backgroundGui.library_manager_button_text_sha256
             register_button_count = $backgroundGui.register_button_count
+            register_button_text_sha256 = $backgroundGui.register_button_text_sha256
         }
     )
     foreach ($observation in $observations) {
         Assert-Field ($observation.selection_choice_count -eq $expectedChoices.Count) `
             "Unified selector choice count differs from the release config."
         Assert-Field (
-            Test-ExactStringSequence `
-                @($observation.selection_choice_labels) `
-                @($expectedChoices | ForEach-Object { [string]$_.label })
-        ) "Unified selector labels differ from the configured label/ID mapping."
+            [string]$observation.selection_choice_values_sha256 -ceq
+            (Get-CanonicalStringArraySha256 @(
+                $expectedChoices | ForEach-Object { [string]$_.label }
+            ))
+        ) "Unified selector choice digest differs from the configured label/ID mapping."
         Assert-Field ($observation.selection_combo_exact_match_count -eq 1) `
             "Configured labels did not identify exactly one selector combo box."
         Assert-Field $observation.project_binding_visible "Unified GUI did not show the clicked folder."
@@ -1984,7 +2588,7 @@ print(json.dumps(result, separators=(",", ":")))
     Assert-Field ($LASTEXITCODE -eq 0 -and $releaseCodeSha -match '^[0-9a-f]{40}$') `
         "The field run could not bind evidence to the latest committed release inputs."
     $bundle = [ordered]@{
-        schema_version = 4
+        schema_version = 5
         release_version = $releaseVersion
         release_code_sha = $releaseCodeSha
         field_status = $fieldStatus
@@ -2051,18 +2655,26 @@ print(json.dumps(result, separators=(",", ":")))
             bytes_base64 = [Convert]::ToBase64String($transcriptBytes)
         }
         selector_contract = [ordered]@{
-            configured_choices = @($expectedChoices)
             choice_map_sha256 = [string]$selectionContract.choice_map_sha256
+            ordered_label_sha256 = Get-CanonicalStringArraySha256 @(
+                $expectedChoices | ForEach-Object { [string]$_.label }
+            )
+            choice_count = $expectedChoices.Count
+            selected_label_sha256 = Get-Utf8Sha256 ([string]$expectedChoices[0].label)
             exact_selector_combo_count = 1
         }
         explorer_observations = $observations
         library_manager_observation = [ordered]@{
-            configured_remote = $configuredRemote
+            configured_remote_sha256 = Get-Utf8Sha256 $configuredRemote
             configured_remote_visible = $true
             create_button_count = 1
+            create_button_text_sha256 = Get-Utf8Sha256 "新規登録"
             update_button_count = 1
+            update_button_text_sha256 = Get-Utf8Sha256 "選択項目を更新"
             delete_button_count = 1
+            delete_button_text_sha256 = Get-Utf8Sha256 "選択項目を削除"
             reload_button_count = 1
+            reload_button_text_sha256 = Get-Utf8Sha256 "再読込"
             same_folder_repeat_focused_existing_manager = $true
             same_folder_repeat_manager_count = 1
             same_folder_repeat_error_count = 0
@@ -2097,10 +2709,21 @@ print(json.dumps(result, separators=(",", ":")))
     }
     $attestationPayload = New-AttestationPayload $bundle
     $bundle.attestation = New-DetachedAttestation $attestationPayload $dllPath
+    $bundleJson = $bundle | ConvertTo-Json -Depth 20
+    $privateValues = @($configuredRemote) + @(
+        $expectedChoices | ForEach-Object { [string]$_.label }
+    )
+    foreach ($privateValue in $privateValues) {
+        Assert-Field (
+            -not $privateValue -or
+            $bundleJson.IndexOf($privateValue, [StringComparison]::Ordinal) -lt 0
+        ) "Field bundle would disclose a raw repository URL or selector label."
+    }
     [IO.Directory]::CreateDirectory((Split-Path -Parent $FieldBundle)) | Out-Null
+    $FieldBundle = Assert-FieldRegularPathBoundary $FieldBundle $true
     [IO.File]::WriteAllText(
         $FieldBundle,
-        ($bundle | ConvertTo-Json -Depth 20),
+        $bundleJson,
         (New-Object Text.UTF8Encoding($false))
     )
     Write-Output $fieldStatus

@@ -37,6 +37,22 @@ from .library_manager import (
     validate_library,
     _run as _run_external,
 )
+from .ui import (
+    UI_OWNER_MAX_BYTES,
+    UiSurfaceOwnerIdentity,
+    UiWidgetSpec,
+    _atomic_write_ui_owner_record,
+    _is_current_ui_owner,
+    _new_ui_owner_record,
+    _owner_json_loads,
+    _owner_timestamp,
+    _path_identity_sha256,
+    _read_ui_owner_record,
+    _remove_owned_ui_owner_record,
+    publish_tk_ui_surface,
+    tk_top_level_window_handle,
+    ui_surface_owner_identity,
+)
 
 
 LIBRARY_WIZARD_STEPS = (
@@ -117,7 +133,18 @@ class LibraryUiLease:
         if not isinstance(window_handle, int) or window_handle <= 0:
             raise SkillMagnetError("Library Manager window handle is unavailable")
         payload = dict(self.owner)
-        payload.update(phase="library_manager", window_handle=window_handle)
+        if self.owner_path is not None and self.owner_path.exists():
+            current = _read_ui_owner_record(self.owner_path)
+            if not _is_current_ui_owner(current, self.owner, require_window=False):
+                raise SkillMagnetError("Library Manager owner changed before publication")
+            payload = current
+        payload.pop("ui_surface", None)
+        payload.update(
+            phase="library_manager",
+            window_handle=window_handle,
+            revision=int(payload.get("revision", 0)) + 1,
+            published_at_utc=_owner_timestamp(),
+        )
         encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n"
         self.handle.seek(1)
         self.handle.truncate()
@@ -125,18 +152,7 @@ class LibraryUiLease:
         self.handle.flush()
         os.fsync(self.handle.fileno())
         if self.owner_path is not None:
-            temporary = self.owner_path.with_name(
-                f".{self.owner_path.name}.{payload['generation']}.tmp"
-            )
-            try:
-                with temporary.open("w", encoding="utf-8", newline="\n") as stream:
-                    json.dump(payload, stream, ensure_ascii=False)
-                    stream.write("\n")
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.replace(temporary, self.owner_path)
-            finally:
-                temporary.unlink(missing_ok=True)
+            _atomic_write_ui_owner_record(self.owner_path, payload)
         self.owner = payload
 
     def release(self) -> None:
@@ -145,8 +161,8 @@ class LibraryUiLease:
         try:
             if self.owner_path is not None:
                 try:
-                    self.owner_path.unlink(missing_ok=True)
-                except OSError:
+                    _remove_owned_ui_owner_record(self.owner_path, self.owner)
+                except (OSError, SkillMagnetError):
                     pass
         finally:
             try:
@@ -221,60 +237,72 @@ def acquire_library_ui_lease(
     state_dir: Path, selected_source: Path | None = None
 ) -> LibraryUiLease:
     """Allow one Library Manager process and recover a lock left by a crash."""
+    if os.path.lexists(state_dir) and _is_link(state_dir):
+        raise SkillMagnetError(f"Library Manager state directory is a link or junction: {state_dir}")
     state_dir = validate_product_state_directory(state_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
     path = state_dir / "library-manager.lock"
     owner_path = state_dir / "library-manager.owner.json"
+    if os.path.lexists(path) and _is_link(path):
+        raise SkillMagnetError(f"Library Manager lock is a link or junction: {path}")
     # Do not inspect a potentially slow or unavailable Explorer selection before
     # the Manager window is visible.  Registration validates and resolves it in
     # the cancellable worker.
-    selected = str(_lexical_absolute(selected_source)) if selected_source is not None else ""
-    payload = {
-        "pid": os.getpid(),
-        "selected_source": selected,
-        "generation": os.urandom(16).hex(),
-        "phase": "library_manager_starting",
-        "window_handle": 0,
-    }
+    selected = _lexical_absolute(selected_source) if selected_source is not None else state_dir
+    payload = _new_ui_owner_record(
+        owner_kind="library_manager",
+        target_digest=_path_identity_sha256(selected),
+        phase="library_manager_starting",
+    )
     path.touch(exist_ok=True)
     handle = path.open("r+b")
     if path.stat().st_size == 0:
         handle.write(b"\0")
         handle.flush()
     if _try_lock_library_ui_file(handle):
-        handle.seek(1)
-        handle.truncate()
-        handle.write(json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-        owner_path.write_text(
-            json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8"
-        )
+        try:
+            handle.seek(1)
+            handle.truncate()
+            handle.write(json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+            _atomic_write_ui_owner_record(owner_path, payload)
+        except Exception:
+            _unlock_library_ui_file(handle)
+            handle.close()
+            raise
         return LibraryUiLease(path, True, payload, handle, owner_path)
     owner: dict[str, Any] = {}
     for _ in range(10):
         try:
             with path.open("rb") as reader:
                 reader.seek(1)
-                owner = json.loads(reader.read().decode("utf-8"))
-        except (OSError, ValueError):
+                owner = _owner_json_loads(reader.read(UI_OWNER_MAX_BYTES + 1))
+        except (OSError, SkillMagnetError):
             owner = {}
         if _try_lock_library_ui_file(handle):
-            handle.seek(1)
-            handle.truncate()
-            handle.write(json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-            owner_path.write_text(
-                json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8"
-            )
+            try:
+                handle.seek(1)
+                handle.truncate()
+                handle.write(json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+                _atomic_write_ui_owner_record(owner_path, payload)
+            except Exception:
+                _unlock_library_ui_file(handle)
+                handle.close()
+                raise
             return LibraryUiLease(path, True, payload, handle, owner_path)
         time.sleep(0.02)
     handle.close()
+    legacy_selected = owner.get("selected_source")
     owner["same_request"] = bool(
-        selected
-        and os.path.normcase(os.path.normpath(selected))
-        == os.path.normcase(os.path.normpath(str(owner.get("selected_source", ""))))
+        payload["target_sha256"] == owner.get("target_sha256")
+        or (
+            isinstance(legacy_selected, str)
+            and os.path.normcase(os.path.normpath(str(selected)))
+            == os.path.normcase(os.path.normpath(legacy_selected))
+        )
     )
     return LibraryUiLease(path, False, owner, owner_path=owner_path)
 
@@ -1168,12 +1196,29 @@ def show_library_manager(
     root.title("Library Manager")
     root.geometry("920x680")
     root.minsize(760, 560)
+    surface_identities: list[UiSurfaceOwnerIdentity] = []
     try:
         root.update_idletasks()
-        manager_window_handle = int(root.winfo_id())
+        manager_window_handle = tk_top_level_window_handle(root)
         lease.publish_window(manager_window_handle)
+        surface_identities.append(
+            ui_surface_owner_identity(
+                state_dir / "library-manager.owner.json",
+                phase="library_manager",
+                window_handle=manager_window_handle,
+            )
+        )
         if window_ready is not None:
             window_ready(manager_window_handle)
+            context_owner = state_dir / "context-launcher.owner.json"
+            if context_owner.exists():
+                surface_identities.append(
+                    ui_surface_owner_identity(
+                        context_owner,
+                        phase="library_manager",
+                        window_handle=manager_window_handle,
+                    )
+                )
     except Exception:
         root.destroy()
         lease.release()
@@ -1188,7 +1233,10 @@ def show_library_manager(
     # Library Manager window during startup.
     repair_notice: str | None = None
     processing_status = tk.StringVar(value="起動状態を確認しています…")
-    ttk.Label(page, textvariable=processing_status, anchor="w", padding=(8, 6)).grid(
+    status_label = ttk.Label(
+        page, textvariable=processing_status, anchor="w", padding=(8, 6)
+    )
+    status_label.grid(
         row=0, column=0, sticky="ew", pady=(0, 8)
     )
     controls: list[Any] = []
@@ -1215,11 +1263,15 @@ def show_library_manager(
     active_worker: threading.Thread | None = None
     active_cancel_event: threading.Event | None = None
     active_transaction: LibraryTransaction | None = None
+    manager_surface_ready = False
 
     def set_busy(value: bool, label: str = "") -> None:
         nonlocal busy
         busy = value
-        root.title("Library Manager — 処理中" if value else "Library Manager")
+        # Keep the stable window identity while the status row carries the
+        # processing state.  Focus/recovery and UI evidence bind this exact
+        # title to the live top-level HWND.
+        root.title("Library Manager")
         if value:
             processing_status.set(f"処理中：{label}")
             root.configure(cursor="wait")
@@ -1245,6 +1297,7 @@ def show_library_manager(
                 )
             )
         root.update_idletasks()
+        publish_manager_surface()
 
     def run_auxiliary_in_background(
         label: str,
@@ -1289,7 +1342,13 @@ def show_library_manager(
 
         root.after(50, poll)
 
-    def row(page: Any, number: int, label: str, variable: Any, browse: Callable[[], None] | None = None) -> None:
+    def row(
+        page: Any,
+        number: int,
+        label: str,
+        variable: Any,
+        browse: Callable[[], None] | None = None,
+    ) -> tuple[Any, Any | None]:
         ttk.Label(page, text=label).grid(row=number, column=0, sticky="w", padx=4, pady=5)
         entry = ttk.Entry(page, textvariable=variable, width=74)
         entry.grid(
@@ -1300,7 +1359,10 @@ def show_library_manager(
             browse_button = ttk.Button(page, text="Browse", command=browse)
             browse_button.grid(row=number, column=2, padx=4)
             controls.append(browse_button)
+        else:
+            browse_button = None
         page.columnconfigure(1, weight=1)
+        return entry, browse_button
 
     def select_import() -> None:
         value = filedialog.askdirectory(title="Select skill directory")
@@ -1495,6 +1557,7 @@ def show_library_manager(
         inventory_summary.set(
             f"{inventory['pack_count']}パック／{inventory['skill_count']}スキルを登録済み"
         )
+        publish_manager_surface()
 
     def ensure_editable_library(
         transaction_value: str,
@@ -1541,7 +1604,13 @@ def show_library_manager(
     ttk.Label(registration, text="スキル、スキルパック、または複数パックを含むフォルダーを登録します。").grid(
         row=0, column=0, columnspan=3, sticky="w", pady=(0, 12)
     )
-    row(registration, 1, "スキル／スキルパックのフォルダー", import_source, select_import)
+    registration_source_entry, registration_browse_button = row(
+        registration,
+        1,
+        "スキル／スキルパックのフォルダー",
+        import_source,
+        select_import,
+    )
 
     def add() -> None:
         if busy:
@@ -1768,15 +1837,17 @@ def show_library_manager(
 
     inventory_buttons = ttk.Frame(inventory_frame)
     inventory_buttons.grid(row=2, column=0, columnspan=4, sticky="e", pady=(8, 0))
-    for label, command in (
-        ("新規登録", create_selected),
-        ("選択項目を更新", update_selected),
-        ("選択項目を削除", delete_selected_item),
-        ("再読込", reload_inventory),
+    inventory_action_buttons: dict[str, Any] = {}
+    for identifier, label, command in (
+        ("new_registration", "新規登録", create_selected),
+        ("update", "選択項目を更新", update_selected),
+        ("delete", "選択項目を削除", delete_selected_item),
+        ("reload", "再読込", reload_inventory),
     ):
         button = ttk.Button(inventory_buttons, text=label, command=command)
         button.pack(side="left", padx=3)
         controls.append(button)
+        inventory_action_buttons[identifier] = button
 
     recovery_button: Any | None = None
 
@@ -1860,7 +1931,9 @@ def show_library_manager(
         ),
         wraplength=820,
     ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
-    row(publish_frame, 1, "公開先のGitHub URL", remote)
+    configured_remote_entry, _ = row(
+        publish_frame, 1, "公開先のGitHub URL", remote
+    )
     ttk.Label(
         publish_frame,
         text="例: https://github.com/OWNER/skill-magnet-skills.git",
@@ -2120,6 +2193,7 @@ def show_library_manager(
             text=library_action_label(value),
             state="disabled" if value in {"complete", "waiting"} or busy else "normal",
         )
+        publish_manager_surface()
 
     def run_current_action() -> None:
         """Run every git/GitHub transition outside Tk's event thread."""
@@ -2371,6 +2445,112 @@ def show_library_manager(
     )
     action_button.grid(row=4, column=0, columnspan=3, sticky="e", pady=(8, 0))
     controls.append(action_button)
+
+    manager_surface_widgets = (
+        UiWidgetSpec(
+            "configured_remote",
+            configured_remote_entry,
+            "entry",
+            value=lambda: remote.get(),
+            hash_value=True,
+        ),
+        UiWidgetSpec(
+            "inventory", inventory_tree, "tree"
+        ),
+        UiWidgetSpec(
+            "inventory_status",
+            inventory_frame,
+            "status",
+            text=lambda: inventory_summary.get(),
+            hash_text=True,
+        ),
+        UiWidgetSpec(
+            "new_registration",
+            inventory_action_buttons["new_registration"],
+            "button",
+            text="新規登録",
+        ),
+        UiWidgetSpec(
+            "update",
+            inventory_action_buttons["update"],
+            "button",
+            text="選択項目を更新",
+        ),
+        UiWidgetSpec(
+            "delete",
+            inventory_action_buttons["delete"],
+            "button",
+            text="選択項目を削除",
+        ),
+        UiWidgetSpec(
+            "reload",
+            inventory_action_buttons["reload"],
+            "button",
+            text="再読込",
+        ),
+        UiWidgetSpec(
+            "registration_source",
+            registration_source_entry,
+            "entry",
+            value=lambda: import_source.get(),
+            hash_value=True,
+        ),
+        UiWidgetSpec(
+            "registration_browse",
+            registration_browse_button,
+            "button",
+            text="Browse",
+        ),
+        UiWidgetSpec("register", register_button, "button", text="登録"),
+        UiWidgetSpec(
+            "preview", preview_output, "text"
+        ),
+        UiWidgetSpec(
+            "sync",
+            action_button,
+            "button",
+            text=lambda: str(action_button.cget("text")),
+        ),
+        UiWidgetSpec(
+            "recovery",
+            recovery_button,
+            "button",
+            text="GitHubから復旧",
+        ),
+        UiWidgetSpec(
+            "status", status_label, "status", text=lambda: processing_status.get()
+        ),
+    )
+
+    def publish_manager_surface() -> None:
+        if closing or not manager_surface_ready:
+            return
+        state = {
+            "processing": busy,
+            "stage": action_stage.get(),
+            "configured_remote_present": bool(remote.get().strip()),
+            "registration_source_present": bool(import_source.get().strip()),
+            "inventory_selection_present": bool(inventory_tree.selection()),
+            "register_selected": register_selected,
+        }
+        for identity in tuple(surface_identities):
+            try:
+                publish_tk_ui_surface(
+                    identity,
+                    root,
+                    widgets=manager_surface_widgets,
+                    state=state,
+                )
+            except Exception:
+                # A context handoff may release one owner before this manager
+                # closes.  A platform-specific widget query can also fail while
+                # Tk is relaying a close event.  Receipt publication is
+                # observational and must not abort the user's recoverable work.
+                continue
+
+    remote.trace_add("write", lambda *_: publish_manager_surface())
+    import_source.trace_add("write", lambda *_: publish_manager_surface())
+    inventory_tree.bind("<<TreeviewSelect>>", lambda _: publish_manager_surface())
 
     def run_initial_registration() -> None:
         nonlocal initial_registration
@@ -2707,6 +2887,7 @@ def show_library_manager(
             }
 
         def inspected(value: Any) -> None:
+            nonlocal manager_surface_ready
             nonlocal repair_notice, configured_remote, configured_commit
             nonlocal recovery, catalog_error, offer_remote_restore
             data = value if isinstance(value, dict) else {}
@@ -2724,14 +2905,23 @@ def show_library_manager(
                     recovery_button.pack(side="left", padx=3)
                 else:
                     recovery_button.pack_forget()
+            # Do not publish a semantically actionable surface before the
+            # configured remote and recovery controls have been loaded.  A
+            # receipt with temporary startup values can otherwise be consumed
+            # between first paint and startup inspection.
+            manager_surface_ready = True
+            publish_manager_surface()
             continue_after_startup_inspection()
 
         def inspection_failed(exc: Exception) -> None:
+            nonlocal manager_surface_ready
             nonlocal catalog_error, offer_remote_restore
             catalog_error = str(exc)
             offer_remote_restore = True
             if recovery_button is not None:
                 recovery_button.pack(side="left", padx=3)
+            manager_surface_ready = True
+            publish_manager_surface()
             finish_window_initialization()
 
         run_auxiliary_in_background(

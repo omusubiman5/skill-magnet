@@ -317,6 +317,44 @@ _FIELD_HASH_KEYS = (
     "uia_transcript_sha256",
 )
 
+_FIELD_BUNDLE_MAX_BYTES = 64 * 1024 * 1024
+_FIELD_INVOKE_LOG_MAX_BYTES = 1024 * 1024
+_FIELD_UIA_TRANSCRIPT_MAX_BYTES = 2 * 1024 * 1024
+_WINDOWS_REPARSE_POINT_ATTRIBUTE = 0x400
+
+
+def _strict_json_loads(payload: bytes | str, *, label: str) -> object:
+    """Decode duplicate-free UTF-8 JSON.
+
+    Evidence is a security boundary, so Python's default last-key-wins parsing
+    is not acceptable: two reviewers could otherwise validate different
+    meanings for the same signed byte stream.
+    """
+
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"{label} contains duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
+    text = payload.decode("utf-8") if isinstance(payload, bytes) else payload
+    return json.loads(text, object_pairs_hook=unique_object)
+
+
+def _is_reparse_or_link(path: Path) -> bool:
+    """Return true for symlinks and Windows junction/reparse entries."""
+
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    return path.is_symlink() or bool(
+        getattr(metadata, "st_file_attributes", 0)
+        & _WINDOWS_REPARSE_POINT_ATTRIBUTE
+    )
+
 _WINDOWS_NATIVE_SOURCE_CONTRACT = "skill-magnet-native-source-v1"
 _WINDOWS_NATIVE_SOURCE_INPUTS = (
     "AppxManifest.xml",
@@ -390,7 +428,11 @@ def _parse_field_evidence(
     errors: list[str] = []
     if not invoke_log.is_file():
         return [f"Windows Explorer field evidence is missing: {invoke_log}"], {}
+    if _is_reparse_or_link(invoke_log):
+        return ["Windows Explorer field evidence must not be a link or reparse point"], {}
     payload = invoke_log.read_bytes()
+    if not payload or len(payload) > _FIELD_INVOKE_LOG_MAX_BYTES:
+        return ["Windows Explorer field evidence size is outside the accepted range"], {}
     actual_hash = hashlib.sha256(payload).hexdigest()
     if actual_hash != ledger.get("windows_explorer_field_invoke_log_sha256"):
         errors.append(
@@ -582,10 +624,14 @@ def _decode_embedded_bytes(
         errors.append(f"field bundle {label} bytes_base64 must be a string")
         return None
     try:
-        return base64.b64decode(value, validate=True)
+        decoded = base64.b64decode(value, validate=True)
     except (binascii.Error, ValueError):
         errors.append(f"field bundle {label} bytes_base64 is not canonical base64")
         return None
+    if base64.b64encode(decoded).decode("ascii") != value:
+        errors.append(f"field bundle {label} bytes_base64 is not canonical base64")
+        return None
+    return decoded
 
 
 def _validate_pe_x64_dll(payload: bytes) -> list[str]:
@@ -700,7 +746,7 @@ def _validate_uia_element(
 def _configured_selector_choices(config_payload: bytes) -> list[dict[str, object]]:
     """Derive the public label-to-internal-ID map directly from release config bytes."""
 
-    value = json.loads(config_payload.decode("utf-8"))
+    value = _strict_json_loads(config_payload, label="release config")
     packs = value.get("packs") if isinstance(value, dict) else None
     if not isinstance(packs, list):
         raise ValueError("config packs are not a list")
@@ -763,10 +809,22 @@ def _selector_choice_map_sha256(choices: list[dict[str, object]]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _text_sha256(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _ordered_selector_label_sha256(choices: list[dict[str, object]]) -> str:
+    labels = [str(choice.get("label")) for choice in choices]
+    payload = json.dumps(
+        labels, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _configured_repository_url(config_payload: bytes) -> str:
     """Independently derive the one unambiguous Library Manager remote."""
 
-    value = json.loads(config_payload.decode("utf-8"))
+    value = _strict_json_loads(config_payload, label="release config")
     packs = value.get("packs") if isinstance(value, dict) else None
     if not isinstance(packs, list) or not all(isinstance(pack, dict) for pack in packs):
         raise ValueError("config packs are not a list of objects")
@@ -801,6 +859,8 @@ def _validate_uia_transcript(
     payload = _decode_embedded_bytes(transcript.get("bytes_base64"), label="UIAutomation transcript", errors=errors)
     if payload is None:
         return errors, {}, {}, None
+    if not payload or len(payload) > _FIELD_UIA_TRANSCRIPT_MAX_BYTES:
+        return errors + ["field bundle UIAutomation transcript size is outside the accepted range"], {}, {}, None
     digest = hashlib.sha256(payload).hexdigest()
     if transcript.get("sha256") != digest or hashes.get("uia_transcript_sha256") != digest:
         errors.append("field bundle UIAutomation transcript hash mismatch")
@@ -810,6 +870,15 @@ def _validate_uia_transcript(
         decoded = payload.decode("utf-8")
     except UnicodeError as error:
         return errors + [f"field bundle UIAutomation transcript is not UTF-8: {error}"], {}, {}, None
+    sensitive_values = [configured_remote] + [
+        str(choice.get("label")) for choice in expected_choices
+    ]
+    if any(value and value in decoded for value in sensitive_values):
+        errors.append(
+            "field bundle UIAutomation transcript contains raw repository or selector labels"
+        )
+    if re.search(r"(?:[A-Za-z]:[\\/]|/(?:Users|home|tmp|var/tmp)/)", decoded):
+        errors.append("field bundle UIAutomation transcript contains a plaintext local path")
     raw_lines = decoded[:-1].split("\n") if decoded.endswith("\n") else decoded.splitlines()
     expected_line_count = (
         len(_FIELD_SOURCES) * len(_TRANSCRIPT_EVENTS)
@@ -823,9 +892,14 @@ def _validate_uia_transcript(
     entries: list[dict[str, object]] = []
     for line_number, line in enumerate(raw_lines, 1):
         try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            errors.append(f"field bundle UIAutomation transcript line {line_number} is not JSON")
+            entry = _strict_json_loads(
+                line, label=f"UIAutomation transcript line {line_number}"
+            )
+        except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+            errors.append(
+                f"field bundle UIAutomation transcript line {line_number} "
+                f"is not strict JSON: {error}"
+            )
             continue
         if not isinstance(entry, dict) or set(entry) != {
             "sequence",
@@ -859,6 +933,8 @@ def _validate_uia_transcript(
     primary_gui_elements: dict[str, dict[str, object]] = {}
     primary_starts = {"selected_item": 0, "background_site": 5}
     expected_labels = [str(choice.get("label")) for choice in expected_choices]
+    expected_label_digest = _ordered_selector_label_sha256(expected_choices)
+    expected_selected_digest = _text_sha256(expected_labels[0]) if expected_labels else ""
     for source in _FIELD_SOURCES:
         start = primary_starts[source]
         group = entries[start : start + len(_TRANSCRIPT_EVENTS)]
@@ -905,10 +981,13 @@ def _validate_uia_transcript(
             "gui_title",
             "project_binding_visible",
             "selection_choice_count",
-            "selection_choice_labels",
+            "selection_choice_values_sha256",
+            "selected_choice_value_sha256",
             "selection_combo_exact_match_count",
             "library_manager_button_count",
+            "library_manager_button_text_sha256",
             "register_button_count",
+            "register_button_text_sha256",
         }
         if not isinstance(gui_data, dict) or set(gui_data) != expected_gui_keys:
             errors.append(f"field bundle UIAutomation {source} GUI event data mismatch")
@@ -929,10 +1008,15 @@ def _validate_uia_transcript(
             "gui_title": "Skill Magnet — 実行確認",
             "project_binding_visible": True,
             "selection_choice_count": len(expected_choices),
-            "selection_choice_labels": expected_labels,
+            "selection_choice_values_sha256": expected_label_digest,
+            "selected_choice_value_sha256": expected_selected_digest,
             "selection_combo_exact_match_count": 1,
             "library_manager_button_count": 1,
+            "library_manager_button_text_sha256": _text_sha256("Library Manager"),
             "register_button_count": 1,
+            "register_button_text_sha256": _text_sha256(
+                "このフォルダーのスキルを登録"
+            ),
         }:
             errors.append(f"field bundle UIAutomation {source} GUI claims mismatch")
         if not isinstance(bound_data, dict) or set(bound_data) != {
@@ -978,12 +1062,23 @@ def _validate_uia_transcript(
             "gui_title": gui_data.get("gui_title"),
             "project_binding_visible": gui_data.get("project_binding_visible"),
             "selection_choice_count": gui_data.get("selection_choice_count"),
-            "selection_choice_labels": gui_data.get("selection_choice_labels"),
+            "selection_choice_values_sha256": gui_data.get(
+                "selection_choice_values_sha256"
+            ),
+            "selected_choice_value_sha256": gui_data.get(
+                "selected_choice_value_sha256"
+            ),
             "selection_combo_exact_match_count": gui_data.get(
                 "selection_combo_exact_match_count"
             ),
             "library_manager_button_count": gui_data.get("library_manager_button_count"),
+            "library_manager_button_text_sha256": gui_data.get(
+                "library_manager_button_text_sha256"
+            ),
             "register_button_count": gui_data.get("register_button_count"),
+            "register_button_text_sha256": gui_data.get(
+                "register_button_text_sha256"
+            ),
         }
 
     recovery_start = 9
@@ -1194,12 +1289,16 @@ def _validate_uia_transcript(
     manager_data = manager_entry.get("data")
     manager_keys = {
         "element",
-        "configured_remote",
+        "configured_remote_sha256",
         "configured_remote_visible",
         "create_button_count",
+        "create_button_text_sha256",
         "update_button_count",
+        "update_button_text_sha256",
         "delete_button_count",
+        "delete_button_text_sha256",
         "reload_button_count",
+        "reload_button_text_sha256",
         "same_folder_repeat_invocation_id",
         "same_folder_repeat_project_sha256",
         "same_folder_repeat_native_sequence_sha256",
@@ -1239,12 +1338,16 @@ def _validate_uia_transcript(
         manager_different_native = sequences.get("manager_different_folder")
         manager_process = manager_element.get("process_id") if isinstance(manager_element, dict) else None
         expected_manager_claims = {
-            "configured_remote": configured_remote,
+            "configured_remote_sha256": _text_sha256(configured_remote),
             "configured_remote_visible": True,
             "create_button_count": 1,
+            "create_button_text_sha256": _text_sha256("新規登録"),
             "update_button_count": 1,
+            "update_button_text_sha256": _text_sha256("選択項目を更新"),
             "delete_button_count": 1,
+            "delete_button_text_sha256": _text_sha256("選択項目を削除"),
             "reload_button_count": 1,
+            "reload_button_text_sha256": _text_sha256("再読込"),
             "same_folder_repeat_invocation_id": same_native.get("invocation") if same_native else None,
             "same_folder_repeat_project_sha256": same_native.get("project") if same_native else None,
             "same_folder_repeat_native_sequence_sha256": same_native.get("sequence_sha256") if same_native else None,
@@ -1298,12 +1401,16 @@ def _validate_uia_transcript(
         workflows["library_manager_observation"] = {
             key: manager_claims[key]
             for key in (
-                "configured_remote",
+                "configured_remote_sha256",
                 "configured_remote_visible",
                 "create_button_count",
+                "create_button_text_sha256",
                 "update_button_count",
+                "update_button_text_sha256",
                 "delete_button_count",
+                "delete_button_text_sha256",
                 "reload_button_count",
+                "reload_button_text_sha256",
                 "same_folder_repeat_focused_existing_manager",
                 "same_folder_repeat_manager_count",
                 "same_folder_repeat_error_count",
@@ -1548,7 +1655,7 @@ def _field_attestation_payload(bundle: dict[str, object]) -> bytes:
         if isinstance(observation, dict)
     } if isinstance(observations, list) else {}
     values: list[tuple[str, object]] = [
-        ("contract", "skill-magnet-windows-explorer-field-v4"),
+        ("contract", "skill-magnet-windows-explorer-field-v5"),
         ("schema_version", bundle.get("schema_version")),
         ("release_version", bundle.get("release_version")),
         ("release_code_sha", bundle.get("release_code_sha")),
@@ -1611,19 +1718,57 @@ def _field_attestation_payload(bundle: dict[str, object]) -> bytes:
             (
                 (f"{source}.invocation_id", observation.get("invocation_id")),
                 (f"{source}.project_sha256", observation.get("project_sha256")),
+                (
+                    f"{source}.selection_choice_values_sha256",
+                    observation.get("selection_choice_values_sha256"),
+                ),
+                (
+                    f"{source}.selected_choice_value_sha256",
+                    observation.get("selected_choice_value_sha256"),
+                ),
+                (
+                    f"{source}.library_manager_button_text_sha256",
+                    observation.get("library_manager_button_text_sha256"),
+                ),
+                (
+                    f"{source}.register_button_text_sha256",
+                    observation.get("register_button_text_sha256"),
+                ),
             )
         )
     values.extend(
         (
             ("selector.choice_map_sha256", selector.get("choice_map_sha256")),
+            ("selector.ordered_label_sha256", selector.get("ordered_label_sha256")),
+            ("selector.choice_count", selector.get("choice_count")),
+            ("selector.selected_label_sha256", selector.get("selected_label_sha256")),
             (
                 "selector.exact_selector_combo_count",
                 selector.get("exact_selector_combo_count"),
             ),
-            ("library_manager.configured_remote", manager.get("configured_remote")),
+            (
+                "library_manager.configured_remote_sha256",
+                manager.get("configured_remote_sha256"),
+            ),
             (
                 "library_manager.configured_remote_visible",
                 manager.get("configured_remote_visible"),
+            ),
+            (
+                "library_manager.create_button_text_sha256",
+                manager.get("create_button_text_sha256"),
+            ),
+            (
+                "library_manager.update_button_text_sha256",
+                manager.get("update_button_text_sha256"),
+            ),
+            (
+                "library_manager.delete_button_text_sha256",
+                manager.get("delete_button_text_sha256"),
+            ),
+            (
+                "library_manager.reload_button_text_sha256",
+                manager.get("reload_button_text_sha256"),
             ),
             (
                 "library_manager.same_folder_repeat_focused_existing_manager",
@@ -1783,13 +1928,17 @@ def validate_field_bundle(
     errors: list[str] = []
     if not bundle_path.is_file():
         return [f"Windows Explorer field bundle is missing: {bundle_path}"]
+    if _is_reparse_or_link(bundle_path):
+        return ["Windows Explorer field bundle must not be a link or reparse point"]
     payload = bundle_path.read_bytes()
+    if not payload or len(payload) > _FIELD_BUNDLE_MAX_BYTES:
+        return ["Windows Explorer field bundle size is outside the accepted range"]
     if hashlib.sha256(payload).hexdigest() != ledger.get("windows_explorer_field_bundle_sha256"):
         errors.append("windows_explorer_field_bundle_sha256 mismatch")
     try:
-        bundle = json.loads(payload.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as error:
-        return errors + [f"Windows Explorer field bundle is invalid JSON: {error}"]
+        bundle = _strict_json_loads(payload, label="Windows Explorer field bundle")
+    except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+        return errors + [f"Windows Explorer field bundle is invalid strict JSON: {error}"]
     if not isinstance(bundle, dict):
         return errors + ["Windows Explorer field bundle root must be an object"]
     required_root_keys = {
@@ -1814,11 +1963,11 @@ def validate_field_bundle(
         "attestation",
     }
     if set(bundle) != required_root_keys:
-        errors.append("Windows Explorer field bundle root keys do not match the v4 contract")
+        errors.append("Windows Explorer field bundle root keys do not match the v5 contract")
     version = str(ledger.get("release_version", ""))
     expected_status = f"PASS_REAL_EXPLORER_DIRECT_ROOT_INVOKE_{version.replace('.', '_')}"
-    if bundle.get("schema_version") != 4:
-        errors.append("field bundle schema_version must be 4")
+    if bundle.get("schema_version") != 5:
+        errors.append("field bundle schema_version must be 5")
     if bundle.get("release_version") != version:
         errors.append("field bundle release_version mismatch")
     release_code_sha = str(bundle.get("release_code_sha", ""))
@@ -1905,7 +2054,7 @@ def validate_field_bundle(
 
     hashes = bundle.get("hashes")
     if not isinstance(hashes, dict) or set(hashes) != set(_FIELD_HASH_KEYS):
-        errors.append("field bundle hashes do not match the v4 contract")
+        errors.append("field bundle hashes do not match the v5 contract")
         hashes = {}
     for key in _FIELD_HASH_KEYS:
         if not re.fullmatch(r"[0-9a-f]{64}", str(hashes.get(key, ""))):
@@ -1967,18 +2116,32 @@ def validate_field_bundle(
         ),
         "config": ("collector_config_argument", "skill-magnet.json", "config_sha256"),
     }
+    release_config_path = repository / "skill-magnet.json"
     if not isinstance(artifacts, dict) or set(artifacts) != expected_artifact_names:
         errors.append("field bundle installed artifact snapshots do not match the contract")
         artifacts = {}
     for name, (source, file_name, hash_key) in artifact_contract.items():
         artifact = artifacts.get(name)
-        expected_keys = {"source", "file_name", "size", "sha256", "bytes_base64"}
+        expected_keys = (
+            {"source", "file_name", "size", "sha256"}
+            if name == "config"
+            else {"source", "file_name", "size", "sha256", "bytes_base64"}
+        )
         if not isinstance(artifact, dict) or set(artifact) != expected_keys:
             errors.append(f"field bundle {name} artifact keys do not match the contract")
             continue
         if artifact.get("source") != source or artifact.get("file_name") != file_name:
             errors.append(f"field bundle {name} artifact source/name mismatch")
-        embedded = _decode_embedded_bytes(artifact.get("bytes_base64"), label=name, errors=errors)
+        if name == "config":
+            try:
+                embedded = release_config_path.read_bytes()
+            except OSError as error:
+                errors.append(f"release config is unreadable: {error}")
+                continue
+        else:
+            embedded = _decode_embedded_bytes(
+                artifact.get("bytes_base64"), label=name, errors=errors
+            )
         if embedded is None:
             continue
         digest = hashlib.sha256(embedded).hexdigest()
@@ -2005,9 +2168,9 @@ def validate_field_bundle(
         if payload is None:
             return None
         try:
-            manifest = json.loads(payload.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError) as error:
-            errors.append(f"field bundle {name} is not valid UTF-8 JSON: {error}")
+            manifest = _strict_json_loads(payload, label=f"field bundle {name}")
+        except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+            errors.append(f"field bundle {name} is not valid strict UTF-8 JSON: {error}")
             return None
         if not isinstance(manifest, dict) or set(manifest) != {
             "schema_version",
@@ -2106,10 +2269,22 @@ def validate_field_bundle(
                         "native_source_manifest"
                     ),
                 }
-                signed_msix_payload_matches_package = all(
-                    payload is not None and archive.read(path) == payload
-                    for path, payload in required_msix_payloads.items()
-                ) and bool(archive.read("AppxSignature.p7x"))
+                infos_by_name: dict[str, list[zipfile.ZipInfo]] = {}
+                for info in archive.infolist():
+                    infos_by_name.setdefault(info.filename, []).append(info)
+                required_names = set(required_msix_payloads) | {"AppxSignature.p7x"}
+                unambiguous = all(
+                    len(infos_by_name.get(name, [])) == 1 for name in required_names
+                )
+                signed_msix_payload_matches_package = bool(
+                    unambiguous
+                    and all(
+                        payload is not None
+                        and archive.read(infos_by_name[path][0]) == payload
+                        for path, payload in required_msix_payloads.items()
+                    )
+                    and archive.read(infos_by_name["AppxSignature.p7x"][0])
+                )
         except (KeyError, OSError, zipfile.BadZipFile):
             pass
     if not signed_msix_payload_matches_package:
@@ -2175,7 +2350,7 @@ def validate_field_bundle(
     config_payload = artifact_payloads.get("config")
     expected_choices: list[dict[str, object]] = []
     configured_remote = ""
-    release_config = repository / "skill-magnet.json"
+    release_config = release_config_path
     if config_payload is not None and (
         not release_config.is_file()
         or _normalized_text_bytes(config_payload)
@@ -2191,10 +2366,66 @@ def validate_field_bundle(
     if not expected_choices:
         errors.append("field bundle release config has no selectable skills or packs")
 
+    def iter_strings(value: object):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for nested in value.values():
+                yield from iter_strings(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                yield from iter_strings(nested)
+
+    def iter_keys(value: object):
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                yield str(key)
+                yield from iter_keys(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                yield from iter_keys(nested)
+
+    private_values = [configured_remote] + [
+        str(choice.get("label")) for choice in expected_choices
+    ]
+    bundle_strings = tuple(iter_strings(bundle))
+    if any(
+        private and any(private in candidate for candidate in bundle_strings)
+        for private in private_values
+    ):
+        errors.append(
+            "field bundle contains raw repository or selector labels outside release config"
+        )
+    if any(
+        re.search(r"(?:[A-Za-z]:[\\/]|/(?:Users|home|tmp|var/tmp)/)", candidate)
+        for candidate in bundle_strings
+    ):
+        errors.append("field bundle contains a plaintext local path")
+    if any(re.search(r"https?://", candidate, re.IGNORECASE) for candidate in bundle_strings):
+        errors.append("field bundle contains a plaintext URL")
+    forbidden_raw_keys = {
+        "configured_choices",
+        "configured_remote",
+        "config_bytes",
+        "config_payload",
+        "request",
+        "request_text",
+        "prompt",
+        "selection_choice_labels",
+    }
+    if any(key.casefold() in forbidden_raw_keys for key in iter_keys(bundle)):
+        errors.append("field bundle contains a forbidden raw config/request/label field")
+
     selector_contract = bundle.get("selector_contract")
     expected_selector_contract = {
-        "configured_choices": expected_choices,
         "choice_map_sha256": _selector_choice_map_sha256(expected_choices),
+        "ordered_label_sha256": _ordered_selector_label_sha256(expected_choices),
+        "choice_count": len(expected_choices),
+        "selected_label_sha256": (
+            _text_sha256(str(expected_choices[0].get("label")))
+            if expected_choices
+            else ""
+        ),
         "exact_selector_combo_count": 1,
     }
     if (

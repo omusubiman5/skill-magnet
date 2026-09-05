@@ -20,8 +20,10 @@ from integration.explorer_results_gate import (
     _normalized_text_bytes,
     _normalized_windows_powershell_bytes,
     _native_source_manifest_from_repository,
+    _ordered_selector_label_sha256,
     _release_runtime_payload_sha256,
     _selector_choice_map_sha256,
+    _text_sha256,
     main,
     parse_ledger,
     validate_consistency,
@@ -131,6 +133,8 @@ class ExplorerResultsGateTest(unittest.TestCase):
         config_payload = config_path.read_bytes()
         configured_choices = _configured_selector_choices(config_payload)
         configured_labels = [str(choice["label"]) for choice in configured_choices]
+        configured_label_digest = _ordered_selector_label_sha256(configured_choices)
+        selected_label_digest = _text_sha256(configured_labels[0])
         configured_remote = _configured_repository_url(config_payload)
         command = subprocess.list2cmdline(
             [
@@ -232,10 +236,17 @@ class ExplorerResultsGateTest(unittest.TestCase):
                     "gui_title": "Skill Magnet — 実行確認",
                     "project_binding_visible": True,
                     "selection_choice_count": len(configured_choices),
-                    "selection_choice_labels": configured_labels,
+                    "selection_choice_values_sha256": configured_label_digest,
+                    "selected_choice_value_sha256": selected_label_digest,
                     "selection_combo_exact_match_count": 1,
                     "library_manager_button_count": 1,
+                    "library_manager_button_text_sha256": _text_sha256(
+                        "Library Manager"
+                    ),
                     "register_button_count": 1,
+                    "register_button_text_sha256": _text_sha256(
+                        "このフォルダーのスキルを登録"
+                    ),
                 }
             )
             return [
@@ -271,10 +282,17 @@ class ExplorerResultsGateTest(unittest.TestCase):
                             "gui_title": "Skill Magnet — 実行確認",
                             "project_binding_visible": True,
                             "selection_choice_count": len(configured_choices),
-                            "selection_choice_labels": configured_labels,
+                            "selection_choice_values_sha256": configured_label_digest,
+                            "selected_choice_value_sha256": selected_label_digest,
                             "selection_combo_exact_match_count": 1,
                             "library_manager_button_count": 1,
+                            "library_manager_button_text_sha256": _text_sha256(
+                                "Library Manager"
+                            ),
                             "register_button_count": 1,
+                            "register_button_text_sha256": _text_sha256(
+                                "このフォルダーのスキルを登録"
+                            ),
                         },
                     },
                     {
@@ -308,12 +326,16 @@ class ExplorerResultsGateTest(unittest.TestCase):
             "transactions_sha256": "3" * 64,
         }
         manager_observation = {
-            "configured_remote": configured_remote,
+            "configured_remote_sha256": _text_sha256(configured_remote),
             "configured_remote_visible": True,
             "create_button_count": 1,
+            "create_button_text_sha256": _text_sha256("新規登録"),
             "update_button_count": 1,
+            "update_button_text_sha256": _text_sha256("選択項目を更新"),
             "delete_button_count": 1,
+            "delete_button_text_sha256": _text_sha256("選択項目を削除"),
             "reload_button_count": 1,
+            "reload_button_text_sha256": _text_sha256("再読込"),
             "same_folder_repeat_focused_existing_manager": True,
             "same_folder_repeat_manager_count": 1,
             "same_folder_repeat_error_count": 0,
@@ -329,12 +351,16 @@ class ExplorerResultsGateTest(unittest.TestCase):
             "source": "library_manager_flow",
             "data": {
                 "element": manager_element,
-                "configured_remote": configured_remote,
+                "configured_remote_sha256": _text_sha256(configured_remote),
                 "configured_remote_visible": True,
                 "create_button_count": 1,
+                "create_button_text_sha256": _text_sha256("新規登録"),
                 "update_button_count": 1,
+                "update_button_text_sha256": _text_sha256("選択項目を更新"),
                 "delete_button_count": 1,
+                "delete_button_text_sha256": _text_sha256("選択項目を削除"),
                 "reload_button_count": 1,
+                "reload_button_text_sha256": _text_sha256("再読込"),
                 "same_folder_repeat_invocation_id": "2" * 32,
                 "same_folder_repeat_project_sha256": "a" * 64,
                 "same_folder_repeat_native_sequence_sha256": native_digest(
@@ -610,8 +636,11 @@ class ExplorerResultsGateTest(unittest.TestCase):
                 "file_name": file_name,
                 "size": len(payload),
                 "sha256": hashlib.sha256(payload).hexdigest(),
-                "bytes_base64": base64.b64encode(payload).decode("ascii"),
             }
+            if name != "config":
+                artifacts[name]["bytes_base64"] = base64.b64encode(payload).decode(
+                    "ascii"
+                )
         hashes = {
             "appx_manifest_sha256": artifacts["appx_manifest"]["sha256"],
             "menu_manifest_sha256": artifacts["menu_manifest"]["sha256"],
@@ -632,7 +661,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
         }
         collector = ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
         bundle: dict[str, object] = {
-            "schema_version": 4,
+            "schema_version": 5,
             "release_version": "0.5.9",
             "release_code_sha": "7" * 40,
             "field_status": "PASS_REAL_EXPLORER_DIRECT_ROOT_INVOKE_0_5_9",
@@ -692,8 +721,10 @@ class ExplorerResultsGateTest(unittest.TestCase):
                 "bytes_base64": base64.b64encode(transcript_payload).decode("ascii"),
             },
             "selector_contract": {
-                "configured_choices": configured_choices,
                 "choice_map_sha256": _selector_choice_map_sha256(configured_choices),
+                "ordered_label_sha256": configured_label_digest,
+                "choice_count": len(configured_choices),
+                "selected_label_sha256": selected_label_digest,
                 "exact_selector_combo_count": 1,
             },
             "explorer_observations": observations,
@@ -927,14 +958,26 @@ class ExplorerResultsGateTest(unittest.TestCase):
         mutations = (
             (
                 "internal-id",
-                lambda bundle: bundle["selector_contract"]["configured_choices"][0].__setitem__(
-                    "pack_id", "forged-pack"
+                lambda bundle: bundle["selector_contract"].__setitem__(
+                    "choice_map_sha256", "0" * 64
                 ),
             ),
             (
                 "visible-label",
-                lambda bundle: bundle["selector_contract"]["configured_choices"][0].__setitem__(
-                    "label", "Skill Pack: forged"
+                lambda bundle: bundle["selector_contract"].__setitem__(
+                    "ordered_label_sha256", "1" * 64
+                ),
+            ),
+            (
+                "selected-label",
+                lambda bundle: bundle["selector_contract"].__setitem__(
+                    "selected_label_sha256", "2" * 64
+                ),
+            ),
+            (
+                "choice-count",
+                lambda bundle: bundle["selector_contract"].__setitem__(
+                    "choice_count", 999
                 ),
             ),
             (
@@ -961,12 +1004,12 @@ class ExplorerResultsGateTest(unittest.TestCase):
                     errors,
                 )
 
-    def test_field_bundle_rejects_raw_selector_label_tampering(self) -> None:
+    def test_field_bundle_rejects_selector_label_digest_tampering(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             ledger, bundle_path, invoke_log, bundle, _ = self._field_fixture(Path(temporary))
             transcript = base64.b64decode(bundle["uia_transcript"]["bytes_base64"])
             entries = [json.loads(line) for line in transcript.decode("utf-8").splitlines()]
-            entries[2]["data"]["selection_choice_labels"][0] = "Skill: forged"
+            entries[2]["data"]["selection_choice_values_sha256"] = "0" * 64
             self._replace_transcript(bundle, entries)
             self._rewrite_bundle(bundle_path, bundle, ledger)
             with mock.patch(
@@ -1022,17 +1065,100 @@ class ExplorerResultsGateTest(unittest.TestCase):
                     errors = validate_field_bundle(ledger, bundle_path, invoke_log, ROOT)
                 self.assertTrue(any(expected in error for error in errors), errors)
 
-    def test_field_bundle_rejects_legacy_summary_only_schema_v1(self) -> None:
+    def test_field_bundle_rejects_legacy_schema_v4(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             ledger, bundle_path, invoke_log, bundle, _ = self._field_fixture(Path(temporary))
-            bundle["schema_version"] = 1
+            bundle["schema_version"] = 4
             self._rewrite_bundle(bundle_path, bundle, ledger)
             with mock.patch(
                 "integration.explorer_results_gate._verify_windows_field_attestation",
                 return_value=[],
             ):
                 errors = validate_field_bundle(ledger, bundle_path, invoke_log, ROOT)
-            self.assertIn("field bundle schema_version must be 4", errors)
+            self.assertIn("field bundle schema_version must be 5", errors)
+
+    def test_field_bundle_v5_contains_no_raw_remote_labels_or_config_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _, bundle_path, _, bundle, _ = self._field_fixture(Path(temporary))
+            config_payload = (ROOT / "skill-magnet.json").read_bytes()
+            remote = _configured_repository_url(config_payload)
+            labels = [
+                str(choice["label"])
+                for choice in _configured_selector_choices(config_payload)
+            ]
+            serialized = bundle_path.read_text(encoding="utf-8")
+            self.assertEqual(bundle["schema_version"], 5)
+            self.assertNotIn("bytes_base64", bundle["artifacts"]["config"])
+            self.assertNotIn(remote, serialized)
+            for label in labels:
+                self.assertNotIn(label, serialized)
+
+    def test_field_bundle_rejects_duplicate_keys_size_and_reparse_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            ledger, bundle_path, invoke_log, _, _ = self._field_fixture(Path(temporary))
+            payload = bundle_path.read_bytes().replace(
+                b'"schema_version": 5,',
+                b'"schema_version": 5, "schema_version": 5,',
+                1,
+            )
+            bundle_path.write_bytes(payload)
+            ledger["windows_explorer_field_bundle_sha256"] = hashlib.sha256(
+                payload
+            ).hexdigest()
+            errors = validate_field_bundle(ledger, bundle_path, invoke_log, ROOT)
+            self.assertTrue(any("duplicate JSON key" in error for error in errors), errors)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            ledger, bundle_path, invoke_log, _, _ = self._field_fixture(Path(temporary))
+            with mock.patch(
+                "integration.explorer_results_gate._FIELD_BUNDLE_MAX_BYTES", 1
+            ):
+                errors = validate_field_bundle(ledger, bundle_path, invoke_log, ROOT)
+            self.assertIn(
+                "Windows Explorer field bundle size is outside the accepted range",
+                errors,
+            )
+            with mock.patch(
+                "integration.explorer_results_gate._is_reparse_or_link",
+                side_effect=lambda path: path == bundle_path,
+            ):
+                errors = validate_field_bundle(ledger, bundle_path, invoke_log, ROOT)
+            self.assertIn(
+                "Windows Explorer field bundle must not be a link or reparse point",
+                errors,
+            )
+
+    def test_field_bundle_rejects_duplicate_transcript_keys_and_plaintext_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            ledger, bundle_path, invoke_log, bundle, _ = self._field_fixture(Path(temporary))
+            transcript = base64.b64decode(bundle["uia_transcript"]["bytes_base64"])
+            changed = transcript.replace(
+                b'{"observed_at_utc":',
+                b'{"sequence":1,"sequence":1,"observed_at_utc":',
+                1,
+            )
+            digest = hashlib.sha256(changed).hexdigest()
+            bundle["uia_transcript"]["bytes_base64"] = base64.b64encode(changed).decode()
+            bundle["uia_transcript"]["sha256"] = digest
+            bundle["hashes"]["uia_transcript_sha256"] = digest
+            self._rewrite_bundle(bundle_path, bundle, ledger)
+            with mock.patch(
+                "integration.explorer_results_gate._verify_windows_field_attestation",
+                return_value=[],
+            ):
+                errors = validate_field_bundle(ledger, bundle_path, invoke_log, ROOT)
+            self.assertTrue(any("duplicate JSON key" in error for error in errors), errors)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            ledger, bundle_path, invoke_log, bundle, _ = self._field_fixture(Path(temporary))
+            bundle["package"]["package_full_name"] = r"C:\Users\example\secret"
+            self._rewrite_bundle(bundle_path, bundle, ledger)
+            with mock.patch(
+                "integration.explorer_results_gate._verify_windows_field_attestation",
+                return_value=[],
+            ):
+                errors = validate_field_bundle(ledger, bundle_path, invoke_log, ROOT)
+            self.assertIn("field bundle contains a plaintext local path", errors)
 
     def test_field_bundle_rejects_native_source_manifest_tampering(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1126,7 +1252,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
         ]
         cleanup = collector[
             collector.index("function Close-FieldOwnedUiAndReleaseLease") :
-            collector.index("function Get-UiaControlValues")
+            collector.index("function Get-VisibleDescendantText")
         ]
         self.assertIn("if ($null -eq $current) { return $false }", identity_test)
         self.assertIn("if (-not (Test-FieldProcessIdentity $identity)) { continue }", cleanup)
@@ -1254,6 +1380,130 @@ class ExplorerResultsGateTest(unittest.TestCase):
             r"Assert-BusyMessageAndClose \$differentSequence\.process_id",
         )
 
+    def test_field_collector_rejects_untrusted_ui_receipts_before_mouse_input(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        strict_read = collector[
+            collector.index("function Read-ValidatedFieldContextOwner") :
+            collector.index("function Get-FieldUiSurfaceWidget")
+        ]
+        surface = collector[
+            collector.index("function Wait-FieldUiSurface") :
+            collector.index("function Invoke-FieldUiSurfaceWidget")
+        ]
+        click = collector[
+            collector.index("function Invoke-FieldUiSurfaceWidget") :
+            collector.index("function Register-FieldOwnedProcess")
+        ]
+        self.assertIn("FileAttributes]::ReparsePoint", strict_read)
+        self.assertIn("262144", strict_read)
+        self.assertIn("[IO.FileShare]::Read", strict_read)
+        self.assertIn("$stream.CopyTo($buffer)", strict_read)
+        self.assertIn("duplicate JSON key", strict_read)
+        self.assertIn("object_pairs_hook=unique_object", strict_read)
+        self.assertIn("Get-BytesSha256 $beforeBytes", strict_read)
+        self.assertIn("sys.stdin.read()", strict_read)
+        self.assertNotIn("sys.argv[1]", strict_read)
+        for required in (
+            "$owner.schema_version",
+            "$owner.process_instance_id",
+            "$owner.process_started_at_unix_ns",
+            "$owner.target_sha256",
+            "$surface.schema_version",
+            "$surface.revision",
+            "$surface.published_at_utc",
+            "$surface.generation",
+            "$surface.pid",
+            "$surface.phase",
+            "$script:FieldPreExistingOwnerGeneration",
+            "GetWindowThreadProcessId",
+            "GetAncestor",
+            "GetWindowRect",
+            "GetSystemMetrics(76)",
+            "Test-FieldRectangleWithin",
+            "$expectedTitle = switch ($ExpectedPhase)",
+            "canonical UTC Z format",
+            'ClassName -ceq "TkChild"',
+            "IsOffscreen",
+        ):
+            self.assertIn(required, surface)
+        for forbidden_request_field in (
+            '"text"',
+            '"value"',
+            '"values"',
+            '"text_sha256"',
+            '"value_sha256"',
+            '"values_sha256"',
+        ):
+            self.assertIn(forbidden_request_field, surface)
+        self.assertIn(
+            "$requestFields -notcontains $forbiddenRequestField", surface
+        )
+        for required in (
+            "$allowedIds",
+            "Test-FieldProcessIdentity",
+            "SetForegroundWindow",
+            "GetForegroundWindow",
+            "$firstHit -eq $widgetHandle",
+            "SetCursorPos",
+            "$fresh.surface.revision",
+            "$fresh.owner_sha256",
+            "$ExpectedTargetSha256",
+            "$secondHit -eq $widgetHandle",
+            "AutomationElement]::FromPoint",
+            "GetWindowThreadProcessId",
+            "GetAncestor",
+            "CheckedClickCurrent",
+            "[int64]$nextReceipt.surface.revision -gt [int64]$fresh.surface.revision",
+        ):
+            self.assertIn(required, click)
+        self.assertGreaterEqual(click.count("Test-FieldProcessIdentity $identity"), 3)
+        self.assertGreaterEqual(click.count("Wait-FieldUiSurface"), 2)
+        self.assertNotIn("LeftClick", click)
+        self.assertLess(
+            click.index("$secondHit -eq $widgetHandle"),
+            click.index("CheckedClickCurrent"),
+        )
+        self.assertLess(
+            click.index("AutomationElement]::FromPoint"),
+            click.index("CheckedClickCurrent"),
+        )
+
+    def test_field_collector_clicks_only_fixed_semantic_ids_from_live_receipt(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        click = collector[
+            collector.index("function Invoke-FieldUiSurfaceWidget") :
+            collector.index("function Register-FieldOwnedProcess")
+        ]
+        for semantic_id in ("library_manager", "register_selected"):
+            self.assertIn(f"{semantic_id} =", click)
+        for forbidden_crud_id in ("new_registration", "update", "delete", "reload"):
+            self.assertNotIn(f'"{forbidden_crud_id}"', click)
+        self.assertIn('Get-FieldUiSurfaceWidget $receipt.surface $Id "button"', click)
+        self.assertIn("$expectedTextById", click)
+        self.assertIn("$widget.text -ceq $expectedWidgetText", click)
+        self.assertIn("$freshWidget.text -ceq $expectedWidgetText", click)
+        self.assertIn("$uiaHit.Current.Name -ceq $expectedWidgetText", click)
+        self.assertIn("$widget.screen", click)
+        self.assertNotIn("fallback", click.casefold())
+
+    def test_field_collector_binds_installed_runtime_before_explorer_input(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        pre_input = collector[: collector.index("$selectedWindow = Open-ExplorerFolder")]
+        self.assertIn("$releaseRuntimeProbe = @'", pre_input)
+        self.assertIn("$releaseRuntimeDigest", pre_input)
+        self.assertIn("[string]$runtime.payload_sha256 -ceq $releaseRuntimeDigest", pre_input)
+        self.assertIn("no Explorer input was sent", pre_input)
+        self.assertLess(
+            pre_input.index("$releaseRuntimeDigest"),
+            pre_input.index("$selectionProbe = @'"),
+        )
+
     def test_field_collector_preserves_preexisting_ui_and_owner_generation(self) -> None:
         collector = (
             ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
@@ -1264,7 +1514,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
         ]
         cleanup = collector[
             collector.index("function Close-FieldOwnedUiAndReleaseLease") :
-            collector.index("function Get-UiaControlValues")
+            collector.index("function Get-VisibleDescendantText")
         ]
         self.assertIn("$script:FieldPreExistingProcessIdentities[$key]", ownership)
         self.assertIn("start_time_utc_ticks", ownership)
@@ -1309,6 +1559,34 @@ class ExplorerResultsGateTest(unittest.TestCase):
             digest = hashlib.sha256(changed).hexdigest()
             artifact.update(
                 bytes_base64=base64.b64encode(changed).decode(),
+                size=len(changed),
+                sha256=digest,
+            )
+            bundle["hashes"]["signed_msix_sha256"] = digest
+            self._rewrite_bundle(bundle_path, bundle, ledger)
+            with mock.patch(
+                "integration.explorer_results_gate._verify_windows_field_attestation",
+                return_value=[],
+            ):
+                errors = validate_field_bundle(ledger, bundle_path, invoke_log, ROOT)
+            self.assertTrue(any("signed MSIX does not bind" in error for error in errors), errors)
+
+    def test_field_bundle_rejects_ambiguous_duplicate_msix_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            ledger, bundle_path, invoke_log, bundle, _ = self._field_fixture(Path(temporary))
+            artifact = bundle["artifacts"]["signed_msix"]
+            original = base64.b64decode(artifact["bytes_base64"])
+            changed_buffer = io.BytesIO()
+            with zipfile.ZipFile(io.BytesIO(original)) as source, zipfile.ZipFile(
+                changed_buffer, "w", compression=zipfile.ZIP_STORED
+            ) as target:
+                for info in source.infolist():
+                    target.writestr(info, source.read(info))
+                target.writestr("SkillMagnetCommand.dll", b"ambiguous-second-entry")
+            changed = changed_buffer.getvalue()
+            digest = hashlib.sha256(changed).hexdigest()
+            artifact.update(
+                bytes_base64=base64.b64encode(changed).decode("ascii"),
                 size=len(changed),
                 sha256=digest,
             )
@@ -1437,7 +1715,6 @@ class ExplorerResultsGateTest(unittest.TestCase):
             changed = b'{"synthetic":"config"}\n'
             digest = hashlib.sha256(changed).hexdigest()
             artifact = bundle["artifacts"]["config"]
-            artifact["bytes_base64"] = base64.b64encode(changed).decode("ascii")
             artifact["size"] = len(changed)
             artifact["sha256"] = digest
             bundle["hashes"]["config_sha256"] = digest
@@ -1447,7 +1724,9 @@ class ExplorerResultsGateTest(unittest.TestCase):
                 return_value=[],
             ):
                 errors = validate_field_bundle(ledger, bundle_path, invoke_log, ROOT)
-            self.assertTrue(any("config bytes differ" in error for error in errors), errors)
+            self.assertTrue(
+                any("config artifact size/hash" in error for error in errors), errors
+            )
 
     def test_field_bundle_rejects_rehashed_installed_appx_manifest_tampering(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
