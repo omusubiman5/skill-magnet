@@ -1082,6 +1082,10 @@ class ExplorerResultsGateTest(unittest.TestCase):
         self.assertNotRegex(text, r"-I\s+-c\s+\$\w+Probe")
         for probe in ("runtimeProbe", "selectionProbe", "nativeProbe"):
             self.assertRegex(text, rf"\${probe}\s*\|\s*\n?\s*& .*? -I -")
+        selection_probe = text[
+            text.index("$selectionProbe = @'") : text.index("$selectionJson =")
+        ]
+        self.assertIn("ensure_ascii=True", selection_probe)
 
     def test_field_collector_normal_exit_uses_the_owned_cleanup_boundary(self) -> None:
         collector = (

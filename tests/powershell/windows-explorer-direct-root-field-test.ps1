@@ -1193,7 +1193,7 @@ print(json.dumps({
     "choices": choices,
     "choice_map_sha256": hashlib.sha256(canonical).hexdigest(),
     "configured_remote": configured_repository_url(config_path),
-}, ensure_ascii=False))
+}, ensure_ascii=True))
 '@
 $selectionJson = $selectionProbe |
     & ([string]$status.command_target) -I - $configPath | Out-String

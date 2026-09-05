@@ -173,6 +173,19 @@ print(json.dumps({
         self.assertIn("SKILL_MAGNET_ALLOW_DESTRUCTIVE_LIFECYCLE", lifecycle)
         self.assertIn("Refusing to run the destructive release lifecycle", lifecycle)
 
+    def test_windows_ci_parses_all_powershell_with_windows_powershell(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "test.yml").read_text(
+            encoding="utf-8"
+        )
+        step = workflow[
+            workflow.index("name: Parse every PowerShell script") :
+            workflow.index("- run: python -m pip install -e .")
+        ]
+        self.assertIn("shell: powershell", step)
+        self.assertIn("Language.Parser]::ParseFile", step)
+        self.assertIn('Filter "*.ps1"', step)
+        self.assertIn("if ($failures.Count -gt 0)", step)
+
     @unittest.skipUnless(sys.platform == "win32", "Windows Appx preflight required")
     def test_windows_lifecycle_preflight_fails_before_existing_state_is_changed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
