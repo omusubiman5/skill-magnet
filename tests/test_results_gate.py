@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,7 @@ import struct
 from pathlib import Path
 from unittest import mock
 
+import integration.explorer_results_gate as results_gate
 from integration.explorer_results_gate import (
     _configured_repository_url,
     _configured_selector_choices,
@@ -48,6 +50,30 @@ class ExplorerResultsGateTest(unittest.TestCase):
             observed_leaf_count=3,
             observed_selection_kinds=["package", "skill"],
             observed_pack_skill_counts=[1, 9, 12], observed_version="0.5.9")
+
+    @staticmethod
+    def _write_runtime_repository(root: Path) -> tuple[Path, Path]:
+        package = root / "src" / "skill_magnet"
+        native = root / "native" / "windows-modern-context-menu"
+        package.mkdir(parents=True)
+        native.mkdir(parents=True)
+        (package / "__init__.py").write_text("VERSION = 1\n", encoding="utf-8")
+        (native / "build.ps1").write_text("source\n", encoding="utf-8")
+        (root / "skill-magnet.json").write_text("{}\n", encoding="utf-8")
+        return package, native
+
+    @staticmethod
+    def _field_runtime_walker_namespace() -> dict[str, object]:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        start_marker = "$runtimeTreeWalker = @'\n"
+        end_marker = "\n'@\n\n$runtimeProbe = $runtimeTreeWalker + @'"
+        start = collector.index(start_marker) + len(start_marker)
+        end = collector.index(end_marker, start)
+        namespace: dict[str, object] = {"__name__": "field_runtime_walker_test"}
+        exec(compile(collector[start:end], "field-runtime-tree-walker", "exec"), namespace)
+        return namespace
 
     @staticmethod
     def _fake_x64_dll(source_tree_sha256: str) -> bytes:
@@ -872,13 +898,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
     def test_release_runtime_digest_excludes_generated_native_output_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repository = Path(temporary)
-            package = repository / "src" / "skill_magnet"
-            native = repository / "native" / "windows-modern-context-menu"
-            package.mkdir(parents=True)
-            native.mkdir(parents=True)
-            (package / "__init__.py").write_text("VERSION = 1\n", encoding="utf-8")
-            (native / "build.ps1").write_text("source\n", encoding="utf-8")
-            (repository / "skill-magnet.json").write_text("{}\n", encoding="utf-8")
+            _, native = self._write_runtime_repository(repository)
             expected = _release_runtime_payload_sha256(repository)
 
             generated = native / "out"
@@ -888,6 +908,294 @@ class ExplorerResultsGateTest(unittest.TestCase):
 
             (native / "build.ps1").write_text("changed\n", encoding="utf-8")
             self.assertNotEqual(_release_runtime_payload_sha256(repository), expected)
+
+    def test_release_runtime_digest_rejects_reparse_even_for_excluded_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            _, native = self._write_runtime_repository(repository)
+            generated = native / "out"
+            generated.mkdir()
+            original = results_gate._runtime_path_is_reparse
+
+            def mark_output_as_reparse(path: Path, metadata: os.stat_result) -> bool:
+                return path.name == "out" or original(path, metadata)
+
+            with mock.patch.object(
+                results_gate,
+                "_runtime_path_is_reparse",
+                side_effect=mark_output_as_reparse,
+            ):
+                with self.assertRaisesRegex(ValueError, "reparse points are forbidden"):
+                    _release_runtime_payload_sha256(repository)
+
+    def test_release_runtime_digest_enforces_entry_file_total_and_time_limits(self) -> None:
+        cases = (
+            ("_RUNTIME_TREE_MAX_ENTRIES", 0, "entry count exceeds"),
+            ("_RUNTIME_TREE_MAX_FILE_BYTES", 1, "file size"),
+            ("_RUNTIME_TREE_MAX_TOTAL_BYTES", 1, "total bytes exceed"),
+            ("_RUNTIME_TREE_MAX_SECONDS", -1.0, "deadline expired"),
+        )
+        for setting, value, expected in cases:
+            with self.subTest(setting=setting):
+                with tempfile.TemporaryDirectory() as temporary:
+                    repository = Path(temporary)
+                    self._write_runtime_repository(repository)
+                    with mock.patch.object(results_gate, setting, value):
+                        with self.assertRaisesRegex(ValueError, expected) as raised:
+                            _release_runtime_payload_sha256(repository)
+                    self.assertIn("rebuild/reinstall", str(raised.exception))
+
+    def test_release_runtime_stable_read_detects_file_swap_before_content_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            payload = parent / "payload.py"
+            payload.write_bytes(b"safe")
+            metadata, identity = results_gate._runtime_checked_metadata(
+                payload, label="payload", directory=False
+            )
+            _, parent_identity = results_gate._runtime_checked_metadata(
+                parent, label="parent", directory=True
+            )
+            changed = mock.Mock()
+            for attribute in (
+                "st_dev",
+                "st_ino",
+                "st_mode",
+                "st_mtime",
+                "st_mtime_ns",
+                "st_ctime",
+                "st_ctime_ns",
+                "st_size",
+            ):
+                setattr(changed, attribute, getattr(metadata, attribute))
+            changed.st_ino = int(metadata.st_ino) + 1
+            budget: dict[str, int | float] = {
+                "deadline": results_gate.time.monotonic() + 5,
+                "entries": 0,
+                "bytes": 0,
+            }
+            real_read = os.read
+            with mock.patch.object(results_gate.os, "fstat", return_value=changed), mock.patch.object(
+                results_gate.os, "read", side_effect=real_read
+            ) as read:
+                with self.assertRaisesRegex(ValueError, "opened file identity differs"):
+                    results_gate._runtime_stable_read(
+                        payload,
+                        label="payload",
+                        metadata=metadata,
+                        identity=identity,
+                        parent=parent,
+                        parent_identity=parent_identity,
+                        budget=budget,
+                    )
+            read.assert_not_called()
+
+    def test_release_runtime_tree_detects_directory_swap_before_content_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "payload.py").write_bytes(b"safe")
+            root_metadata = os.lstat(root)
+            original = results_gate._runtime_metadata_identity
+            directory_calls = 0
+
+            def changed_directory_identity(
+                metadata: os.stat_result, *, directory: bool
+            ) -> tuple[int, ...]:
+                nonlocal directory_calls
+                identity = original(metadata, directory=directory)
+                if (
+                    directory
+                    and metadata.st_dev == root_metadata.st_dev
+                    and metadata.st_ino == root_metadata.st_ino
+                ):
+                    directory_calls += 1
+                    if directory_calls >= 3:
+                        return (identity[0], identity[1] + 1, *identity[2:])
+                return identity
+
+            budget: dict[str, int | float] = {
+                "deadline": results_gate.time.monotonic() + 5,
+                "entries": 0,
+                "bytes": 0,
+            }
+            real_read = os.read
+            with mock.patch.object(
+                results_gate,
+                "_runtime_metadata_identity",
+                side_effect=changed_directory_identity,
+            ), mock.patch.object(results_gate.os, "read", side_effect=real_read) as read:
+                with self.assertRaisesRegex(ValueError, "changed during verification"):
+                    results_gate._runtime_collect_tree(
+                        root,
+                        prefix="runtime/",
+                        label="runtime",
+                        budget=budget,
+                        include_file=lambda relative: True,
+                        skip_directory=lambda relative: False,
+                    )
+            read.assert_not_called()
+
+    def test_field_runtime_walker_rejects_unknown_out_reparse_and_all_limits(self) -> None:
+        cases = ("unknown_out", "reparse", "entries", "size", "total", "timeout")
+        for case in cases:
+            with self.subTest(case=case):
+                namespace = self._field_runtime_walker_namespace()
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    payload = root / "payload.bin"
+                    payload.write_bytes(b"safe")
+                    if case == "unknown_out":
+                        (root / "_native" / "windows-modern-context-menu" / "out").mkdir(
+                            parents=True
+                        )
+                    elif case == "reparse":
+                        junction = root / "junction"
+                        junction.mkdir()
+                        original = namespace["runtime_is_reparse"]
+                        namespace["runtime_is_reparse"] = (
+                            lambda path, metadata: path.name == "junction"
+                            or original(path, metadata)
+                        )
+                    elif case == "size":
+                        namespace["RUNTIME_MAX_FILE_BYTES"] = 1
+                    elif case == "entries":
+                        namespace["RUNTIME_MAX_ENTRIES"] = 0
+                    elif case == "total":
+                        namespace["RUNTIME_MAX_TOTAL_BYTES"] = 1
+                    budget = {
+                        "deadline": namespace["time"].monotonic()
+                        + (-1 if case == "timeout" else 5),
+                        "entries": 0,
+                        "bytes": 0,
+                    }
+                    expected = {
+                        "unknown_out": "residue directory",
+                        "reparse": "reparse points are forbidden",
+                        "entries": "entry count exceeds",
+                        "size": "file size",
+                        "total": "total bytes exceed",
+                        "timeout": "deadline expired",
+                    }[case]
+                    with self.assertRaisesRegex(RuntimeError, expected):
+                        namespace["runtime_collect_tree"](
+                            root,
+                            "skill_magnet/",
+                            "installed runtime",
+                            budget,
+                            lambda relative: relative.suffix.lower() != ".pyc",
+                            lambda relative: relative.name == "__pycache__",
+                            lambda relative: relative.as_posix().casefold()
+                            == "_native/windows-modern-context-menu/out",
+                        )
+
+    def test_field_runtime_walker_detects_file_and_directory_swaps_without_read(self) -> None:
+        for case in ("file", "directory"):
+            with self.subTest(case=case):
+                namespace = self._field_runtime_walker_namespace()
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    payload = root / "payload.bin"
+                    payload.write_bytes(b"safe")
+                    real_read = os.read
+                    if case == "file":
+                        metadata, identity = namespace["runtime_checked_metadata"](
+                            payload, "payload", False
+                        )
+                        _, parent_identity = namespace["runtime_checked_metadata"](
+                            root, "parent", True
+                        )
+                        changed = mock.Mock()
+                        for attribute in (
+                            "st_dev",
+                            "st_ino",
+                            "st_mode",
+                            "st_mtime",
+                            "st_mtime_ns",
+                            "st_ctime",
+                            "st_ctime_ns",
+                            "st_size",
+                        ):
+                            setattr(changed, attribute, getattr(metadata, attribute))
+                        changed.st_ino = int(metadata.st_ino) + 1
+                        budget = {
+                            "deadline": namespace["time"].monotonic() + 5,
+                            "entries": 0,
+                            "bytes": 0,
+                        }
+                        with mock.patch.object(
+                            namespace["os"], "fstat", return_value=changed
+                        ), mock.patch.object(
+                            namespace["os"], "read", side_effect=real_read
+                        ) as read:
+                            with self.assertRaisesRegex(RuntimeError, "opened file identity differs"):
+                                namespace["runtime_stable_read"](
+                                    payload,
+                                    "payload",
+                                    metadata,
+                                    identity,
+                                    root,
+                                    parent_identity,
+                                    budget,
+                                )
+                    else:
+                        root_metadata = os.lstat(root)
+                        original = namespace["runtime_identity"]
+                        calls = 0
+
+                        def shift(metadata: os.stat_result, directory: bool) -> tuple[int, ...]:
+                            nonlocal calls
+                            identity = original(metadata, directory)
+                            if (
+                                directory
+                                and metadata.st_dev == root_metadata.st_dev
+                                and metadata.st_ino == root_metadata.st_ino
+                            ):
+                                calls += 1
+                                if calls >= 3:
+                                    return (identity[0], identity[1] + 1, *identity[2:])
+                            return identity
+
+                        namespace["runtime_identity"] = shift
+                        budget = {
+                            "deadline": namespace["time"].monotonic() + 5,
+                            "entries": 0,
+                            "bytes": 0,
+                        }
+                        with mock.patch.object(
+                            namespace["os"], "read", side_effect=real_read
+                        ) as read:
+                            with self.assertRaisesRegex(RuntimeError, "changed during verification"):
+                                namespace["runtime_collect_tree"](
+                                    root,
+                                    "runtime/",
+                                    "runtime",
+                                    budget,
+                                    lambda relative: True,
+                                    lambda relative: False,
+                                )
+                    read.assert_not_called()
+
+    def test_field_release_runtime_probe_matches_independent_gate_digest(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        start_marker = "$releaseRuntimeProbe = $runtimeTreeWalker + @'\n"
+        end_marker = "\n'@\n$releaseRuntimeOutput = @($releaseRuntimeProbe |"
+        start = collector.index(start_marker) + len(start_marker)
+        end = collector.index(end_marker, start)
+        namespace = self._field_runtime_walker_namespace()
+        output = io.StringIO()
+        with mock.patch.object(sys, "argv", ["-", str(ROOT)]), mock.patch.object(
+            sys, "stdout", output
+        ):
+            exec(
+                compile(collector[start:end], "field-release-runtime-probe", "exec"),
+                namespace,
+            )
+        self.assertEqual(
+            output.getvalue().strip(),
+            _release_runtime_payload_sha256(ROOT),
+        )
 
     def test_field_evidence_hash_and_both_explorer_sources_are_required(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1515,7 +1823,8 @@ class ExplorerResultsGateTest(unittest.TestCase):
             ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
         ).read_text(encoding="utf-8-sig")
         pre_input = collector[: collector.index("$selectedWindow = Open-ExplorerFolder")]
-        self.assertIn("$releaseRuntimeProbe = @'", pre_input)
+        self.assertIn("$runtimeTreeWalker = @'", pre_input)
+        self.assertIn("$releaseRuntimeProbe = $runtimeTreeWalker + @'", pre_input)
         self.assertIn("$releaseRuntimeDigest", pre_input)
         self.assertIn("[string]$runtime.payload_sha256 -ceq $releaseRuntimeDigest", pre_input)
         self.assertIn("no Explorer input was sent", pre_input)
@@ -1529,16 +1838,19 @@ class ExplorerResultsGateTest(unittest.TestCase):
             ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
         ).read_text(encoding="utf-8-sig")
         runtime_probe = collector[
-            collector.index("$runtimeProbe = @'") : collector.index("$releaseRuntimeProbe = @'")
+            collector.index("$runtimeTreeWalker = @'") : collector.index("$selectionProbe = @'")
         ]
-        physical_hash = runtime_probe[
-            runtime_probe.index("digest = hashlib.sha256()") : runtime_probe.index(
-                "print(json.dumps"
-            )
-        ]
-        self.assertIn('path for path in root.rglob("*")', physical_hash)
-        self.assertNotIn("distribution.files", physical_hash)
-        self.assertNotIn('blocked_names = {".git", "out"', physical_hash)
+        self.assertIn("scanner = os.scandir(directory)", runtime_probe)
+        self.assertIn("entry.stat(follow_symlinks=False)", runtime_probe)
+        self.assertIn("runtime_identity(os.fstat(descriptor), False)", runtime_probe)
+        self.assertIn("RUNTIME_MAX_ENTRIES = 4096", runtime_probe)
+        self.assertIn("RUNTIME_MAX_FILE_BYTES", runtime_probe)
+        self.assertIn("RUNTIME_MAX_TOTAL_BYTES", runtime_probe)
+        self.assertIn("RUNTIME_MAX_SECONDS", runtime_probe)
+        self.assertIn('== "_native/windows-modern-context-menu/out"', runtime_probe)
+        self.assertNotIn(".rglob(", runtime_probe)
+        self.assertNotIn(".read_bytes(", runtime_probe)
+        self.assertEqual(runtime_probe.count("distribution.files"), 1)
 
     def test_field_collector_preserves_preexisting_ui_and_owner_generation(self) -> None:
         collector = (
@@ -1873,6 +2185,29 @@ class ExplorerResultsGateTest(unittest.TestCase):
                 errors = validate_field_bundle(ledger, bundle_path, invoke_log, ROOT)
             self.assertIn("field bundle installed Python package version mismatch", errors)
             self.assertIn("field bundle installed Python runtime differs from release inputs", errors)
+
+    def test_field_bundle_reports_release_runtime_safety_failure_without_crashing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            ledger, bundle_path, invoke_log, _, _ = self._field_fixture(Path(temporary))
+            with mock.patch(
+                "integration.explorer_results_gate._release_runtime_payload_sha256",
+                side_effect=ValueError(
+                    "release runtime safety scan rejected native source: reparse point; "
+                    "restore and rerun"
+                ),
+            ), mock.patch(
+                "integration.explorer_results_gate._verify_windows_field_attestation",
+                return_value=[],
+            ):
+                errors = validate_field_bundle(ledger, bundle_path, invoke_log, ROOT)
+            self.assertTrue(
+                any(
+                    "could not be verified safely before acceptance" in error
+                    and "restore and rerun" in error
+                    for error in errors
+                ),
+                errors,
+            )
 
     def test_field_evidence_rejects_extra_invocation_even_when_hashes_are_rewritten(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

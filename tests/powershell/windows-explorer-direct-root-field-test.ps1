@@ -1752,19 +1752,239 @@ Assert-Field (
     [bool]$status.native_build_binding_valid
 ) "Installed package is not bound to the current native source and artifacts."
 
-$runtimeProbe = @'
+$runtimeTreeWalker = @'
 import hashlib
+import os
+import pathlib
+import stat
+import time
+
+RUNTIME_MAX_ENTRIES = 4096
+RUNTIME_MAX_FILE_BYTES = 32 * 1024 * 1024
+RUNTIME_MAX_TOTAL_BYTES = 128 * 1024 * 1024
+RUNTIME_MAX_SECONDS = 15.0
+RUNTIME_READ_CHUNK_BYTES = 1024 * 1024
+WINDOWS_REPARSE_POINT_ATTRIBUTE = 0x400
+
+
+def runtime_failure(label, detail):
+    return RuntimeError(
+        "runtime safety scan rejected {}: {}. Restore a stable regular-file "
+        "installation/checkout, reinstall the same release if needed, and rerun"
+        .format(label, detail)
+    )
+
+
+def runtime_is_reparse(path, metadata):
+    if stat.S_ISLNK(metadata.st_mode):
+        return True
+    if int(getattr(metadata, "st_file_attributes", 0)) & WINDOWS_REPARSE_POINT_ATTRIBUTE:
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    return bool(is_junction is not None and is_junction())
+
+
+def runtime_identity(metadata, directory):
+    identity = (
+        int(metadata.st_dev),
+        int(metadata.st_ino),
+        int(stat.S_IFMT(metadata.st_mode)),
+        int(getattr(metadata, "st_mtime_ns", int(metadata.st_mtime * 1000000000))),
+    )
+    return identity if directory else identity + (int(metadata.st_size),)
+
+
+def runtime_entry_fingerprint(metadata, directory):
+    fingerprint = (
+        int(stat.S_IFMT(metadata.st_mode)),
+        int(getattr(metadata, "st_file_attributes", 0)),
+        int(getattr(metadata, "st_reparse_tag", 0)),
+    )
+    return fingerprint if directory else fingerprint + (
+        int(getattr(metadata, "st_mtime_ns", int(metadata.st_mtime * 1000000000))),
+        int(metadata.st_size),
+    )
+
+
+def runtime_checked_metadata(path, label, directory, expected=None):
+    try:
+        metadata = os.lstat(path)
+    except OSError as error:
+        raise runtime_failure(label, "lstat failed ({})".format(type(error).__name__)) from error
+    if runtime_is_reparse(path, metadata):
+        raise runtime_failure(label, "links, junctions, and reparse points are forbidden")
+    expected_type = stat.S_ISDIR if directory else stat.S_ISREG
+    if not expected_type(metadata.st_mode):
+        raise runtime_failure(label, "expected a {}".format("directory" if directory else "regular file"))
+    identity = runtime_identity(metadata, directory)
+    if expected is not None and identity != expected:
+        raise runtime_failure(label, "identity or metadata changed during verification")
+    return metadata, identity
+
+
+def runtime_check_budget(budget, label):
+    if time.monotonic() > budget["deadline"]:
+        raise runtime_failure(label, "the bounded scan deadline expired")
+
+
+def runtime_note_entry(budget, label):
+    runtime_check_budget(budget, label)
+    budget["entries"] += 1
+    if budget["entries"] > RUNTIME_MAX_ENTRIES:
+        raise runtime_failure(label, "entry count exceeds {}".format(RUNTIME_MAX_ENTRIES))
+
+
+def runtime_stable_read(path, label, metadata, identity, parent, parent_identity, budget):
+    size = int(metadata.st_size)
+    if size > RUNTIME_MAX_FILE_BYTES:
+        raise runtime_failure(label, "file size {} exceeds {} bytes".format(size, RUNTIME_MAX_FILE_BYTES))
+    if budget["bytes"] + size > RUNTIME_MAX_TOTAL_BYTES:
+        raise runtime_failure(label, "total bytes exceed {}".format(RUNTIME_MAX_TOTAL_BYTES))
+    runtime_check_budget(budget, label)
+    runtime_checked_metadata(parent, "parent of " + label, True, parent_identity)
+    runtime_checked_metadata(path, label, False, identity)
+    flags = os.O_RDONLY | int(getattr(os, "O_BINARY", 0)) | int(getattr(os, "O_NOINHERIT", 0))
+    flags |= int(getattr(os, "O_NOFOLLOW", 0))
+    descriptor = -1
+    try:
+        descriptor = os.open(path, flags)
+        if runtime_identity(os.fstat(descriptor), False) != identity:
+            raise runtime_failure(label, "opened file identity differs from lstat")
+        runtime_checked_metadata(path, label, False, identity)
+        runtime_checked_metadata(parent, "parent of " + label, True, parent_identity)
+        chunks = []
+        remaining = size
+        while remaining:
+            runtime_check_budget(budget, label)
+            chunk = os.read(descriptor, min(RUNTIME_READ_CHUNK_BYTES, remaining))
+            runtime_check_budget(budget, label)
+            if not chunk:
+                raise runtime_failure(label, "file ended before its verified size")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if os.read(descriptor, 1):
+            raise runtime_failure(label, "file grew while it was being read")
+        runtime_check_budget(budget, label)
+        payload = b"".join(chunks)
+        if len(payload) != size:
+            raise runtime_failure(label, "read size differs from verified size")
+        if runtime_identity(os.fstat(descriptor), False) != identity:
+            raise runtime_failure(label, "opened file changed while it was read")
+        runtime_checked_metadata(path, label, False, identity)
+        runtime_checked_metadata(parent, "parent of " + label, True, parent_identity)
+    except OSError as error:
+        raise runtime_failure(label, "bounded read failed ({})".format(type(error).__name__)) from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    budget["bytes"] += size
+    return payload
+
+
+def runtime_collect_tree(
+    root, prefix, label, budget, include_file, skip_directory, reject_directory=None
+):
+    _, root_identity = runtime_checked_metadata(root, label, True)
+    pending = [(root, pathlib.Path(), root_identity)]
+    collected = {}
+    while pending:
+        directory, relative_directory, expected_directory_identity = pending.pop()
+        directory_label = label if not relative_directory.parts else label + "/" + relative_directory.as_posix()
+        _, directory_identity = runtime_checked_metadata(
+            directory, directory_label, True, expected_directory_identity
+        )
+        runtime_check_budget(budget, directory_label)
+        try:
+            scanner = os.scandir(directory)
+        except OSError as error:
+            raise runtime_failure(
+                directory_label, "directory open failed ({})".format(type(error).__name__)
+            ) from error
+        try:
+            runtime_checked_metadata(directory, directory_label, True, directory_identity)
+            discovered = []
+            for entry in scanner:
+                child = directory / entry.name
+                relative = relative_directory / entry.name
+                child_label = label + "/" + relative.as_posix()
+                runtime_note_entry(budget, child_label)
+                try:
+                    entry_metadata = entry.stat(follow_symlinks=False)
+                except OSError as error:
+                    raise runtime_failure(
+                        child_label, "entry stat failed ({})".format(type(error).__name__)
+                    ) from error
+                if runtime_is_reparse(child, entry_metadata):
+                    raise runtime_failure(child_label, "links, junctions, and reparse points are forbidden")
+                is_directory = stat.S_ISDIR(entry_metadata.st_mode)
+                if not is_directory and not stat.S_ISREG(entry_metadata.st_mode):
+                    raise runtime_failure(child_label, "unsupported filesystem entry type")
+                current_metadata, current_identity = runtime_checked_metadata(
+                    child, child_label, is_directory
+                )
+                if runtime_entry_fingerprint(
+                    entry_metadata, is_directory
+                ) != runtime_entry_fingerprint(current_metadata, is_directory):
+                    raise runtime_failure(
+                        child_label, "entry metadata changed between stat and lstat"
+                    )
+                runtime_checked_metadata(directory, directory_label, True, directory_identity)
+                discovered.append((child, relative, current_metadata, current_identity, is_directory))
+        finally:
+            scanner.close()
+        runtime_check_budget(budget, directory_label)
+        runtime_checked_metadata(directory, directory_label, True, directory_identity)
+        for child, relative, metadata, identity, is_directory in sorted(
+            discovered, key=lambda item: item[1].as_posix()
+        ):
+            child_label = label + "/" + relative.as_posix()
+            if is_directory:
+                if reject_directory is not None and reject_directory(relative):
+                    raise runtime_failure(
+                        child_label, "this generated/residue directory is not allowed here"
+                    )
+                if not skip_directory(relative):
+                    pending.append((child, relative, identity))
+                continue
+            if not include_file(relative):
+                continue
+            collected[prefix + relative.as_posix()] = runtime_stable_read(
+                child, child_label, metadata, identity, directory, directory_identity, budget
+            )
+        runtime_checked_metadata(directory, directory_label, True, directory_identity)
+    return collected
+
+
+def runtime_logical_digest(entries):
+    digest = hashlib.sha256()
+    for name in sorted(entries):
+        content = entries[name]
+        if b"\0" not in content:
+            try:
+                content.decode("utf-8")
+            except UnicodeDecodeError:
+                pass
+            else:
+                content = content.replace(b"\r\n", b"\n")
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(content)
+        digest.update(b"\0")
+    return digest.hexdigest()
+'@
+
+$runtimeProbe = $runtimeTreeWalker + @'
+
 import importlib.metadata
 import json
-import pathlib
 import sys
 import skill_magnet
 
-root = pathlib.Path(skill_magnet.__file__).resolve().parent
-module_path = pathlib.Path(skill_magnet.__file__).resolve()
+module_path = pathlib.Path(os.path.abspath(skill_magnet.__file__))
+root = module_path.parent
 distribution = importlib.metadata.distribution("skill-magnet")
 distribution_module_paths = [
-    pathlib.Path(distribution.locate_file(item)).resolve()
+    pathlib.Path(os.path.abspath(distribution.locate_file(item)))
     for item in (distribution.files or ())
     if item.as_posix() == "skill_magnet/__init__.py"
 ]
@@ -1772,25 +1992,21 @@ if distribution.metadata.get("Name", "").casefold() != "skill-magnet":
     raise RuntimeError("installed distribution name is not skill-magnet")
 if len(distribution_module_paths) != 1 or distribution_module_paths[0] != module_path:
     raise RuntimeError("imported module is not owned by the installed skill-magnet distribution")
-digest = hashlib.sha256()
-paths = [
-    path for path in root.rglob("*")
-    if path.is_file() and "__pycache__" not in path.parts and path.suffix.lower() != ".pyc"
-]
-for path in sorted(paths, key=lambda item: item.relative_to(root).as_posix()):
-    name = "skill_magnet/" + path.relative_to(root).as_posix()
-    content = path.read_bytes()
-    if b"\0" not in content:
-        try:
-            content.decode("utf-8")
-        except UnicodeDecodeError:
-            pass
-        else:
-            content = content.replace(b"\r\n", b"\n")
-    digest.update(name.encode("utf-8"))
-    digest.update(b"\0")
-    digest.update(content)
-    digest.update(b"\0")
+budget = {
+    "deadline": time.monotonic() + RUNTIME_MAX_SECONDS,
+    "entries": 0,
+    "bytes": 0,
+}
+entries = runtime_collect_tree(
+    root,
+    "skill_magnet/",
+    "installed runtime",
+    budget,
+    lambda relative: relative.suffix.lower() != ".pyc",
+    lambda relative: relative.name == "__pycache__",
+    lambda relative: relative.as_posix().casefold()
+        == "_native/windows-modern-context-menu/out",
+)
 print(json.dumps({
     "module_version": skill_magnet.__version__,
     "distribution_version": distribution.version,
@@ -1798,12 +2014,17 @@ print(json.dumps({
     "executable": sys.executable,
     "module_path": str(module_path),
     "distribution_module_path": str(distribution_module_paths[0]),
-    "payload_sha256": digest.hexdigest(),
+    "payload_sha256": runtime_logical_digest(entries),
 }))
 '@
-$runtimeJson = $runtimeProbe |
-    & ([string]$status.command_target) -I - | Out-String
-Assert-Field ($LASTEXITCODE -eq 0) "Installed menu Python runtime probe failed."
+$runtimeOutput = @($runtimeProbe |
+    & ([string]$status.command_target) -I - 2>&1)
+$runtimeExitCode = $LASTEXITCODE
+$runtimeJson = ($runtimeOutput | Out-String).Trim()
+Assert-Field ($runtimeExitCode -eq 0) (
+    "Installed runtime safety scan failed before Explorer input. " +
+    "Reinstall the exact release wheel, ensure its package tree has no links or build residue, and rerun."
+)
 $runtime = $runtimeJson | ConvertFrom-Json
 $appReleaseVersion = ([string]$status.version) -replace '\.0$', ''
 Assert-Field (
@@ -1826,50 +2047,64 @@ Assert-Field (-not $modulePath.StartsWith(
 # the collector opens Explorer or sends any mouse input.  The final gate repeats
 # the comparison independently, but a post-click rejection is too late for a
 # physical-input safety boundary.
-$releaseRuntimeProbe = @'
-import hashlib
-import pathlib
+$releaseRuntimeProbe = $runtimeTreeWalker + @'
+
 import sys
 
-repository = pathlib.Path(sys.argv[1]).resolve()
-entries = {}
+repository = pathlib.Path(os.path.abspath(sys.argv[1]))
+_, repository_identity = runtime_checked_metadata(repository, "repository root", True)
+budget = {
+    "deadline": time.monotonic() + RUNTIME_MAX_SECONDS,
+    "entries": 0,
+    "bytes": 0,
+}
 package_source = repository / "src" / "skill_magnet"
-for path in package_source.rglob("*.py"):
-    if "__pycache__" not in path.parts:
-        entries["skill_magnet/" + path.relative_to(package_source).as_posix()] = path.read_bytes()
 native_source = repository / "native" / "windows-modern-context-menu"
 blocked_names = {".git", "out", "__pycache__"}
 blocked_suffixes = {".obj", ".lib", ".exp", ".pyc"}
-for path in native_source.rglob("*"):
-    relative = path.relative_to(native_source)
-    if (not path.is_file() or any(part in blocked_names for part in relative.parts)
-            or path.suffix.lower() in blocked_suffixes):
-        continue
-    entries["skill_magnet/_native/windows-modern-context-menu/" + relative.as_posix()] = path.read_bytes()
-entries["skill_magnet/skill-magnet.json"] = (repository / "skill-magnet.json").read_bytes()
-digest = hashlib.sha256()
-for name in sorted(entries):
-    content = entries[name]
-    if b"\0" not in content:
-        try:
-            content.decode("utf-8")
-        except UnicodeDecodeError:
-            pass
-        else:
-            content = content.replace(b"\r\n", b"\n")
-    digest.update(name.encode("utf-8"))
-    digest.update(b"\0")
-    digest.update(content)
-    digest.update(b"\0")
-print(digest.hexdigest())
+entries = runtime_collect_tree(
+    package_source,
+    "skill_magnet/",
+    "package source",
+    budget,
+    lambda relative: relative.suffix.lower() == ".py",
+    lambda relative: relative.name == "__pycache__",
+)
+entries.update(runtime_collect_tree(
+    native_source,
+    "skill_magnet/_native/windows-modern-context-menu/",
+    "native source",
+    budget,
+    lambda relative: relative.suffix.lower() not in blocked_suffixes,
+    lambda relative: relative.name in blocked_names,
+))
+config = repository / "skill-magnet.json"
+runtime_note_entry(budget, "release config")
+config_metadata, config_identity = runtime_checked_metadata(config, "release config", False)
+entries["skill_magnet/skill-magnet.json"] = runtime_stable_read(
+    config,
+    "release config",
+    config_metadata,
+    config_identity,
+    repository,
+    repository_identity,
+    budget,
+)
+runtime_checked_metadata(repository, "repository root", True, repository_identity)
+print(runtime_logical_digest(entries))
 '@
-$releaseRuntimeDigest = ($releaseRuntimeProbe |
-    & ([string]$status.command_target) -I - $repositoryRoot | Out-String).Trim()
+$releaseRuntimeOutput = @($releaseRuntimeProbe |
+    & ([string]$status.command_target) -I - $repositoryRoot 2>&1)
+$releaseRuntimeExitCode = $LASTEXITCODE
+$releaseRuntimeDigest = ($releaseRuntimeOutput | Out-String).Trim()
 Assert-Field (
-    $LASTEXITCODE -eq 0 -and
+    $releaseRuntimeExitCode -eq 0 -and
     $releaseRuntimeDigest -match '^[0-9a-f]{64}$' -and
     [string]$runtime.payload_sha256 -ceq $releaseRuntimeDigest
-) "Installed Python payload differs from release inputs; no Explorer input was sent."
+) (
+    "Installed payload or release-input safety verification failed; no Explorer input was sent. " +
+    "Restore a stable regular-file checkout, reinstall the exact release wheel, and rerun."
+)
 
 $selectionProbe = @'
 import hashlib

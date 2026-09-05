@@ -4,17 +4,21 @@ import argparse
 import base64
 import binascii
 import datetime as dt
+import os
 import io
 import json
 import re
+import stat
 import subprocess
 import sys
 import hashlib
 import struct
 import tempfile
+import time
 import tomllib
 import zipfile
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from pathlib import Path
 
 LEDGER_START = "<!-- explorer-results-ledger:start"
@@ -164,33 +168,348 @@ def _logical_runtime_digest(entries: dict[str, bytes]) -> str:
     return digest.hexdigest()
 
 
+_RUNTIME_TREE_MAX_ENTRIES = 4096
+_RUNTIME_TREE_MAX_FILE_BYTES = 32 * 1024 * 1024
+_RUNTIME_TREE_MAX_TOTAL_BYTES = 128 * 1024 * 1024
+_RUNTIME_TREE_MAX_SECONDS = 15.0
+_RUNTIME_TREE_READ_CHUNK_BYTES = 1024 * 1024
+_WINDOWS_REPARSE_POINT_ATTRIBUTE = 0x400
+
+
+def _runtime_tree_failure(label: str, detail: str) -> ValueError:
+    return ValueError(
+        f"release runtime safety scan rejected {label}: {detail}. "
+        "Restore a stable regular-file checkout, rebuild/reinstall the same "
+        "release, and rerun the field gate"
+    )
+
+
+def _runtime_path_is_reparse(path: Path, metadata: os.stat_result) -> bool:
+    if stat.S_ISLNK(metadata.st_mode):
+        return True
+    if int(getattr(metadata, "st_file_attributes", 0)) & _WINDOWS_REPARSE_POINT_ATTRIBUTE:
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    return bool(is_junction is not None and is_junction())
+
+
+def _runtime_metadata_identity(metadata: os.stat_result, *, directory: bool) -> tuple[int, ...]:
+    identity = (
+        int(metadata.st_dev),
+        int(metadata.st_ino),
+        int(stat.S_IFMT(metadata.st_mode)),
+        int(getattr(metadata, "st_mtime_ns", int(metadata.st_mtime * 1_000_000_000))),
+    )
+    if directory:
+        return identity
+    return identity + (int(metadata.st_size),)
+
+
+def _runtime_entry_fingerprint(
+    metadata: os.stat_result, *, directory: bool
+) -> tuple[int, ...]:
+    fingerprint = (
+        int(stat.S_IFMT(metadata.st_mode)),
+        int(getattr(metadata, "st_file_attributes", 0)),
+        int(getattr(metadata, "st_reparse_tag", 0)),
+    )
+    if directory:
+        return fingerprint
+    return fingerprint + (
+        int(getattr(metadata, "st_mtime_ns", int(metadata.st_mtime * 1_000_000_000))),
+        int(metadata.st_size),
+    )
+
+
+def _runtime_checked_metadata(
+    path: Path,
+    *,
+    label: str,
+    directory: bool,
+    expected: tuple[int, ...] | None = None,
+) -> tuple[os.stat_result, tuple[int, ...]]:
+    try:
+        metadata = os.lstat(path)
+    except OSError as error:
+        raise _runtime_tree_failure(label, f"lstat failed ({error.__class__.__name__})") from error
+    if _runtime_path_is_reparse(path, metadata):
+        raise _runtime_tree_failure(label, "links, junctions, and reparse points are forbidden")
+    expected_type = stat.S_ISDIR if directory else stat.S_ISREG
+    if not expected_type(metadata.st_mode):
+        kind = "directory" if directory else "regular file"
+        raise _runtime_tree_failure(label, f"expected a {kind}")
+    identity = _runtime_metadata_identity(metadata, directory=directory)
+    if expected is not None and identity != expected:
+        raise _runtime_tree_failure(label, "identity or metadata changed during verification")
+    return metadata, identity
+
+
+def _runtime_check_budget(budget: dict[str, int | float], *, label: str) -> None:
+    if time.monotonic() > float(budget["deadline"]):
+        raise _runtime_tree_failure(label, "the bounded scan deadline expired")
+
+
+def _runtime_note_entry(budget: dict[str, int | float], *, label: str) -> None:
+    _runtime_check_budget(budget, label=label)
+    budget["entries"] = int(budget["entries"]) + 1
+    if int(budget["entries"]) > _RUNTIME_TREE_MAX_ENTRIES:
+        raise _runtime_tree_failure(
+            label, f"entry count exceeds {_RUNTIME_TREE_MAX_ENTRIES}"
+        )
+
+
+def _runtime_stable_read(
+    path: Path,
+    *,
+    label: str,
+    metadata: os.stat_result,
+    identity: tuple[int, ...],
+    parent: Path,
+    parent_identity: tuple[int, ...],
+    budget: dict[str, int | float],
+) -> bytes:
+    size = int(metadata.st_size)
+    if size > _RUNTIME_TREE_MAX_FILE_BYTES:
+        raise _runtime_tree_failure(
+            label, f"file size {size} exceeds {_RUNTIME_TREE_MAX_FILE_BYTES} bytes"
+        )
+    if int(budget["bytes"]) + size > _RUNTIME_TREE_MAX_TOTAL_BYTES:
+        raise _runtime_tree_failure(
+            label, f"total bytes exceed {_RUNTIME_TREE_MAX_TOTAL_BYTES}"
+        )
+    _runtime_check_budget(budget, label=label)
+    _runtime_checked_metadata(
+        parent, label=f"parent of {label}", directory=True, expected=parent_identity
+    )
+    _runtime_checked_metadata(
+        path, label=label, directory=False, expected=identity
+    )
+    flags = os.O_RDONLY | int(getattr(os, "O_BINARY", 0)) | int(
+        getattr(os, "O_NOINHERIT", 0)
+    )
+    flags |= int(getattr(os, "O_NOFOLLOW", 0))
+    descriptor = -1
+    try:
+        descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        if _runtime_metadata_identity(opened, directory=False) != identity:
+            raise _runtime_tree_failure(label, "opened file identity differs from lstat")
+        _runtime_checked_metadata(
+            path, label=label, directory=False, expected=identity
+        )
+        _runtime_checked_metadata(
+            parent, label=f"parent of {label}", directory=True, expected=parent_identity
+        )
+        chunks: list[bytes] = []
+        remaining = size
+        while remaining:
+            _runtime_check_budget(budget, label=label)
+            chunk = os.read(descriptor, min(_RUNTIME_TREE_READ_CHUNK_BYTES, remaining))
+            _runtime_check_budget(budget, label=label)
+            if not chunk:
+                raise _runtime_tree_failure(label, "file ended before its verified size")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if os.read(descriptor, 1):
+            raise _runtime_tree_failure(label, "file grew while it was being read")
+        _runtime_check_budget(budget, label=label)
+        payload = b"".join(chunks)
+        if len(payload) != size:
+            raise _runtime_tree_failure(label, "read size differs from verified size")
+        after_open = os.fstat(descriptor)
+        if _runtime_metadata_identity(after_open, directory=False) != identity:
+            raise _runtime_tree_failure(label, "opened file changed while it was read")
+        _runtime_checked_metadata(
+            path, label=label, directory=False, expected=identity
+        )
+        _runtime_checked_metadata(
+            parent, label=f"parent of {label}", directory=True, expected=parent_identity
+        )
+    except OSError as error:
+        raise _runtime_tree_failure(label, f"bounded read failed ({error.__class__.__name__})") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    budget["bytes"] = int(budget["bytes"]) + size
+    return payload
+
+
+def _runtime_collect_tree(
+    root: Path,
+    *,
+    prefix: str,
+    label: str,
+    budget: dict[str, int | float],
+    include_file: Callable[[Path], bool],
+    skip_directory: Callable[[Path], bool],
+    reject_directory: Callable[[Path], bool] | None = None,
+) -> dict[str, bytes]:
+    _, root_identity = _runtime_checked_metadata(root, label=label, directory=True)
+    pending: list[tuple[Path, Path, tuple[int, ...]]] = [
+        (root, Path(), root_identity)
+    ]
+    collected: dict[str, bytes] = {}
+    while pending:
+        directory, relative_directory, expected_directory_identity = pending.pop()
+        _, directory_identity = _runtime_checked_metadata(
+            directory,
+            label=(label if not relative_directory.parts else f"{label}/{relative_directory.as_posix()}"),
+            directory=True,
+            expected=expected_directory_identity,
+        )
+        directory_label = (
+            label if not relative_directory.parts else f"{label}/{relative_directory.as_posix()}"
+        )
+        _runtime_check_budget(budget, label=directory_label)
+        try:
+            scanner = os.scandir(directory)
+        except OSError as error:
+            raise _runtime_tree_failure(
+                directory_label, f"directory open failed ({error.__class__.__name__})"
+            ) from error
+        try:
+            _runtime_checked_metadata(
+                directory,
+                label=directory_label,
+                directory=True,
+                expected=directory_identity,
+            )
+            discovered: list[tuple[Path, Path, os.stat_result, tuple[int, ...], bool]] = []
+            for entry in scanner:
+                child = directory / entry.name
+                relative = relative_directory / entry.name
+                child_label = f"{label}/{relative.as_posix()}"
+                _runtime_note_entry(budget, label=child_label)
+                try:
+                    entry_metadata = entry.stat(follow_symlinks=False)
+                except OSError as error:
+                    raise _runtime_tree_failure(
+                        child_label, f"entry stat failed ({error.__class__.__name__})"
+                    ) from error
+                if _runtime_path_is_reparse(child, entry_metadata):
+                    raise _runtime_tree_failure(
+                        child_label, "links, junctions, and reparse points are forbidden"
+                    )
+                is_directory = stat.S_ISDIR(entry_metadata.st_mode)
+                if not is_directory and not stat.S_ISREG(entry_metadata.st_mode):
+                    raise _runtime_tree_failure(child_label, "unsupported filesystem entry type")
+                current_metadata, current_identity = _runtime_checked_metadata(
+                    child,
+                    label=child_label,
+                    directory=is_directory,
+                )
+                if _runtime_entry_fingerprint(
+                    entry_metadata, directory=is_directory
+                ) != _runtime_entry_fingerprint(
+                    current_metadata, directory=is_directory
+                ):
+                    raise _runtime_tree_failure(
+                        child_label, "entry metadata changed between stat and lstat"
+                    )
+                _runtime_checked_metadata(
+                    directory,
+                    label=directory_label,
+                    directory=True,
+                    expected=directory_identity,
+                )
+                discovered.append(
+                    (child, relative, current_metadata, current_identity, is_directory)
+                )
+        finally:
+            scanner.close()
+        _runtime_check_budget(budget, label=directory_label)
+        _runtime_checked_metadata(
+            directory,
+            label=directory_label,
+            directory=True,
+            expected=directory_identity,
+        )
+        for child, relative, metadata, identity, is_directory in sorted(
+            discovered, key=lambda item: item[1].as_posix()
+        ):
+            child_label = f"{label}/{relative.as_posix()}"
+            if is_directory:
+                if reject_directory is not None and reject_directory(relative):
+                    raise _runtime_tree_failure(
+                        child_label, "this generated/residue directory is not allowed here"
+                    )
+                if not skip_directory(relative):
+                    pending.append((child, relative, identity))
+                continue
+            if not include_file(relative):
+                continue
+            payload = _runtime_stable_read(
+                child,
+                label=child_label,
+                metadata=metadata,
+                identity=identity,
+                parent=directory,
+                parent_identity=directory_identity,
+                budget=budget,
+            )
+            collected[prefix + relative.as_posix()] = payload
+        _runtime_checked_metadata(
+            directory,
+            label=directory_label,
+            directory=True,
+            expected=directory_identity,
+        )
+    return collected
+
+
 def _release_runtime_payload_sha256(repository: Path) -> str:
-    """Hash the runtime tree that setup.py installs below skill_magnet/."""
-    entries: dict[str, bytes] = {}
+    """Hash release inputs with a bounded, non-following, stable tree walk."""
+    repository = Path(os.path.abspath(repository))
+    _, repository_identity = _runtime_checked_metadata(
+        repository, label="repository root", directory=True
+    )
+    budget: dict[str, int | float] = {
+        "deadline": time.monotonic() + _RUNTIME_TREE_MAX_SECONDS,
+        "entries": 0,
+        "bytes": 0,
+    }
     package_source = repository / "src" / "skill_magnet"
-    for path in package_source.rglob("*.py"):
-        if "__pycache__" not in path.parts:
-            name = "skill_magnet/" + path.relative_to(package_source).as_posix()
-            entries[name] = path.read_bytes()
     native_source = repository / "native" / "windows-modern-context-menu"
     blocked_names = {".git", "out", "__pycache__"}
     blocked_suffixes = {".obj", ".lib", ".exp", ".pyc"}
-    for path in native_source.rglob("*"):
-        relative = path.relative_to(native_source)
-        if (
-            not path.is_file()
-            or any(part in blocked_names for part in relative.parts)
-            or path.suffix.lower() in blocked_suffixes
-        ):
-            continue
-        name = (
-            "skill_magnet/_native/windows-modern-context-menu/"
-            + relative.as_posix()
+    entries = _runtime_collect_tree(
+        package_source,
+        prefix="skill_magnet/",
+        label="package source",
+        budget=budget,
+        include_file=lambda relative: relative.suffix.lower() == ".py",
+        skip_directory=lambda relative: relative.name == "__pycache__",
+    )
+    entries.update(
+        _runtime_collect_tree(
+            native_source,
+            prefix="skill_magnet/_native/windows-modern-context-menu/",
+            label="native source",
+            budget=budget,
+            include_file=lambda relative: relative.suffix.lower() not in blocked_suffixes,
+            skip_directory=lambda relative: relative.name in blocked_names,
         )
-        entries[name] = path.read_bytes()
-    entries["skill_magnet/skill-magnet.json"] = (
-        repository / "skill-magnet.json"
-    ).read_bytes()
+    )
+    config = repository / "skill-magnet.json"
+    _runtime_note_entry(budget, label="release config")
+    config_metadata, config_identity = _runtime_checked_metadata(
+        config, label="release config", directory=False
+    )
+    entries["skill_magnet/skill-magnet.json"] = _runtime_stable_read(
+        config,
+        label="release config",
+        metadata=config_metadata,
+        identity=config_identity,
+        parent=repository,
+        parent_identity=repository_identity,
+        budget=budget,
+    )
+    _runtime_checked_metadata(
+        repository,
+        label="repository root",
+        directory=True,
+        expected=repository_identity,
+    )
     return _logical_runtime_digest(entries)
 
 
@@ -2026,9 +2345,16 @@ def validate_field_bundle(
                 "field bundle imported module is not owned by the installed distribution"
             )
         runtime_executable_digest = str(python_runtime.get("executable_path_sha256", ""))
-        expected_runtime_digest = _release_runtime_payload_sha256(repository)
-        if python_runtime.get("payload_sha256") != expected_runtime_digest:
-            errors.append("field bundle installed Python runtime differs from release inputs")
+        try:
+            expected_runtime_digest = _release_runtime_payload_sha256(repository)
+        except (OSError, ValueError) as error:
+            errors.append(
+                "field bundle release runtime could not be verified safely before "
+                f"acceptance: {error}"
+            )
+        else:
+            if python_runtime.get("payload_sha256") != expected_runtime_digest:
+                errors.append("field bundle installed Python runtime differs from release inputs")
 
     package = bundle.get("package")
     expected_package = {
