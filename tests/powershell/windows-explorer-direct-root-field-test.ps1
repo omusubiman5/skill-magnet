@@ -1148,7 +1148,8 @@ print(json.dumps({
     "payload_sha256": digest.hexdigest(),
 }))
 '@
-$runtimeJson = & ([string]$status.command_target) -I -c $runtimeProbe | Out-String
+$runtimeJson = $runtimeProbe |
+    & ([string]$status.command_target) -I - | Out-String
 Assert-Field ($LASTEXITCODE -eq 0) "Installed menu Python runtime probe failed."
 $runtime = $runtimeJson | ConvertFrom-Json
 $appReleaseVersion = ([string]$status.version) -replace '\.0$', ''
@@ -1194,7 +1195,8 @@ print(json.dumps({
     "configured_remote": configured_repository_url(config_path),
 }, ensure_ascii=False))
 '@
-$selectionJson = & ([string]$status.command_target) -I -c $selectionProbe $configPath | Out-String
+$selectionJson = $selectionProbe |
+    & ([string]$status.command_target) -I - $configPath | Out-String
 Assert-Field ($LASTEXITCODE -eq 0) "Installed selector-contract probe failed."
 $selectionContract = $selectionJson | ConvertFrom-Json
 $expectedChoices = @($selectionContract.choices)
@@ -1620,8 +1622,9 @@ for label, raw in (("package", sys.argv[1]), ("external", sys.argv[2])):
     result[label + "_marker_count"] = path.read_bytes().count(marker)
 print(json.dumps(result, separators=(",", ":")))
 '@
-    $nativeProbeJson = & ([string]$status.command_target) -I -c $nativeProbe `
-        $dllPath $externalDllPath | Out-String
+    $nativeProbeJson = $nativeProbe |
+        & ([string]$status.command_target) -I - `
+            $dllPath $externalDllPath | Out-String
     Assert-Field ($LASTEXITCODE -eq 0) "Installed DLL native-source export probe failed."
     $nativeProbeResult = $nativeProbeJson | ConvertFrom-Json
     Assert-Field (

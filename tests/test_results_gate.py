@@ -1078,6 +1078,10 @@ class ExplorerResultsGateTest(unittest.TestCase):
             _normalized_windows_powershell_bytes(collector),
             _normalized_text_bytes(collector[3:]),
         )
+        text = collector.decode("utf-8-sig")
+        self.assertNotRegex(text, r"-I\s+-c\s+\$\w+Probe")
+        for probe in ("runtimeProbe", "selectionProbe", "nativeProbe"):
+            self.assertRegex(text, rf"\${probe}\s*\|\s*\n?\s*& .*? -I -")
 
     def test_field_collector_normal_exit_uses_the_owned_cleanup_boundary(self) -> None:
         collector = (
