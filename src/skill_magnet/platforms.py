@@ -15,6 +15,7 @@ import xml.etree.ElementTree as ET
 from xml.parsers.expat import ExpatError
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import NoReturn
 
 from .core import Config, Engine, Pack, SafetyError, SkillMagnetError, _is_link
 from . import __version__
@@ -2158,45 +2159,37 @@ def _windows_owned_menu_roots(prefix: str = "HKCU") -> tuple[str, ...]:
     )
 
 
+def _reject_windows_classic_registration() -> NoReturn:
+    raise SkillMagnetError(
+        "Windows classic context-menu registration is disabled; "
+        "use install-context-menu --platform windows --confirm to install "
+        "the supported modern package"
+    )
+
+
 def _windows_registry_entries(config: Path, root: str, placeholder: str) -> list[tuple[str, str, str]]:
-    """Return one direct classic fallback command with no child menu."""
-    return [
-        (root, "", "Skill Magnet"),
-        (root, "MUIVerb", "Skill Magnet"),
-        (
-            root + r"\command",
-            "",
-            windows_command(windows_root_launcher_command_argv(config, placeholder)),
-        ),
-    ]
+    """Reject generation of the unsupported Windows classic registration."""
+    _reject_windows_classic_registration()
 
 
 def windows_directory_registry_entries(
     config: Path, prefix: str = "HKCU"
 ) -> tuple[tuple[str, str, str], ...]:
-    """Build only Skill Magnet's Directory/%1 registry subtree."""
-    root = prefix + r"\Software\Classes\Directory\shell\SkillMagnetClassic"
-    return tuple(_windows_registry_entries(config, root, "%1"))
+    """Retained API boundary that rejects classic Directory registration."""
+    _reject_windows_classic_registration()
 
 
 def windows_background_registry_entries(
     config: Path, prefix: str = "HKCU"
 ) -> tuple[tuple[str, str, str], ...]:
-    """Build only Skill Magnet's Directory/Background/%V registry subtree."""
-    root = prefix + r"\Software\Classes\Directory\Background\shell\SkillMagnetClassic"
-    return tuple(_windows_registry_entries(config, root, "%V"))
+    """Retained API boundary that rejects classic Background registration."""
+    _reject_windows_classic_registration()
 
 
 def render_registration(platform: str, config: Path) -> str:
-    spec = context_menu_spec(platform, config)
     if platform == "windows":
-        sections: list[str] = ["Windows Registry Editor Version 5.00\n"]
-        for root, placeholder in _windows_menu_roots("HKEY_CURRENT_USER"):
-            for key, name, value in _windows_registry_entries(config, root, placeholder):
-                escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-                rendered_name = "@" if not name else f'"{name}"'
-                sections.extend([f"[{key}]\n", f'{rendered_name}="{escaped}"\n\n'])
-        return "\n".join(sections)
+        _reject_windows_classic_registration()
+    spec = context_menu_spec(platform, config)
     payload = json.dumps(spec.as_dict(), ensure_ascii=False, sort_keys=True)
     return (
         "#!/bin/sh\n"
@@ -2513,50 +2506,9 @@ def install_context_menu(
     replace_existing: bool = False,
 ) -> dict[str, object]:
     """Install only after an explicit CLI request; never activates a pack."""
-    spec = context_menu_spec(platform, config)
     if platform == "windows":
-        if os.name != "nt":
-            raise SkillMagnetError("Windows context menu can only be installed on Windows")
-        roots = _windows_menu_roots()
-        registrations = (
-            (roots[0][0], windows_directory_registry_entries(config)),
-            (roots[1][0], windows_background_registry_entries(config)),
-        )
-        try:
-            for legacy_root in _windows_legacy_menu_roots():
-                stale = run(["reg", "delete", legacy_root, "/f"], capture_output=True, text=True)
-                if stale.returncode not in (0, 1):
-                    raise SkillMagnetError(
-                        f"Cannot remove legacy Windows context menu: {stale.stderr.strip()}"
-                    )
-            for root, entries in registrations:
-                stale = run(["reg", "delete", root, "/f"], capture_output=True, text=True)
-                if stale.returncode not in (0, 1):
-                    raise SkillMagnetError(
-                        f"Cannot remove stale Windows context menu: {stale.stderr.strip()}"
-                    )
-                for key, name, value in entries:
-                    args = ["reg", "add", key]
-                    args.extend(["/v", name] if name else ["/ve"])
-                    args.extend(["/d", value, "/f"])
-                    result = run(args, capture_output=True, text=True)
-                    if result.returncode != 0:
-                        raise SkillMagnetError(
-                            f"Cannot install Windows context menu: {result.stderr.strip()}"
-                        )
-        except Exception:
-            for root, _ in roots:
-                run(["reg", "delete", root, "/f"], capture_output=True, text=True)
-            raise
-        _notify_windows_shell_change()
-        return {
-            "installed": True,
-            "platform": platform,
-            "locations": [root for root, _ in roots],
-            "packs": [f"Pack: {pack_id}" for pack_id in Config.load(config).packs],
-            "reinstall_required_after_pack_change": False,
-        }
-
+        _reject_windows_classic_registration()
+    spec = context_menu_spec(platform, config)
     if sys.platform != "darwin" and services_dir is None:
         raise SkillMagnetError("Finder Quick Action can only be installed on macOS")
     base = services_dir or (Path.home() / "Library" / "Services")

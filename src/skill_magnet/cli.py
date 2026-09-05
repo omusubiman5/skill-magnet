@@ -148,7 +148,7 @@ def _parser() -> argparse.ArgumentParser:
     install.add_argument(
         "--modern",
         action="store_true",
-        help="Deprecated compatibility flag; Windows prefers modern and uses classic only as fallback.",
+        help="Deprecated compatibility flag; Windows always installs the supported modern package.",
     )
     remove = commands.add_parser("uninstall-context-menu")
     remove.add_argument("--platform", required=True, choices=("windows", "macos"))

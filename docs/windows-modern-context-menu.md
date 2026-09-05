@@ -37,10 +37,13 @@ The previous classic `HKCU` menu is not a supported fallback. Its self-signed
 process adapter can be rejected by Windows Smart App Control with error 4551,
 even when the local certificate is trusted. Product CLI installation snapshots
 Skill Magnet-owned roots and package state before mutation; a modern install
- failure removes partial registration, restores the prior state, and reports an
- error. Pack, skill, commit, and config-content changes do not regenerate the
- modern menu; only an executable/config-location, native contract, or package
- integration change requires explicit reinstall or repair.
+failure removes partial registration, restores the prior state, and reports an
+error. Windows classic rendering and registration APIs fail closed before they
+emit registry content or run `reg add`. Only detection, backup, rollback, and
+removal of previously installed classic roots remain for migration and recovery.
+Pack, skill, commit, and config-content changes do not regenerate the
+modern menu; only an executable/config-location, native contract, or package
+integration change requires explicit reinstall or repair.
 
 ## Build and registration boundary
 

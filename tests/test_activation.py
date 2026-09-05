@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import io
@@ -39,6 +40,7 @@ from skill_magnet.platforms import (
     _recover_windows_rollback_rotation,
     _restore_windows_context_backup,
     _rotate_windows_context_backup,
+    _windows_registry_entries,
     _windows_owned_menu_roots,
     _windows_native_source_manifest,
     context_menu_spec,
@@ -2062,12 +2064,10 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertFalse(macos["automatic_activation"])
         self.assertIn("windows_explorer", windows["integration"])
         self.assertIn("macos_finder", macos["integration"])
-        registration = render_registration("windows", self.config_path)
-        self.assertIn("HKEY_CURRENT_USER", registration)
-        self.assertIn("--launcher", registration)
-        self.assertNotIn("--pack bounded-pack", registration)
-        self.assertNotIn("\\shell\\leaf-", registration)
-        self.assertIn('"MUIVerb"="Skill Magnet"', registration)
+        with self.assertRaisesRegex(
+            SkillMagnetError, "classic context-menu registration is disabled"
+        ):
+            render_registration("windows", self.config_path)
         self.assertIn("--launcher", windows["command"])
         self.assertIn("Finder Quick Action", render_registration("macos", self.config_path))
 
@@ -2121,20 +2121,10 @@ class ActivationEndToEndTest(unittest.TestCase):
             ("Background", windows_background_registry_entries),
         ):
             with self.subTest(root=root_name):
-                entries = entry_builder(product_config)
-                command_keys = [
-                    key for key, _, _ in entries if key.endswith(r"\command")
-                ]
-                self.assertEqual(len(command_keys), 1)
-                self.assertNotIn(
-                    "\\SkillMagnetClassic\\shell\\", command_keys[0]
-                )
-                pack_labels = {
-                    value
-                    for _, name, value in entries
-                    if name == "MUIVerb" and value != "Skill Magnet"
-                }
-                self.assertEqual(pack_labels, set())
+                with self.assertRaisesRegex(
+                    SkillMagnetError, "classic context-menu registration is disabled"
+                ):
+                    entry_builder(product_config)
 
     def test_both_roots_propagate_complete_pack_contract_and_reject_tampering(self) -> None:
         product_config = Path(__file__).resolve().parents[1] / "skill-magnet.json"
@@ -3154,27 +3144,8 @@ class ActivationEndToEndTest(unittest.TestCase):
         process = mock.Mock(name="codex_or_claude_process")
         error_ui = mock.Mock(name="error_ui")
 
-        for root_name, entries in (
-            ("Directory", windows_directory_registry_entries(self.config_path)),
-            ("Background", windows_background_registry_entries(self.config_path)),
-        ):
+        for root_name in ("Directory", "Background"):
             with self.subTest(root=root_name):
-                command_keys = [key for key, _, _ in entries if key.endswith(r"\command")]
-                self.assertEqual(len(command_keys), 1)
-                leaf_command_keys = [
-                    key for key in command_keys if r"\shell\leaf-" in key
-                ]
-                manager_command_keys = [
-                    key for key in command_keys if r"\shell\library-manager" in key
-                ]
-                self.assertEqual(len(leaf_command_keys), 0)
-                self.assertEqual(len(manager_command_keys), 0)
-                non_leaf_keys = {
-                    key for key, _, _ in entries if not key.endswith(r"\command")
-                }
-                self.assertTrue(non_leaf_keys)
-                self.assertFalse(any(key.endswith(r"\command") for key in non_leaf_keys))
-
                 # Explorer owns menu opening. Closing it without pressing the
                 # direct root emits no command, so no runner is dispatched.
                 selected_root_command = None
@@ -3235,94 +3206,69 @@ class ActivationEndToEndTest(unittest.TestCase):
                 "ambiguous",
             )
 
-    def test_directory_registry_entries_cover_all_leaves_and_only_owned_subtree(self) -> None:
-        root = r"HKCU\Software\Classes\Directory\shell\SkillMagnetClassic"
-        entries = windows_directory_registry_entries(self.config_path)
-        self.assertTrue(entries)
-        self.assertTrue(
-            all(key == root or key.startswith(root + "\\") for key, _, _ in entries)
-        )
-        self.assertFalse(any("Directory\\Background" in key for key, _, _ in entries))
-
-        commands = [
-            value for key, name, value in entries if key.endswith(r"\command") and not name
-        ]
-        expected = [
-            windows_command(
-                windows_root_launcher_command_argv(self.config_path, "%1")
+    def test_windows_classic_registry_entry_builders_are_disabled(self) -> None:
+        for root_name, entry_builder in (
+            ("Directory", windows_directory_registry_entries),
+            ("Background", windows_background_registry_entries),
+        ):
+            with self.subTest(root=root_name):
+                with self.assertRaisesRegex(
+                    SkillMagnetError, "classic context-menu registration is disabled"
+                ):
+                    entry_builder(self.config_path)
+        with self.assertRaisesRegex(
+            SkillMagnetError, "classic context-menu registration is disabled"
+        ):
+            _windows_registry_entries(
+                self.config_path,
+                r"HKCU\Software\Classes\Directory\shell\SkillMagnetClassic",
+                "%1",
             )
-        ]
-        self.assertEqual(commands, expected)
-        self.assertEqual(len(commands), 1)
-        self.assertIn("--launcher", commands[0])
-        self.assertNotIn("--pack", commands[0])
-        self.assertNotIn("library ui", commands[0])
 
-    def test_background_registry_entries_cover_all_leaves_and_only_owned_subtree(self) -> None:
-        root = r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnetClassic"
-        entries = windows_background_registry_entries(self.config_path)
-        self.assertTrue(entries)
-        self.assertTrue(
-            all(key == root or key.startswith(root + "\\") for key, _, _ in entries)
-        )
-        directory_root = r"HKCU\Software\Classes\Directory\shell\SkillMagnetClassic"
-        self.assertFalse(
-            any(key == directory_root or key.startswith(directory_root + "\\") for key, _, _ in entries)
-        )
+    def test_python_product_source_has_no_classic_registry_creation_payload(self) -> None:
+        source_root = Path(__file__).resolve().parents[1] / "src" / "skill_magnet"
+        reg_add_literals: list[tuple[str, int]] = []
+        registry_headers: list[tuple[str, int]] = []
+        registry_create_calls: list[tuple[str, int, str]] = []
+        for path in sorted(source_root.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.List, ast.Tuple)):
+                    values = [
+                        item.value if isinstance(item, ast.Constant) else None
+                        for item in node.elts[:2]
+                    ]
+                    if values == ["reg", "add"]:
+                        reg_add_literals.append((path.name, node.lineno))
+                if (
+                    isinstance(node, ast.Constant)
+                    and isinstance(node.value, str)
+                    and "Windows Registry Editor Version" in node.value
+                ):
+                    registry_headers.append((path.name, node.lineno))
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                    if node.func.attr in {"CreateKey", "CreateKeyEx", "SetValue", "SetValueEx"}:
+                        registry_create_calls.append(
+                            (path.name, node.lineno, node.func.attr)
+                        )
+        self.assertEqual(reg_add_literals, [])
+        self.assertEqual(registry_headers, [])
+        self.assertEqual(registry_create_calls, [])
 
-        commands = [
-            value for key, name, value in entries if key.endswith(r"\command") and not name
-        ]
-        expected = [
-            windows_command(
-                windows_root_launcher_command_argv(self.config_path, "%V")
-            )
-        ]
-        self.assertEqual(commands, expected)
-        self.assertEqual(len(commands), 1)
-        self.assertIn("--launcher", commands[0])
-        self.assertNotIn("--pack", commands[0])
-        self.assertNotIn("library ui", commands[0])
-
-    def test_both_registry_roots_preserve_special_absolute_paths_as_single_argv(self) -> None:
+    def test_windows_classic_registry_builders_reject_special_paths_without_output(self) -> None:
         config = self.root / "config 空白 日本語 & ( ) ' ! ^ # %.json"
         config.write_bytes(self.config_path.read_bytes())
-        project = self.root / "project 空白 日本語 & ( ) ' ! ^ # %"
-        project.mkdir()
-        project_path = str(project.resolve())
-
-        cases = (
-            ("Directory", "%1", windows_directory_registry_entries),
-            ("Background", "%V", windows_background_registry_entries),
-        )
-        for root_name, placeholder, entry_builder in cases:
+        original = config.read_bytes()
+        for root_name, entry_builder in (
+            ("Directory", windows_directory_registry_entries),
+            ("Background", windows_background_registry_entries),
+        ):
             with self.subTest(root=root_name):
-                entries = entry_builder(config)
-                commands = [
-                    value
-                    for key, name, value in entries
-                    if key.endswith(r"\command") and not name
-                ]
-                self.assertEqual(len(commands), 1)
-                manager_registered = commands[0]
-                quoted_placeholder = f'"{placeholder}"'
-                self.assertEqual(manager_registered.count(quoted_placeholder), 1)
-                manager_substituted = manager_registered.replace(
-                    quoted_placeholder, windows_command((project_path,)), 1
-                )
-                self.assertEqual(
-                    manager_substituted,
-                    windows_command(
-                        windows_root_launcher_command_argv(config, project_path)
-                    ),
-                )
-                expected_argv = windows_root_launcher_command_argv(
-                    config, project_path
-                )
-                self.assertEqual(
-                    expected_argv[expected_argv.index("--config") + 1],
-                    os.path.abspath(str(config)),
-                )
+                with self.assertRaisesRegex(
+                    SkillMagnetError, "classic context-menu registration is disabled"
+                ):
+                    entry_builder(config)
+        self.assertEqual(config.read_bytes(), original)
 
     def test_context_cancel_and_supported_claude_contract(self) -> None:
         engine = ActivationEngine(self.config, self.state)
@@ -4037,42 +3983,13 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.assertFalse((self.state / "launch-contracts").exists())
         self.assertFalse((self.state / "evidence").exists())
 
-    def test_windows_installer_registers_both_folder_contexts_without_activation(self) -> None:
-        calls: list[list[str]] = []
-
-        def fake_run(args: list[str], **_: object) -> SimpleNamespace:
-            calls.append(args)
-            return SimpleNamespace(returncode=0, stderr="")
-
-        with mock.patch("skill_magnet.platforms.os.name", "nt"):
-            result = install_context_menu(
-                "windows", self.config_path, run=fake_run
-            )
-        self.assertTrue(result["installed"])
-        classic_roots = {
-            r"HKCU\Software\Classes\Directory\shell\SkillMagnetClassic",
-            r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnetClassic",
-        }
-        legacy_roots = {
-            r"HKCU\Software\Classes\Directory\shell\SkillMagnet",
-            r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnet",
-        }
-        stale_deletes = [call for call in calls if call[:2] == ["reg", "delete"]]
-        self.assertEqual({call[2] for call in stale_deletes}, classic_roots | legacy_roots)
-        adds = [call for call in calls if call[:2] == ["reg", "add"]]
-        self.assertTrue(adds)
-        self.assertTrue(
-            all(any(call[2].startswith(root) for root in classic_roots) for call in adds)
-        )
-        commands = [call[call.index("/d") + 1] for call in adds if "\\command" in call[2]]
-        self.assertEqual(len(commands), 2)
-        pack_commands = [command for command in commands if "--pack" in command]
-        manager_commands = [command for command in commands if "library ui" in command]
-        self.assertEqual(len(pack_commands), 0)
-        self.assertEqual(len(manager_commands), 0)
-        self.assertTrue(all("--launcher" in command for command in commands))
-        self.assertTrue(all("--runtime" not in command for command in commands))
-        self.assertFalse(result["reinstall_required_after_pack_change"])
+    def test_windows_classic_installer_fails_closed_without_registry_calls(self) -> None:
+        runner = mock.Mock(name="registry_runner")
+        with self.assertRaisesRegex(
+            SkillMagnetError, "classic context-menu registration is disabled"
+        ):
+            install_context_menu("windows", self.config_path, run=runner)
+        runner.assert_not_called()
         self.assertFalse(self.state.exists())
 
     def test_windows_public_cli_installs_and_uninstalls_modern_menu_by_default(self) -> None:
@@ -4101,6 +4018,27 @@ class ActivationEndToEndTest(unittest.TestCase):
         preflight.assert_called_once_with()
         install.assert_called_once_with(self.config_path)
         self.assertEqual(json.loads(stdout.getvalue()), install_result)
+
+        classic_stdout = io.StringIO()
+        classic_stderr = io.StringIO()
+        with redirect_stdout(classic_stdout), redirect_stderr(classic_stderr):
+            render_code = cli_main(
+                [
+                    "--config",
+                    str(self.config_path),
+                    "render-context-menu",
+                    "--platform",
+                    "windows",
+                ]
+            )
+        self.assertEqual(render_code, 2)
+        self.assertEqual(classic_stdout.getvalue(), "")
+        self.assertIn(
+            "classic context-menu registration is disabled",
+            classic_stderr.getvalue(),
+        )
+        self.assertNotIn("Windows Registry Editor", classic_stderr.getvalue())
+        self.assertNotIn("reg add", classic_stderr.getvalue().casefold())
 
         with (
             mock.patch(
@@ -4890,13 +4828,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                     registry[target] = False
                     return SimpleNamespace(returncode=0, stdout="", stderr="")
                 if action == "add":
-                    owned_root = next(
-                        (root_key for root_key in registry if target.startswith(root_key)),
-                        None,
-                    )
-                    if owned_root is not None:
-                        registry[owned_root] = True
-                    return SimpleNamespace(returncode=0, stdout="", stderr="")
+                    raise AssertionError("modern install must not create classic keys")
                 if action == "import":
                     registry[Path(target).read_text(encoding="utf-8")] = True
                     return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -5043,14 +4975,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                     registry[Path(target).read_text(encoding="utf-8")] = True
                     return SimpleNamespace(returncode=0, stdout="", stderr="")
                 if action == "add":
-                    owned_root = max(
-                        (root_key for root_key in registry if target.startswith(root_key)),
-                        key=len,
-                        default=None,
-                    )
-                    if owned_root is not None:
-                        registry[owned_root] = True
-                    return SimpleNamespace(returncode=0, stdout="", stderr="")
+                    raise AssertionError("modern install must not create classic keys")
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
             action = args[args.index("-Action") + 1]
             if action == "install":
@@ -5366,33 +5291,14 @@ class ActivationEndToEndTest(unittest.TestCase):
         message = context_ui_text("ja", "verification")
         self.assertIn("存在する場合のINDEX関係", message)
         self.assertIn("実作業へ適用", message)
-    def test_windows_installer_failure_rolls_back_context_entries(self) -> None:
-        calls: list[list[str]] = []
-        add_count = 0
-
-        def failing_run(args: list[str], **_: object) -> SimpleNamespace:
-            nonlocal add_count
-            calls.append(args)
-            if args[:2] == ["reg", "add"]:
-                add_count += 1
-                if add_count == 2:
-                    return SimpleNamespace(returncode=5, stderr="injected failure")
-            return SimpleNamespace(returncode=0, stderr="")
-
-        with mock.patch("skill_magnet.platforms.os.name", "nt"):
-            with self.assertRaises(Exception):
-                install_context_menu(
-                    "windows", self.config_path, run=failing_run
-                )
-        deleted = [call for call in calls if call[:2] == ["reg", "delete"]]
-        self.assertGreaterEqual(len(deleted), 2)
-        self.assertEqual(
-            {call[2] for call in deleted[-2:]},
-            {
-                r"HKCU\Software\Classes\Directory\shell\SkillMagnetClassic",
-                r"HKCU\Software\Classes\Directory\Background\shell\SkillMagnetClassic",
-            },
-        )
+    def test_windows_classic_installer_rejection_precedes_config_and_runner(self) -> None:
+        missing_config = self.root / "does-not-exist.json"
+        runner = mock.Mock(name="registry_runner")
+        with self.assertRaisesRegex(
+            SkillMagnetError, "classic context-menu registration is disabled"
+        ):
+            install_context_menu("windows", missing_config, run=runner)
+        runner.assert_not_called()
         self.assertFalse(self.state.exists())
 
     def test_windows_uninstall_removes_only_owned_subtrees(self) -> None:
@@ -5459,7 +5365,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                 uninstall_context_menu("windows", run=fake_run)
         self.assertFalse(self.state.exists())
 
-    def test_windows_reinstall_and_uninstall_preserve_registry_neighbors_and_config(self) -> None:
+    def test_windows_classic_reinstall_is_blocked_and_uninstall_preserves_neighbors(self) -> None:
         special_config = self.root / "config 空白 日本語 & ( ) ' ! ^ # %.json"
         special_config.write_bytes(self.config_path.read_bytes())
         original_config = special_config.read_bytes()
@@ -5499,8 +5405,7 @@ class ActivationEndToEndTest(unittest.TestCase):
                 registry.difference_update(removed)
                 return SimpleNamespace(returncode=0 if removed else 1, stderr="")
             if args[:2] == ["reg", "add"]:
-                registry.add(target)
-                return SimpleNamespace(returncode=0, stderr="")
+                raise AssertionError("classic registration must remain unreachable")
             if args[:2] == ["reg", "query"]:
                 present = target in registry
                 return SimpleNamespace(
@@ -5510,14 +5415,13 @@ class ActivationEndToEndTest(unittest.TestCase):
                 )
             raise AssertionError(args)
 
-        with mock.patch("skill_magnet.platforms.os.name", "nt"):
+        before_rejected_install = set(registry)
+        with self.assertRaisesRegex(
+            SkillMagnetError, "classic context-menu registration is disabled"
+        ):
             install_context_menu("windows", special_config, run=fake_run)
-        self.assertFalse(any(key.endswith("stale-pack") for key in registry))
+        self.assertEqual(registry, before_rejected_install)
         self.assertTrue(protected.issubset(registry))
-        self.assertTrue(any(key.startswith(directory + "\\") for key in registry))
-        self.assertTrue(any(key.startswith(background + "\\") for key in registry))
-        self.assertFalse(any(key == legacy_directory or key.startswith(legacy_directory + "\\") for key in registry))
-        self.assertFalse(any(key == legacy_background or key.startswith(legacy_background + "\\") for key in registry))
         self.assertEqual(special_config.read_bytes(), original_config)
 
         with mock.patch("skill_magnet.platforms.os.name", "nt"):

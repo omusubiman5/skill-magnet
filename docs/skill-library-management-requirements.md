@@ -1,6 +1,6 @@
 ---
 artifact: prd
-version: "1.6"
+version: "1.7"
 created: 2026-09-02
 status: implemented
 ---
@@ -146,6 +146,7 @@ Skill Magnetの実行ターゲットはCodex DesktopアプリとClaude Codeデ�
 - FR-30: 右クリック起動では、対象folder、設定、保存済みjournal、管理workspaceの検査より先に画面と受付状態を表示し、それらのI/OとCRUDをTk main thread外で実行して現在の処理名を継続表示しなければならない。Library Managerは同一stateにつき1 processだけ実行可能とする。統合画面からLibrary Managerへ移る際は同じ実行lockのphaseとwindow handleを原子的に引き継ぎ、同一folderの連続投入は生存中のManagerを前面化して重複処理せず、別folderの並行投入は既存処理を保持して理由と再試行方法を表示する。実行lockはprocess異常終了時にOSが解放し、lock fileの残存だけを理由に次回起動を拒否してはならない。
 - FR-31: Windowsのinstalled stateはAppx version、同じmenu executableでimportしたmodule version／絶対path、distribution metadata／所有path、runtime tree digest、release wheel／source digestを一つのbuildへ拘束しなければならない。いずれかが異なるsplit-generationは、package登録が正常でも実機受入とfield evidenceを拒否しなければならない。
 - FR-32: Windows native buildは固定入力集合のsource tree digestをmanifestとDLL export／埋込markerへ拘束し、signed MSIX、登録済みpackage root、外部install rootのmanifest／DLL／identity payload一致を検証しなければならない。rollbackは所有path、完全metadata schema、registry hash、package identity、外部file manifestをuninstall／削除より前に検証し、不一致時は現行状態を変更してはならない。
+- FR-33: Windowsではclassic context menuを新規生成・登録する経路を提供してはならない。`render-context-menu --platform windows`とclassic登録APIは、registry内容の出力や`reg add`より前にfail-closedで拒否する。旧版classic／legacy rootの検出、backup、rollback、uninstall、modern導入時の削除だけは移行・復旧互換として保持する。
 
 ### User Experience
 

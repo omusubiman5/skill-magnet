@@ -271,7 +271,7 @@ UACを拒否しても、作業対象projectのfile、skill内容、Codex/Claude�
 
 ### その他のオプションにしか表示されない
 
-`その他のオプションを表示`にだけ`Skill Magnet`がある場合は、旧版のclassic登録が残っている異常状態です。現行版はclassic fallbackを提供しません。旧版の自己署名launcherはSmart App Controlに遮断され得るため、入口が見えても起動可能とは判定しません。
+`その他のオプションを表示`にだけ`Skill Magnet`がある場合は、旧版のclassic登録が残っている異常状態です。現行版はclassic fallbackを提供しません。`render-context-menu --platform windows`とclassic登録APIも、新しいregistry内容を生成・登録せずエラーで停止します。旧rootの検出、backup、rollback、削除だけを移行・復旧用に保持します。旧版の自己署名launcherはSmart App Controlに遮断され得るため、入口が見えても起動可能とは判定しません。
 
 まずstatusを実行し、`usable_installed_state`が`false`であることを確認します。次に、前節の手順どおり同じinstall commandを一度だけ実行してmodern登録を復旧します。復旧後は`usable_installed_state`が`true`になり、通常右クリック側だけに`Skill Magnet`が表示されます。
 
