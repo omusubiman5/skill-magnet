@@ -3634,11 +3634,15 @@ class ActivationEndToEndTest(unittest.TestCase):
                 return "!disabled" in states and self.configured_state != "disabled"
 
         class Root(Widget):
+            def __init__(self, handle: int, title_value: str) -> None:
+                super().__init__(handle)
+                self.title_value = title_value
+
             def update_idletasks(self) -> None:
                 pass
 
             def title(self) -> str:
-                return f"Skill Magnet {secret}"
+                return self.title_value
 
         try:
             lease.publish_window(phase="context_selection", window_handle=991991)
@@ -3660,25 +3664,30 @@ class ActivationEndToEndTest(unittest.TestCase):
                     value=choices[0],
                     values=choices,
                 ),
-                UiWidgetSpec("request", Widget(991993), "entry"),
+                UiWidgetSpec(
+                    "request",
+                    Widget(991993),
+                    "entry",
+                    text=secret,
+                    value=private_url,
+                    values=(secret, private_url),
+                ),
                 UiWidgetSpec(
                     "empty", Widget(991995), "entry", text="", value="", values=()
                 ),
             )
             surface = publish_tk_ui_surface(
                 identity,
-                Root(991991),
+                Root(991991, f"Skill Magnet {secret}"),
                 widgets=widgets,
                 state={
-                    "private_state": private_url,
-                    "empty_state": "",
-                    "none_state": None,
+                    "processing": True,
+                    "selection_mode": "fixed",
                 },
             )
             record = json.loads(owner_path.read_text(encoding="utf-8"))
             selector = surface["widgets"][0]
             request = surface["widgets"][1]
-            self.assertEqual(selector["value_count"], 3)
             self.assertNotIn("value", selector)
             self.assertNotIn("values", selector)
             for private_field in (
@@ -3727,19 +3736,15 @@ class ActivationEndToEndTest(unittest.TestCase):
             self.assertTrue({"text", "value", "values"}.isdisjoint(all_keys(record)))
             self.assertNotIn("request_present", record["ui_surface"]["state"])
             self.assertNotIn("request_length", record["ui_surface"]["state"])
-            self.assertNotIn("private_state", record["ui_surface"]["state"])
-            self.assertIn("private_state_sha256", record["ui_surface"]["state"])
-            self.assertNotIn("empty_state_sha256", record["ui_surface"]["state"])
-            self.assertNotIn("none_state_sha256", record["ui_surface"]["state"])
-            with self.assertRaisesRegex(SkillMagnetError, "Forbidden raw"):
+            with self.assertRaisesRegex(SkillMagnetError, "Unapproved"):
                 build_tk_ui_surface(
-                    Root(991991),
+                    Root(991991, "Skill Magnet"),
                     identity=identity,
                     widgets=(),
-                    state={"text": secret},
+                    state={"private_state": secret},
                 )
             fixed = build_tk_ui_surface(
-                Root(991991),
+                Root(991991, f"Skill Magnet {secret}"),
                 identity=identity,
                 widgets=(
                     UiWidgetSpec(
@@ -3753,6 +3758,56 @@ class ActivationEndToEndTest(unittest.TestCase):
             )
             self.assertEqual(fixed["widgets"][0]["role"], "label")
             self.assertNotIn(secret, json.dumps(fixed))
+
+            second_secret = "SECOND-private-token-with-a-different-length-456789"
+            second = build_tk_ui_surface(
+                Root(991991, f"Skill Magnet {second_secret}"),
+                identity=identity,
+                widgets=(
+                    UiWidgetSpec(
+                        "selection_choice",
+                        Widget(991992),
+                        "combobox",
+                        text=f"Fixed label {second_secret}",
+                        value=f"Private skill {second_secret}",
+                        values=(
+                            f"Private skill {second_secret}",
+                            f"https://github.com/private/{second_secret}.git",
+                            str(self.root / second_secret),
+                        ),
+                    ),
+                    UiWidgetSpec("request", Widget(991993), "entry"),
+                    UiWidgetSpec(
+                        "empty", Widget(991995), "entry", text="", value="", values=()
+                    ),
+                ),
+                state={"processing": True, "selection_mode": "fixed"},
+            )
+
+            def without_hashes(value: object) -> object:
+                if isinstance(value, dict):
+                    return {
+                        key: without_hashes(item)
+                        for key, item in value.items()
+                        if not key.endswith("_sha256")
+                        and key not in {"revision", "published_at_utc"}
+                    }
+                if isinstance(value, list):
+                    return [without_hashes(item) for item in value]
+                return value
+
+            self.assertEqual(without_hashes(surface), without_hashes(second))
+            for payload in (record, second):
+                keys = all_keys(payload)
+                self.assertFalse(
+                    any(
+                        key.endswith("_length")
+                        or key.endswith("_count")
+                        or key.endswith("_present")
+                        for key in keys
+                    ),
+                    keys,
+                )
 
             stale = dict(record)
             stale["published_at_utc"] = "2000-01-01T00:00:00Z"
@@ -3778,7 +3833,7 @@ class ActivationEndToEndTest(unittest.TestCase):
             _atomic_write_ui_owner_record(owner_path, tampered)
             with self.assertRaisesRegex(SkillMagnetError, "changed"):
                 publish_tk_ui_surface(
-                    identity, Root(991991), widgets=widgets, state={}
+                    identity, Root(991991, "Skill Magnet"), widgets=widgets, state={}
                 )
             lease.release()
             self.assertTrue(owner_path.exists(), "old owner must not delete a replacement")

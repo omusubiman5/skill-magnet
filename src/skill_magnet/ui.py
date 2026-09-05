@@ -264,6 +264,10 @@ class ContextUiLease:
 
 
 UI_SURFACE_SCHEMA_VERSION = 1
+UI_SURFACE_BOOLEAN_STATE_KEYS = frozenset(
+    {"processing", "details_visible", "register_selected"}
+)
+UI_SURFACE_HASHED_STATE_KEYS = frozenset({"language", "selection_mode", "stage"})
 
 
 @dataclass(frozen=True)
@@ -390,22 +394,19 @@ def _surface_sha256(value: str) -> str:
 
 
 def _safe_surface_state(state: dict[str, Any]) -> dict[str, Any]:
-    """Keep control flags while ensuring arbitrary strings can never persist."""
+    """Publish only explicitly classified, non-secret control state."""
 
     safe: dict[str, Any] = {}
     for key, value in state.items():
-        if key in {"text", "value", "values"}:
-            raise SkillMagnetError(f"Forbidden raw UI surface state key: {key}")
-        if value is None or value == "":
-            continue
-        if isinstance(value, bool) or isinstance(value, int):
+        if key in UI_SURFACE_BOOLEAN_STATE_KEYS and isinstance(value, bool):
             safe[key] = value
             continue
-        if isinstance(value, str):
+        if key in UI_SURFACE_HASHED_STATE_KEYS and isinstance(value, str) and value:
             safe[f"{key}_sha256"] = _surface_sha256(value)
-            safe[f"{key}_length"] = len(value)
             continue
-        raise SkillMagnetError(f"Unsupported UI surface state value: {key}")
+        if key in UI_SURFACE_HASHED_STATE_KEYS and (value is None or value == ""):
+            continue
+        raise SkillMagnetError(f"Unapproved UI surface state: {key}")
     return safe
 
 
@@ -453,16 +454,21 @@ def build_tk_ui_surface(
             },
             "screen": screen,
         }
-        if spec.text is not None:
+        # Free-form task requests are never persisted, not even as digests:
+        # hashes would still allow equality testing against guessed content.
+        suppress_content_digest = spec.identifier == "request"
+        if spec.text is not None and not suppress_content_digest:
             display_text = _surface_value(spec.text) or ""
             if display_text:
                 entry["text_sha256"] = _surface_sha256(display_text)
-                entry["text_length"] = len(display_text)
-        selected_value = _surface_value(spec.value)
+        selected_value = None if suppress_content_digest else _surface_value(spec.value)
         if selected_value:
             entry["value_sha256"] = _surface_sha256(selected_value)
-            entry["value_length"] = len(selected_value)
-        available_values = spec.values() if callable(spec.values) else spec.values
+        available_values = (
+            None
+            if suppress_content_digest
+            else (spec.values() if callable(spec.values) else spec.values)
+        )
         if available_values is not None:
             normalized_values = [str(value) for value in available_values]
             if normalized_values:
@@ -472,7 +478,6 @@ def build_tk_ui_surface(
                     separators=(",", ":"),
                 )
                 entry["values_sha256"] = _surface_sha256(canonical_values)
-                entry["value_count"] = len(normalized_values)
         entries.append(entry)
     window_title = str(root.title())
     return {
@@ -483,7 +488,6 @@ def build_tk_ui_surface(
         "window": {
             "hwnd": identity.window_handle,
             "title_sha256": _surface_sha256(window_title),
-            "title_length": len(window_title),
             "client": client_screen,
             "screen": _screen_rect(root, window=True),
         },

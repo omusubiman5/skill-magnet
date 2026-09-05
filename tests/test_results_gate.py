@@ -1827,17 +1827,66 @@ class ExplorerResultsGateTest(unittest.TestCase):
         self.assertGreaterEqual(collector.count("FocusWindow($handle)"), 1)
         self.assertGreaterEqual(collector.count("FocusWindow($windowHandle)"), 1)
 
-    @unittest.skipUnless(os.name == "nt", "requires real Windows HWND behavior")
-    def test_native_click_guard_sends_no_mouse_input_after_competing_hwnd(self) -> None:
+    def test_every_physical_click_uses_atomic_native_identity_gate(self) -> None:
         collector = (
             ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
         ).read_text(encoding="utf-8-sig")
-        csharp = collector.split('Add-Type @"', 1)[1].split('"@', 1)[0]
+        native_input = collector[
+            collector.index("public static class SkillMagnetFieldInput") :
+            collector.index("function Get-VisibleNamedElements")
+        ]
+        checked = native_input[
+            native_input.index("public static bool CheckedClickCurrent") :
+        ]
+        for required in (
+            "GetForegroundWindow()",
+            "WindowFromPoint(point)",
+            "GetAncestor(finalHit, 2)",
+            "GetWindowThreadProcessId(finalHit",
+            "ProcessMatches(expectedProcessId",
+            "AutomationElement.FromPoint",
+            "finalUia.Current.IsEnabled",
+            "finalUia.Current.Name",
+            "ReadPinnedReceipt(receiptPath",
+            "expectedProcessInstanceId",
+            "expectedGeneration",
+            "expectedRevision",
+            "expectedSemanticId",
+            "TestAfterInitialValidation",
+        ):
+            self.assertIn(required, checked)
+        self.assertEqual(collector.count("mouse_event("), 3)
+        self.assertEqual(collector.count("CheckedClickCurrent("), 3)
+        final_check = checked.index("// This is the final fail-closed boundary")
+        first_send = checked.index("mouse_event(down", final_check)
+        between = checked[final_check:first_send]
+        for forbidden in ("Start-Sleep", "TestAfterInitialValidation", "FocusWindow"):
+            self.assertNotIn(forbidden, between)
+        self.assertIn("ReceiptMatches(", between)
+        self.assertIn("ProcessMatches(", between)
+        self.assertIn("finalUia.Current.Name", between)
+
+    @unittest.skipUnless(os.name == "nt", "requires real Windows HWND behavior")
+    def test_native_click_guard_sends_no_mouse_after_post_validation_swaps(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        csharp = collector.split(') -TypeDefinition @"', 1)[1].split('"@', 1)[0]
         encoded_csharp = base64.b64encode(csharp.encode("utf-8")).decode("ascii")
         probe = rf'''
+$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
 $source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("{encoded_csharp}"))
-Add-Type -TypeDefinition $source
+Add-Type -ReferencedAssemblies @(
+    "UIAutomationClient", "UIAutomationTypes", "WindowsBase"
+) -TypeDefinition $source
+function Get-Sha256([byte[]]$Bytes) {{
+    [BitConverter]::ToString(
+        [Security.Cryptography.SHA256]::Create().ComputeHash($Bytes)
+    ).Replace("-", "").ToLowerInvariant()
+}}
 $root = [Windows.Forms.Form]::new()
 $root.Text = "expected-root"
 $root.StartPosition = "Manual"
@@ -1857,39 +1906,100 @@ try {{
     $competitor.Show()
     [Windows.Forms.Application]::DoEvents()
     $point = $button.PointToScreen([Drawing.Point]::new(20, 20))
+    $process = [Diagnostics.Process]::GetCurrentProcess()
+    $exe = [IO.Path]::GetFullPath($process.MainModule.FileName)
+    $ticks = $process.StartTime.ToUniversalTime().Ticks
+    $nameSha = Get-Sha256 ([Text.UTF8Encoding]::new($false).GetBytes($button.Text))
     [SkillMagnetFieldInput]::SetCursorPos($point.X, $point.Y) | Out-Null
-    [SkillMagnetFieldInput]::FocusWindow($competitor.Handle) | Out-Null
-    Start-Sleep -Milliseconds 80
-    $result = [SkillMagnetFieldInput]::CheckedClickCurrent(
-        $point.X, $point.Y, $button.Handle, $root.Handle,
-        [uint32][Diagnostics.Process]::GetCurrentProcess().Id, $false
+    [SkillMagnetFieldInput]::FocusWindow($root.Handle) | Out-Null
+    [SkillMagnetFieldInput]::TestAfterInitialValidation = [Action]{{
+        [SkillMagnetFieldInput]::FocusWindow($competitor.Handle) | Out-Null
+    }}
+    $hwndResult = [SkillMagnetFieldInput]::CheckedClickCurrent(
+        $point.X, $point.Y, $button.Handle, $root.Handle, [uint32]$process.Id,
+        $exe, [long]$ticks, $true, $nameSha,
+        "", "", "", "", [long]0, "", $false
     )
+    [SkillMagnetFieldInput]::TestAfterInitialValidation = $null
+    [SkillMagnetFieldInput]::FocusWindow($root.Handle) | Out-Null
+    $receiptPath = Join-Path ([IO.Path]::GetTempPath()) (
+        "skill-magnet-click-guard-" + [guid]::NewGuid().ToString("N") + ".json"
+    )
+    $processInstance = "a" * 32
+    $generation = "b" * 32
+    $receipt = @{{
+        process_instance_id = $processInstance
+        generation = $generation
+        revision = 1
+        ui_surface = @{{ widgets = @(@{{ id = "guarded"; text_sha256 = $nameSha }}) }}
+    }} | ConvertTo-Json -Depth 5 -Compress
+    $receiptBytes = [Text.UTF8Encoding]::new($false).GetBytes($receipt)
+    [IO.File]::WriteAllBytes($receiptPath, $receiptBytes)
+    $receiptSha = Get-Sha256 $receiptBytes
+    [SkillMagnetFieldInput]::TestAfterInitialValidation = [Action]{{
+        $changed = $receipt.Replace('"revision":1', '"revision":2')
+        [IO.File]::WriteAllText($receiptPath, $changed, [Text.UTF8Encoding]::new($false))
+    }}
+    $receiptResult = [SkillMagnetFieldInput]::CheckedClickCurrent(
+        $point.X, $point.Y, $button.Handle, $root.Handle, [uint32]$process.Id,
+        $exe, [long]$ticks, $true, $nameSha, $receiptPath, $receiptSha,
+        $processInstance, $generation, [long]1, "guarded", $false
+    )
+    [SkillMagnetFieldInput]::TestAfterInitialValidation = $null
+    [IO.File]::WriteAllBytes($receiptPath, $receiptBytes)
+    [SkillMagnetFieldInput]::FocusWindow($root.Handle) | Out-Null
+    [SkillMagnetFieldInput]::TestAfterInitialValidation = [Action]{{
+        $button.Text = "substituted-action"
+        [Windows.Forms.Application]::DoEvents()
+    }}
+    $uiaResult = [SkillMagnetFieldInput]::CheckedClickCurrent(
+        $point.X, $point.Y, $button.Handle, $root.Handle, [uint32]$process.Id,
+        $exe, [long]$ticks, $true, $nameSha, $receiptPath, $receiptSha,
+        $processInstance, $generation, [long]1, "guarded", $false
+    )
+    [SkillMagnetFieldInput]::TestAfterInitialValidation = $null
+    [SkillMagnetFieldInput]::FocusWindow($competitor.Handle) | Out-Null
     [Windows.Forms.Application]::DoEvents()
-    [pscustomobject]@{{ result = $result; click_count = $script:clickCount }} |
+    [pscustomobject]@{{
+        hwnd_result = $hwndResult
+        receipt_result = $receiptResult
+        uia_result = $uiaResult
+        click_count = $script:clickCount
+    }} |
         ConvertTo-Json -Compress
 }}
 finally {{
+    [SkillMagnetFieldInput]::TestAfterInitialValidation = $null
+    if ($receiptPath) {{ Remove-Item -LiteralPath $receiptPath -Force -ErrorAction SilentlyContinue }}
     $competitor.Close()
     $root.Close()
 }}
 '''
-        completed = subprocess.run(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-STA",
-                "-EncodedCommand",
-                base64.b64encode(probe.encode("utf-16-le")).decode("ascii"),
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
+        with tempfile.TemporaryDirectory() as temporary:
+            probe_path = Path(temporary) / "click-guard-probe.ps1"
+            probe_path.write_text(probe, encoding="utf-8-sig")
+            completed = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-STA",
+                    "-File",
+                    str(probe_path),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                check=False,
+            )
         self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(completed.stdout.strip(), completed.stderr)
         observation = json.loads(completed.stdout.strip())
-        self.assertFalse(observation["result"])
+        self.assertFalse(observation["hwnd_result"])
+        self.assertFalse(observation["receipt_result"])
+        self.assertFalse(observation["uia_result"])
         self.assertEqual(observation["click_count"], 0)
 
     def test_explorer_physical_clicks_share_the_final_identity_gate(self) -> None:

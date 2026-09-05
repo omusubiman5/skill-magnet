@@ -2525,9 +2525,6 @@ def show_library_manager(
         state = {
             "processing": busy,
             "stage": action_stage.get(),
-            "configured_remote_present": bool(remote.get().strip()),
-            "registration_source_present": bool(import_source.get().strip()),
-            "inventory_selection_present": bool(inventory_tree.selection()),
             "register_selected": register_selected,
         }
         for identity in tuple(surface_identities):

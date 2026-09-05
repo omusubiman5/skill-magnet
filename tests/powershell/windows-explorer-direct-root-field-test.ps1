@@ -346,10 +346,17 @@ function New-DetachedAttestation([byte[]]$Payload, [string]$DllPath) {
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
-Add-Type @"
+Add-Type -ReferencedAssemblies @(
+    "UIAutomationClient", "UIAutomationTypes", "WindowsBase"
+) -TypeDefinition @"
 using System;
+using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
+using System.Windows.Automation;
 public static class SkillMagnetFieldInput {
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
@@ -408,9 +415,91 @@ public static class SkillMagnetFieldInput {
             if (attachedForeground) AttachThreadInput(currentThread, foregroundThread, false);
         }
     }
+    private static string Sha256(byte[] value) {
+        using (SHA256 algorithm = SHA256.Create()) {
+            byte[] digest = algorithm.ComputeHash(value);
+            StringBuilder result = new StringBuilder(64);
+            foreach (byte item in digest) result.Append(item.ToString("x2"));
+            return result.ToString();
+        }
+    }
+    private static string Sha256(string value) {
+        return Sha256(new UTF8Encoding(false, true).GetBytes(value));
+    }
+    private static bool FixedToken(string value, int length) {
+        if (value == null || value.Length != length) return false;
+        foreach (char item in value) {
+            if (!((item >= '0' && item <= '9') || (item >= 'a' && item <= 'f'))) return false;
+        }
+        return true;
+    }
+    private static byte[] ReadPinnedReceipt(string path, out FileStream stream) {
+        stream = null;
+        if (String.IsNullOrEmpty(path)) return null;
+        stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (stream.Length <= 0 || stream.Length > 262144) return null;
+        byte[] bytes = new byte[(int)stream.Length];
+        int offset = 0;
+        while (offset < bytes.Length) {
+            int read = stream.Read(bytes, offset, bytes.Length - offset);
+            if (read <= 0) return null;
+            offset += read;
+        }
+        return bytes;
+    }
+    private static bool ReceiptMatches(
+        byte[] bytes, string expectedReceiptSha256, string processInstanceId,
+        string generation, long revision, string semanticId,
+        string semanticNameSha256) {
+        if (bytes == null || !FixedToken(expectedReceiptSha256, 64) ||
+            !FixedToken(processInstanceId, 32) || !FixedToken(generation, 32) ||
+            revision <= 0 || String.IsNullOrEmpty(semanticId) ||
+            !FixedToken(semanticNameSha256, 64) ||
+            !String.Equals(Sha256(bytes), expectedReceiptSha256, StringComparison.Ordinal)) {
+            return false;
+        }
+        string json;
+        try { json = new UTF8Encoding(false, true).GetString(bytes); }
+        catch { return false; }
+        string space = @"\s*";
+        return Regex.IsMatch(json, "\\\"process_instance_id\\\"" + space + ":" +
+                space + "\\\"" + Regex.Escape(processInstanceId) + "\\\"") &&
+            Regex.IsMatch(json, "\\\"generation\\\"" + space + ":" + space +
+                "\\\"" + Regex.Escape(generation) + "\\\"") &&
+            Regex.IsMatch(json, "\\\"revision\\\"" + space + ":" + space +
+                revision.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                @"(?:\s*[,}])") &&
+            Regex.IsMatch(json, "\\\"id\\\"" + space + ":" + space + "\\\"" +
+                Regex.Escape(semanticId) + "\\\"") &&
+            Regex.IsMatch(json, "\\\"text_sha256\\\"" + space + ":" + space +
+                "\\\"" + Regex.Escape(semanticNameSha256) + "\\\"");
+    }
+    private static bool ProcessMatches(
+        uint expectedProcessId, string expectedExecutablePath,
+        long expectedStartTimeUtcTicks) {
+        try {
+            Process process = Process.GetProcessById((int)expectedProcessId);
+            return process.Id == (int)expectedProcessId &&
+                process.StartTime.ToUniversalTime().Ticks == expectedStartTimeUtcTicks &&
+                String.Equals(
+                    Path.GetFullPath(process.MainModule.FileName),
+                    Path.GetFullPath(expectedExecutablePath),
+                    StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
+    }
+    public static Action TestAfterInitialValidation;
     public static bool CheckedClickCurrent(
         int x, int y, IntPtr widget, IntPtr root, uint expectedProcessId,
-        bool rightClick) {
+        string expectedExecutablePath, long expectedStartTimeUtcTicks,
+        bool requireUiaHandle, string expectedUiaNameSha256,
+        string receiptPath, string expectedReceiptSha256,
+        string expectedProcessInstanceId, string expectedGeneration,
+        long expectedRevision, string expectedSemanticId, bool rightClick) {
+        FileStream initialReceipt = null;
+        FileStream finalReceipt = null;
+        try {
+        byte[] initialReceiptBytes = ReadPinnedReceipt(receiptPath, out initialReceipt);
         POINT cursor;
         if (!GetCursorPos(out cursor) || cursor.X != x || cursor.Y != y) return false;
         if (GetForegroundWindow() != root) return false;
@@ -420,11 +509,60 @@ public static class SkillMagnetFieldInput {
         uint processId;
         GetWindowThreadProcessId(hit, out processId);
         if (processId != expectedProcessId) return false;
+        if (!ProcessMatches(expectedProcessId, expectedExecutablePath,
+            expectedStartTimeUtcTicks)) return false;
+        AutomationElement initialUia;
+        try { initialUia = AutomationElement.FromPoint(new System.Windows.Point(x, y)); }
+        catch { return false; }
+        if (initialUia == null || initialUia.Current.ProcessId != (int)expectedProcessId ||
+            !initialUia.Current.IsEnabled || initialUia.Current.IsOffscreen ||
+            (requireUiaHandle && initialUia.Current.NativeWindowHandle != widget.ToInt32()) ||
+            !String.Equals(Sha256(initialUia.Current.Name), expectedUiaNameSha256,
+                StringComparison.Ordinal)) return false;
+        if (!String.IsNullOrEmpty(receiptPath) && !ReceiptMatches(
+            initialReceiptBytes, expectedReceiptSha256, expectedProcessInstanceId,
+            expectedGeneration, expectedRevision, expectedSemanticId,
+            expectedUiaNameSha256)) return false;
+        if (initialReceipt != null) { initialReceipt.Dispose(); initialReceipt = null; }
+        Action fault = TestAfterInitialValidation;
+        if (fault != null) fault();
         uint down = rightClick ? 0x0008u : 0x0002u;
         uint up = rightClick ? 0x0010u : 0x0004u;
+        byte[] finalReceiptBytes = ReadPinnedReceipt(receiptPath, out finalReceipt);
+        AutomationElement finalUia;
+        try { finalUia = AutomationElement.FromPoint(new System.Windows.Point(x, y)); }
+        catch { return false; }
+        POINT finalCursor;
+        IntPtr finalForeground = GetForegroundWindow();
+        IntPtr finalHit = WindowFromPoint(point);
+        uint finalProcessId;
+        GetWindowThreadProcessId(finalHit, out finalProcessId);
+        // This is the final fail-closed boundary.  The next statements are the
+        // mouse send itself; no sleep, callback, UIA lookup, receipt read, or
+        // HWND lookup may occur between this complete identity check and send.
+        if (!GetCursorPos(out finalCursor) || finalCursor.X != x || finalCursor.Y != y ||
+            finalForeground != root || finalHit != widget ||
+            GetAncestor(finalHit, 2) != root || finalProcessId != expectedProcessId ||
+            !ProcessMatches(expectedProcessId, expectedExecutablePath,
+                expectedStartTimeUtcTicks) || finalUia == null ||
+            finalUia.Current.ProcessId != (int)expectedProcessId ||
+            !finalUia.Current.IsEnabled || finalUia.Current.IsOffscreen ||
+            (requireUiaHandle && finalUia.Current.NativeWindowHandle != widget.ToInt32()) ||
+            !String.Equals(Sha256(finalUia.Current.Name), expectedUiaNameSha256,
+                StringComparison.Ordinal) ||
+            (!String.IsNullOrEmpty(receiptPath) && !ReceiptMatches(
+                finalReceiptBytes, expectedReceiptSha256, expectedProcessInstanceId,
+                expectedGeneration, expectedRevision, expectedSemanticId,
+                expectedUiaNameSha256))) return false;
         mouse_event(down, 0, 0, 0, UIntPtr.Zero);
         mouse_event(up, 0, 0, 0, UIntPtr.Zero);
         return true;
+        }
+        catch { return false; }
+        finally {
+            if (initialReceipt != null) initialReceipt.Dispose();
+            if (finalReceipt != null) finalReceipt.Dispose();
+        }
     }
 }
 "@
@@ -567,7 +705,9 @@ function Invoke-CheckedExplorerPhysicalClick(
         (Get-Utf8Sha256 ([string]$finalUia.Current.Name)) -ceq $nameSha256
     ) "Explorer HWND/PID/process/UIA target changed; no mouse input was sent."
     Assert-Field ([SkillMagnetFieldInput]::CheckedClickCurrent(
-        $X, $Y, $firstHwnd, $rootHandle, $rootPid, $RightClick
+        $X, $Y, $firstHwnd, $rootHandle, $rootPid,
+        [string]$identity.executable_path, [long]$identity.start_time_utc_ticks,
+        $false, $nameSha256, "", "", "", "", [long]0, "", $RightClick
     )) "Explorer target changed at the final input boundary; no mouse input was sent."
 }
 
@@ -692,13 +832,11 @@ function Get-SelectionChoiceContract($Surface, [object[]]$ExpectedChoices) {
         "The receipt-bound selection control is not visible."
     $expectedValuesSha256 = Get-CanonicalStringArraySha256 $expectedLabels
     Assert-Field (
-        [int]$selection.value_count -eq $expectedLabels.Count -and
         [string]$selection.values_sha256 -ceq $expectedValuesSha256
     ) "Receipt-bound selection choices do not match the configured ordered choice digest."
     $selectedLabel = if ($expectedLabels.Count -gt 0) { $expectedLabels[0] } else { "" }
     Assert-Field (
-        [string]$selection.value_sha256 -ceq (Get-Utf8Sha256 $selectedLabel) -and
-        [int]$selection.value_length -eq $selectedLabel.Length
+        [string]$selection.value_sha256 -ceq (Get-Utf8Sha256 $selectedLabel)
     ) "Receipt-bound selected choice does not match the configured default choice digest."
     [ordered]@{
         configured_choices = @($ExpectedChoices)
@@ -729,8 +867,11 @@ function Assert-NoRawReceiptDisplayValues($Value, [string]$Path = "owner") {
         })
     } else { @($Value.PSObject.Properties) }
     foreach ($property in $properties) {
-        Assert-Field (@("text", "value", "values") -cnotcontains [string]$property.Name) `
-            "Receipt contains forbidden raw display key '$($property.Name)' at $Path."
+        $propertyName = [string]$property.Name
+        Assert-Field (
+            @("text", "value", "values") -cnotcontains $propertyName -and
+            $propertyName -notmatch '_(?:length|count|present)$'
+        ) "Receipt contains forbidden raw/metadata key '$propertyName' at $Path."
         Assert-NoRawReceiptDisplayValues $property.Value "$Path.$($property.Name)"
     }
 }
@@ -766,8 +907,7 @@ function Inspect-UnifiedGui(
         "作業対象フォルダー: 指定なし（デスクトップアプリが新規タスク用領域を自動作成）"
     } else { "作業対象フォルダー: （選択済み）" }
     $projectSemanticVisible = (
-        [string]$projectWidget.text_sha256 -ceq (Get-Utf8Sha256 $expectedProjectText) -and
-        [int]$projectWidget.text_length -eq $expectedProjectText.Length
+        [string]$projectWidget.text_sha256 -ceq (Get-Utf8Sha256 $expectedProjectText)
     )
     $selectionContract = Get-SelectionChoiceContract $surface $ExpectedChoices
     $managerButton = Get-FieldUiSurfaceWidget $surface "library_manager" "button"
@@ -788,14 +928,12 @@ function Inspect-UnifiedGui(
         selection_combo_exact_match_count = [int]$selectionContract.exact_match_count
         library_manager_button_count = if (
             [bool]$managerButton.viewable -and
-            [string]$managerButton.text_sha256 -ceq (Get-Utf8Sha256 "Library Manager") -and
-            [int]$managerButton.text_length -eq "Library Manager".Length
+            [string]$managerButton.text_sha256 -ceq (Get-Utf8Sha256 "Library Manager")
         ) { 1 } else { 0 }
         register_button_count = if (
             [bool]$registerButton.viewable -and
             [string]$registerButton.text_sha256 -ceq
-                (Get-Utf8Sha256 "このフォルダーのスキルを登録") -and
-            [int]$registerButton.text_length -eq "このフォルダーのスキルを登録".Length
+                (Get-Utf8Sha256 "このフォルダーのスキルを登録")
         ) { 1 } else { 0 }
     }
     Assert-Field $projectBound `
@@ -1161,7 +1299,6 @@ function Wait-FieldUiSurface(
         Assert-Field (
             $nativeTitle -ceq $expectedTitle -and
             [string]$surface.window.title_sha256 -ceq (Get-Utf8Sha256 $nativeTitle) -and
-            [int]$surface.window.title_length -eq $nativeTitle.Length -and
             [string]$uiaSnapshot.name -ceq $nativeTitle
         ) "Context UI receipt title does not match the phase-authorized live root window."
         $nativeRectangle = [SkillMagnetFieldInput+RECT]::new()
@@ -1291,8 +1428,7 @@ function Invoke-FieldUiSurfaceWidget(
         $widget = Get-FieldUiSurfaceWidget $receipt.surface $Id "button"
         Assert-Field (
             [bool]$widget.viewable -and [bool]$widget.state.enabled -and
-            [string]$widget.text_sha256 -ceq $expectedWidgetTextSha256 -and
-            [int]$widget.text_length -eq $expectedWidgetText.Length
+            [string]$widget.text_sha256 -ceq $expectedWidgetTextSha256
         ) "UI receipt widget '$Id' is not the expected visible/enabled action."
         $x = [int]$widget.screen.x + [int]([int]$widget.screen.width / 2)
         $y = [int]$widget.screen.y + [int]([int]$widget.screen.height / 2)
@@ -1323,7 +1459,6 @@ function Invoke-FieldUiSurfaceWidget(
             [string]$fresh.owner_sha256 -ceq [string]$receipt.owner_sha256 -and
             [int64]$freshWidget.hwnd -eq [int64]$widget.hwnd -and
             [string]$freshWidget.text_sha256 -ceq $expectedWidgetTextSha256 -and
-            [int]$freshWidget.text_length -eq $expectedWidgetText.Length -and
             [bool]$freshWidget.viewable -and [bool]$freshWidget.state.enabled -and
             (Test-FieldScreenRectangle $freshWidget.screen $widget.screen 0)
         )
@@ -1362,7 +1497,6 @@ function Invoke-FieldUiSurfaceWidget(
             [int64]$finalReceipt.surface.revision -eq [int64]$fresh.surface.revision -and
             [int64]$finalWidget.hwnd -eq [int64]$widget.hwnd -and
             [string]$finalWidget.text_sha256 -ceq $expectedWidgetTextSha256 -and
-            [int]$finalWidget.text_length -eq $expectedWidgetText.Length -and
             [bool]$finalWidget.viewable -and [bool]$finalWidget.state.enabled
         )) { continue }
         $clickHit = [SkillMagnetFieldInput]::WindowFromPoint($point)
@@ -1382,7 +1516,15 @@ function Invoke-FieldUiSurfaceWidget(
         Assert-Field (Test-FieldProcessIdentity $identity) `
             "Receipt-bound process identity changed immediately before '$Id'."
         Assert-Field ([SkillMagnetFieldInput]::CheckedClickCurrent(
-            $x, $y, $widgetHandle, $windowHandle, [uint32]$ExpectedProcessId, $false
+            $x, $y, $widgetHandle, $windowHandle, [uint32]$ExpectedProcessId,
+            [string]$identity.executable_path, [long]$identity.start_time_utc_ticks,
+            $true, $expectedWidgetTextSha256,
+            [string]$script:FieldContextOwnerPath,
+            [string]$finalReceipt.owner_sha256,
+            [string]$finalReceipt.owner.process_instance_id,
+            [string]$ExpectedGeneration,
+            [long]$finalReceipt.surface.revision,
+            [string]$Id, $false
         )) "Receipt-bound '$Id' cursor/hit identity changed; no mouse input was sent."
         if ($ExpectedNextPhase -and $ExpectedNextTitlePrefix) {
             $nextWindow = Wait-VisibleWindowByPrefix `
@@ -1608,8 +1750,7 @@ function Inspect-LibraryManager(
     $expectedRemoteSha256 = Get-Utf8Sha256 $ExpectedRemote
     $remoteVisible = (
         [bool]$remoteWidget.viewable -and
-        [string]$remoteWidget.value_sha256 -ceq $expectedRemoteSha256 -and
-        [int]$remoteWidget.value_length -eq $ExpectedRemote.Length
+        [string]$remoteWidget.value_sha256 -ceq $expectedRemoteSha256
     )
     Assert-Field $remoteVisible `
         "Library Manager configured-remote digest does not match release configuration."
@@ -1635,8 +1776,7 @@ function Inspect-LibraryManager(
         $expectedButtonSha256 = Get-Utf8Sha256 $expectedButtonText
         Assert-Field (
             [bool]$button.viewable -and
-            [string]$button.text_sha256 -ceq $expectedButtonSha256 -and
-            [int]$button.text_length -eq $expectedButtonText.Length
+            [string]$button.text_sha256 -ceq $expectedButtonSha256
         ) "Library Manager CRUD control '$identifier' is not uniquely visible."
         $crudKey = if ($identifier -ceq "new_registration") {
             "create_button_count"
@@ -1660,7 +1800,6 @@ function Inspect-LibraryManager(
         delete_button_text_sha256 = [string]$buttonTextHashes.delete
         reload_button_text_sha256 = [string]$buttonTextHashes.reload
         registration_source_sha256 = [string]$sourceWidget.value_sha256
-        registration_source_length = [int]$sourceWidget.value_length
     }
 }
 
@@ -2592,8 +2731,7 @@ try {
     $selectedPath = [IO.Path]::GetFullPath($selectedFolder)
     $selectedPathMatches = if (
         [string]$registrationManager.registration_source_sha256 -ceq
-            (Get-Utf8Sha256 $selectedPath) -and
-        [int]$registrationManager.registration_source_length -eq $selectedPath.Length
+            (Get-Utf8Sha256 $selectedPath)
     ) { 1 } else { 0 }
     Assert-Field ($selectedPathMatches -eq 1) `
         "Registration Manager did not carry the Explorer-selected-folder digest exactly once."
@@ -2659,8 +2797,7 @@ try {
     $runtimePathHidden = -not ($runtimeProjectWidget.PSObject.Properties.Name -contains "text")
     $projectlessVisible = (
         [string]$runtimeProjectWidget.text_sha256 -ceq
-            (Get-Utf8Sha256 $runtimeExpectedText) -and
-        [int]$runtimeProjectWidget.text_length -eq $runtimeExpectedText.Length
+            (Get-Utf8Sha256 $runtimeExpectedText)
     )
     Assert-Field $runtimePathHidden `
         "Runtime skill folder was incorrectly presented as the task workspace."
