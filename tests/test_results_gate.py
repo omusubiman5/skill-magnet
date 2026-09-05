@@ -2798,6 +2798,89 @@ $script:rightCount = 0
         self.assertIn("$snapshot = $script:InvokeLogReaders[$full].Read()", reader)
         self.assertNotIn("ReadAllText", reader)
 
+    @unittest.skipUnless(os.name == "nt", "requires Windows PowerShell 5.1")
+    def test_field_tree_hash_uses_ps5_root_bound_relative_paths(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        common = collector[
+            collector.index("function Assert-Field") :
+            collector.index("function Get-NativeSourceManifest")
+        ]
+        tree = collector[
+            collector.index("function Get-RootBoundRelativePath") :
+            collector.index("function Get-PersistentMutationSnapshot")
+        ]
+        encoded = base64.b64encode((common + "\n" + tree).encode("utf-8")).decode(
+            "ascii"
+        )
+        probe = rf'''
+$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("{encoded}"))
+. ([ScriptBlock]::Create($source))
+$base = Join-Path $env:TEMP ("skill-magnet-ps5-relative-" + [guid]::NewGuid().ToString("N"))
+$root = Join-Path $base "Root"
+$child = Join-Path $root "Child"
+$sibling = Join-Path $base "Root-prefix-sibling"
+[IO.Directory]::CreateDirectory($child) | Out-Null
+[IO.Directory]::CreateDirectory($sibling) | Out-Null
+$file = Join-Path $child "File.txt"
+[IO.File]::WriteAllText($file, "content", [Text.UTF8Encoding]::new($false))
+try {{
+    $selfAllowed = (Get-RootBoundRelativePath ($root + "\") $root) -ceq "."
+    $childRelative = (Get-RootBoundRelativePath ($root.ToUpperInvariant()) $file) -ceq `
+        "Child/File.txt"
+    $treeDigest = (Get-TreeContentSha256 $root) -match "^[0-9a-f]{{64}}$"
+    $siblingRejected = $false
+    try {{ Get-RootBoundRelativePath $root $sibling | Out-Null }}
+    catch {{ $siblingRejected = $true }}
+    $driveRejected = $false
+    try {{ Get-RootBoundRelativePath $root "Z:\not-under-root" | Out-Null }}
+    catch {{ $driveRejected = $true }}
+    $relativeRejected = $false
+    try {{ Get-RootBoundRelativePath $root "Child\File.txt" | Out-Null }}
+    catch {{ $relativeRejected = $true }}
+    $dotSegmentRejected = $false
+    try {{ Get-RootBoundRelativePath $root ($root + "\Child\..\Child\File.txt") | Out-Null }}
+    catch {{ $dotSegmentRejected = $true }}
+    $junction = Join-Path $root "junction"
+    New-Item -ItemType Junction -Path $junction -Target $child | Out-Null
+    $reparseRejected = $false
+    try {{ Get-TreeContentSha256 $root | Out-Null }}
+    catch {{ $reparseRejected = $true }}
+    [pscustomobject]@{{
+        powershell_major = $PSVersionTable.PSVersion.Major -eq 5
+        root_self_allowed = $selfAllowed
+        child_case_separator = $childRelative
+        tree_digest = $treeDigest
+        sibling_rejected = $siblingRejected
+        drive_rejected = $driveRejected
+        relative_rejected = $relativeRejected
+        dot_segment_rejected = $dotSegmentRejected
+        reparse_rejected = $reparseRejected
+        no_core_api = -not $source.Contains("GetRelativePath")
+    }} | ConvertTo-Json -Compress
+}}
+finally {{ Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue }}
+'''
+        completed = subprocess.run(
+            [
+                r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+                "-NoProfile",
+                "-Command",
+                probe,
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        observation = json.loads(completed.stdout.strip())
+        self.assertTrue(all(observation.values()), observation)
+
     @unittest.skipUnless(os.name == "nt", "requires Windows file identities")
     def test_invoke_log_reader_rejects_partial_truncate_rotation_and_read_growth(self) -> None:
         collector = (

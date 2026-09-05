@@ -2329,6 +2329,57 @@ function Get-VisibleDescendantText($Window) {
     $values -join "`n"
 }
 
+function Get-RootBoundRelativePath([string]$Root, [string]$Candidate) {
+    Assert-Field ($Root -and [IO.Path]::IsPathRooted($Root)) `
+        "Relative-path root must be an absolute path."
+    Assert-Field ($Candidate -and [IO.Path]::IsPathRooted($Candidate)) `
+        "Relative-path candidate must be an absolute path."
+    $rawSegments = @($Candidate.Replace('/', '\').Split('\') | Where-Object { $_ })
+    Assert-Field (@($rawSegments | Where-Object { $_ -eq '.' -or $_ -eq '..' }).Count -eq 0) `
+        "Relative-path candidate contains a dot or traversal segment: $Candidate"
+    $rootResolved = [IO.Path]::GetFullPath($Root)
+    $rootPathRoot = [IO.Path]::GetPathRoot($rootResolved)
+    $rootFull = if (
+        $rootResolved.TrimEnd('\', '/').Equals(
+            $rootPathRoot.TrimEnd('\', '/'), [StringComparison]::OrdinalIgnoreCase
+        )
+    ) { $rootPathRoot } else { $rootResolved.TrimEnd('\', '/') }
+    $candidateFull = [IO.Path]::GetFullPath($Candidate).TrimEnd('\', '/')
+    $comparison = [StringComparison]::OrdinalIgnoreCase
+    $rootDrive = [IO.Path]::GetPathRoot($rootFull)
+    $candidateDrive = [IO.Path]::GetPathRoot($candidateFull)
+    Assert-Field (
+        $rootDrive -and $candidateDrive -and $rootDrive.Equals($candidateDrive, $comparison)
+    ) "Relative-path candidate uses a different drive or UNC root: $candidateFull"
+    Assert-Field ([IO.Directory]::Exists($rootFull)) `
+        "Relative-path root is not an existing directory: $rootFull"
+    $rootPrefix = $rootFull.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    Assert-Field (
+        $candidateFull.Equals($rootFull, $comparison) -or
+        $candidateFull.StartsWith($rootPrefix, $comparison)
+    ) "Relative-path candidate escapes its root: $candidateFull"
+    Assert-Field (
+        [IO.File]::Exists($candidateFull) -or [IO.Directory]::Exists($candidateFull)
+    ) "Relative-path candidate does not exist: $candidateFull"
+    # The caller supplies the explicit trusted root.  Reject reparse points at
+    # that root and below; ancestors above the boundary are intentionally out
+    # of scope so an otherwise trusted root can live under a redirected profile.
+    $probe = $candidateFull
+    while ($true) {
+        $item = Get-Item -LiteralPath $probe -Force
+        Assert-Field (
+            ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0
+        ) "Relative-path boundary contains a link, junction, or reparse point: $probe"
+        if ($probe.Equals($rootFull, $comparison)) { break }
+        $parent = [IO.Path]::GetDirectoryName($probe)
+        Assert-Field ($parent -and -not $parent.Equals($probe, $comparison)) `
+            "Relative-path candidate has no root-bound parent: $probe"
+        $probe = $parent.TrimEnd('\', '/')
+    }
+    if ($candidateFull.Equals($rootFull, $comparison)) { return "." }
+    $candidateFull.Substring($rootPrefix.Length).Replace('\', '/')
+}
+
 function Get-TreeContentSha256([string]$Path) {
     if (-not [IO.Directory]::Exists($Path)) {
         return Get-BytesSha256 ([Text.UTF8Encoding]::new($false).GetBytes("MISSING`n"))
@@ -2340,7 +2391,7 @@ function Get-TreeContentSha256([string]$Path) {
     while ($pending.Count -gt 0) {
         $directory = $pending.Pop()
         foreach ($entry in @($directory.GetFileSystemInfos() | Sort-Object Name)) {
-            $relative = [IO.Path]::GetRelativePath($root, $entry.FullName).Replace('\', '/')
+            $relative = Get-RootBoundRelativePath $root $entry.FullName
             if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
                 $null = $entries.Add("L`t$relative")
                 continue
