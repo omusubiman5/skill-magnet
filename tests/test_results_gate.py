@@ -18,6 +18,7 @@ from integration.explorer_results_gate import (
     _configured_selector_choices,
     _field_attestation_payload,
     _normalized_text_bytes,
+    _normalized_windows_powershell_bytes,
     _native_source_manifest_from_repository,
     _release_runtime_payload_sha256,
     _selector_choice_map_sha256,
@@ -637,7 +638,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
             "field_status": "PASS_REAL_EXPLORER_DIRECT_ROOT_INVOKE_0_5_9",
             "observed_at_utc": "2026-09-05T00:00:09.900Z",
             "collector_sha256": hashlib.sha256(
-                _normalized_text_bytes(collector.read_bytes())
+                _normalized_windows_powershell_bytes(collector.read_bytes())
             ).hexdigest(),
             "python_runtime": {
                 "module_version": "0.5.9",
@@ -1064,6 +1065,19 @@ class ExplorerResultsGateTest(unittest.TestCase):
         self.assertIn("contract_test.py", probe)
         self.assertRegex(probe, r"--invoke\s+\$contractProbeRoot")
         self.assertIn('isolated_contract_probe_mode = "full-invoke"', collector)
+
+    def test_field_collector_is_windows_powershell_utf8_compatible(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_bytes()
+        self.assertTrue(
+            collector.startswith(b"\xef\xbb\xbf"),
+            "Windows PowerShell 5.1 requires a UTF-8 BOM for the Japanese field script",
+        )
+        self.assertEqual(
+            _normalized_windows_powershell_bytes(collector),
+            _normalized_text_bytes(collector[3:]),
+        )
 
     def test_field_collector_normal_exit_uses_the_owned_cleanup_boundary(self) -> None:
         collector = (

@@ -132,6 +132,20 @@ def _normalized_text_bytes(payload: bytes) -> bytes:
     return payload.replace(b"\r\n", b"\n")
 
 
+def _normalized_windows_powershell_bytes(payload: bytes) -> bytes:
+    """Normalize the UTF-8 BOM required by Windows PowerShell 5.1.
+
+    The collector contains Japanese UI assertions.  Windows PowerShell 5.1
+    reads a BOM-free ``-File`` as the active ANSI code page, so the BOM is an
+    execution marker rather than release content.  No other leading bytes are
+    ignored.
+    """
+
+    if payload.startswith(b"\xef\xbb\xbf"):
+        payload = payload[3:]
+    return _normalized_text_bytes(payload)
+
+
 def _logical_runtime_digest(entries: dict[str, bytes]) -> str:
     digest = hashlib.sha256()
     for name in sorted(entries):
@@ -1819,7 +1833,9 @@ def validate_field_bundle(
         errors.append("field bundle observed_at_utc is not UTC RFC3339")
     collector = repository / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
     collector_hash = (
-        hashlib.sha256(_normalized_text_bytes(collector.read_bytes())).hexdigest()
+        hashlib.sha256(
+            _normalized_windows_powershell_bytes(collector.read_bytes())
+        ).hexdigest()
         if collector.is_file()
         else ""
     )
