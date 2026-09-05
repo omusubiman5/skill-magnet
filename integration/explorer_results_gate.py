@@ -1908,6 +1908,7 @@ def _validate_uia_transcript(
         "project_sha256",
         "native_sequence_sha256",
         "selected_path_sha256",
+        "registration_source_sha256",
         "selected_path_visible",
         "missing_skill_cause_visible",
         "actionable_recovery_visible",
@@ -1961,6 +1962,9 @@ def _validate_uia_transcript(
         project = registration_native.get("project") if registration_native else None
         registration_claims = {
             "selected_path_sha256": project,
+            "registration_source_sha256": registration_data.get(
+                "registration_source_sha256"
+            ),
             "selected_path_visible": True,
             "missing_skill_cause_visible": True,
             "actionable_recovery_visible": True,
@@ -1970,6 +1974,10 @@ def _validate_uia_transcript(
         if (
             {key: registration_data.get(key) for key in registration_claims}
             != registration_claims
+            or not re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(registration_data.get("registration_source_sha256", "")),
+            )
             or registration_data.get("project_sha256") != project
             or registration_data.get("invocation_id")
             != (registration_native.get("invocation") if registration_native else None)
@@ -2926,40 +2934,65 @@ def validate_field_bundle(
             "field bundle selector contract does not exactly match configured labels/internal IDs"
         )
 
+    log_errors, sequences = _parse_field_evidence(ledger, invoke_log)
+    errors.extend(log_errors)
+    transcript_errors, derived_observations, workflow_observations, transcript_session_id = (
+        _validate_uia_transcript(
+            bundle.get("uia_transcript"),
+            hashes,
+            sequences,
+            expected_choices,
+            configured_remote,
+        )
+    )
+    errors.extend(transcript_errors)
+
     ui_receipts = bundle.get("ui_receipts")
     receipt_entry_keys = {
-        "role", "phase", "process_instance_id", "generation", "revision",
+        "role", "native_role", "invocation_id", "project_sha256", "target_sha256",
+        "process_id", "native_sequence_sha256", "transcript_session_id", "phase",
+        "process_instance_id", "generation", "revision",
         "claim_widget_id", "claim_field", "claim_sha256", "receipt_sha256",
         "surface_sha256", "receipt",
     }
     role_contract = {
         "selected_manager_click": (
-            "context_selection", "library_manager", "text_sha256",
+            "selected_item", "context_selection", "library_manager", "text_sha256",
             _text_sha256("Library Manager"),
         ),
         "manager_remote": (
-            "library_manager", "configured_remote", "value_sha256",
+            "selected_item", "library_manager", "configured_remote", "value_sha256",
             _text_sha256(configured_remote),
         ),
         "background_selection": (
-            "context_selection", "selection_choice", "values_sha256",
+            "background_site", "context_selection", "selection_choice", "values_sha256",
             expected_selector_contract["ordered_label_sha256"],
         ),
         "registration_click": (
-            "context_selection", "register_selected", "text_sha256",
+            "missing_skill_registration", "context_selection", "register_selected", "text_sha256",
             _text_sha256("このフォルダーのスキルを登録"),
         ),
         "registration_source": (
-            "library_manager", "registration_source", "value_sha256", None,
+            "missing_skill_registration", "library_manager", "registration_source", "value_sha256",
+            (
+                workflow_observations.get("registration_recovery_observation", {}).get(
+                    "registration_source_sha256"
+                )
+                if isinstance(
+                    workflow_observations.get("registration_recovery_observation"), dict
+                )
+                else None
+            ),
         ),
         "runtime_projectless": (
-            "context_selection", "project", "text_sha256",
+            "runtime_skill_projectless", "context_selection", "project", "text_sha256",
             _text_sha256(
                 "作業対象フォルダー: 指定なし（デスクトップアプリが新規タスク用領域を自動作成）"
             ),
         ),
     }
     seen_roles: set[str] = set()
+    seen_receipts: set[str] = set()
     if not isinstance(ui_receipts, list) or len(ui_receipts) != len(role_contract):
         errors.append("field bundle ui_receipts must contain exactly six required receipts")
         receipt_entries = ui_receipts if isinstance(ui_receipts, list) else []
@@ -2986,7 +3019,27 @@ def validate_field_bundle(
         if role in seen_roles:
             errors.append(f"{label} role is duplicated")
         seen_roles.add(role)
-        expected_phase, widget_id, claim_field, expected_claim = role_contract[role]
+        native_role, expected_phase, widget_id, claim_field, expected_claim = role_contract[role]
+        native = sequences.get(native_role)
+        if entry.get("native_role") != native_role:
+            errors.append(f"{label} native_role does not match role {role}")
+        if (
+            not re.fullmatch(r"[0-9a-f]{32}", str(entry.get("transcript_session_id", "")))
+            or entry.get("transcript_session_id") != transcript_session_id
+        ):
+            errors.append(f"{label} does not bind the verified UI transcript session")
+        if native is None:
+            errors.append(f"{label} has no verified native workflow sequence")
+        else:
+            expected_native_binding = {
+                "invocation_id": native.get("invocation"),
+                "project_sha256": native.get("project"),
+                "target_sha256": native.get("project"),
+                "process_id": native.get("process_id"),
+                "native_sequence_sha256": native.get("sequence_sha256"),
+            }
+            if any(entry.get(key) != value for key, value in expected_native_binding.items()):
+                errors.append(f"{label} does not bind verified native workflow role {native_role}")
         if entry.get("phase") != expected_phase:
             errors.append(f"{label} phase does not match role {role}")
         if entry.get("claim_widget_id") != widget_id or entry.get("claim_field") != claim_field:
@@ -2997,6 +3050,10 @@ def validate_field_bundle(
         elif expected_claim is not None and claim_sha != expected_claim:
             errors.append(f"{label} claim does not match the verified field claim")
         if isinstance(receipt, dict):
+            if entry.get("target_sha256") != receipt.get("target_sha256"):
+                errors.append(f"{label} target_sha256 does not bind its receipt")
+            if entry.get("process_id") != receipt.get("pid"):
+                errors.append(f"{label} process_id does not bind its receipt")
             for key in ("phase", "process_instance_id", "generation", "revision"):
                 if entry.get(key) != receipt.get(key):
                     errors.append(f"{label} {key} does not bind its receipt")
@@ -3009,6 +3066,10 @@ def validate_field_bundle(
             ).hexdigest()
             if entry.get("receipt_sha256") != receipt_digest:
                 errors.append(f"{label} receipt_sha256 mismatch")
+            elif receipt_digest in seen_receipts:
+                errors.append(f"{label} reuses a receipt already bound to another role")
+            else:
+                seen_receipts.add(receipt_digest)
             if entry.get("surface_sha256") != surface_digest:
                 errors.append(f"{label} surface_sha256 mismatch")
             if isinstance(surface, dict) and isinstance(surface.get("widgets"), list):
@@ -3076,21 +3137,11 @@ def validate_field_bundle(
                     errors.append("field bundle Python probe did not use the installed menu executable")
                 menu_command_digest = hashlib.sha256(command.encode("utf-16-le")).hexdigest()
 
-    log_errors, sequences = _parse_field_evidence(ledger, invoke_log)
-    errors.extend(log_errors)
     if menu_command_digest is not None and any(
         sequence.get("template_command") != menu_command_digest for sequence in sequences.values()
     ):
         errors.append("field bundle installed menu command bytes do not bind native command digests")
 
-    transcript_errors, derived_observations, workflow_observations, _ = _validate_uia_transcript(
-        bundle.get("uia_transcript"),
-        hashes,
-        sequences,
-        expected_choices,
-        configured_remote,
-    )
-    errors.extend(transcript_errors)
     observations = bundle.get("explorer_observations")
     if not isinstance(observations, list) or len(observations) != 2:
         errors.append("field bundle requires two Explorer observations")

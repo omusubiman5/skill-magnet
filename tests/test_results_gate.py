@@ -166,11 +166,16 @@ class ExplorerResultsGateTest(unittest.TestCase):
 
         def ui_receipt_evidence(
             role: str,
+            native_role: str,
             phase: str,
             widget_id: str,
             claim_field: str,
             claim_sha256: str,
             ordinal: int,
+            invocation_id: str,
+            project_sha256: str,
+            process_id: int,
+            native_sequence_sha256: str,
         ) -> dict[str, object]:
             generation = f"{ordinal:032x}"
             published = f"2026-09-05T00:00:{ordinal:02d}Z"
@@ -197,7 +202,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
             surface: dict[str, object] = {
                 "schema_version": 1,
                 "generation": generation,
-                "pid": 5000 + ordinal,
+                "pid": process_id,
                 "phase": phase,
                 "window": {
                     "hwnd": 400 + ordinal,
@@ -213,10 +218,10 @@ class ExplorerResultsGateTest(unittest.TestCase):
             receipt: dict[str, object] = {
                 "schema_version": 2,
                 "owner_kind": "context_launcher",
-                "pid": 5000 + ordinal,
+                "pid": process_id,
                 "process_instance_id": f"{ordinal + 16:032x}",
                 "process_started_at_unix_ns": ordinal,
-                "target_sha256": "4" * 64,
+                "target_sha256": project_sha256,
                 "generation": generation,
                 "phase": phase,
                 "window_handle": 400 + ordinal,
@@ -229,6 +234,13 @@ class ExplorerResultsGateTest(unittest.TestCase):
             ).encode("utf-8")
             return {
                 "role": role,
+                "native_role": native_role,
+                "invocation_id": invocation_id,
+                "project_sha256": project_sha256,
+                "target_sha256": project_sha256,
+                "process_id": process_id,
+                "native_sequence_sha256": native_sequence_sha256,
+                "transcript_session_id": "f" * 32,
                 "phase": phase,
                 "process_instance_id": receipt["process_instance_id"],
                 "generation": generation,
@@ -241,14 +253,6 @@ class ExplorerResultsGateTest(unittest.TestCase):
                 "receipt": receipt,
             }
 
-        ui_receipts = [
-            ui_receipt_evidence("selected_manager_click", "context_selection", "library_manager", "text_sha256", _text_sha256("Library Manager"), 1),
-            ui_receipt_evidence("manager_remote", "library_manager", "configured_remote", "value_sha256", _text_sha256(configured_remote), 2),
-            ui_receipt_evidence("background_selection", "context_selection", "selection_choice", "values_sha256", configured_label_digest, 3),
-            ui_receipt_evidence("registration_click", "context_selection", "register_selected", "text_sha256", _text_sha256("このフォルダーのスキルを登録"), 4),
-            ui_receipt_evidence("registration_source", "library_manager", "registration_source", "value_sha256", "5" * 64, 5),
-            ui_receipt_evidence("runtime_projectless", "context_selection", "project", "text_sha256", _text_sha256("作業対象フォルダー: 指定なし（デスクトップアプリが新規タスク用領域を自動作成）"), 6),
-        ]
         command = subprocess.list2cmdline(
             [
                 sys.executable,
@@ -322,6 +326,53 @@ class ExplorerResultsGateTest(unittest.TestCase):
             return hashlib.sha256(
                 (("\r\n".join(native_by_role[role])) + "\r\n").encode("utf-16-le")
             ).hexdigest()
+
+        receipt_native = {
+            "selected_manager_click": ("selected_item", "1" * 32, "a" * 64, 4242),
+            "manager_remote": ("selected_item", "1" * 32, "a" * 64, 4242),
+            "background_selection": ("background_site", "4" * 32, "b" * 64, 4343),
+            "registration_click": (
+                "missing_skill_registration", "8" * 32, "a" * 64, 4747
+            ),
+            "registration_source": (
+                "missing_skill_registration", "8" * 32, "a" * 64, 4747
+            ),
+            "runtime_projectless": (
+                "runtime_skill_projectless", "9" * 32, "e" * 64, 4848
+            ),
+        }
+
+        def bound_receipt(
+            role: str,
+            phase: str,
+            widget_id: str,
+            claim_field: str,
+            claim_sha256: str,
+            ordinal: int,
+        ) -> dict[str, object]:
+            native_role, invocation, project, process_id = receipt_native[role]
+            return ui_receipt_evidence(
+                role,
+                native_role,
+                phase,
+                widget_id,
+                claim_field,
+                claim_sha256,
+                ordinal,
+                invocation,
+                project,
+                process_id,
+                native_digest(native_role),
+            )
+
+        ui_receipts = [
+            bound_receipt("selected_manager_click", "context_selection", "library_manager", "text_sha256", _text_sha256("Library Manager"), 1),
+            bound_receipt("manager_remote", "library_manager", "configured_remote", "value_sha256", _text_sha256(configured_remote), 2),
+            bound_receipt("background_selection", "context_selection", "selection_choice", "values_sha256", configured_label_digest, 3),
+            bound_receipt("registration_click", "context_selection", "register_selected", "text_sha256", _text_sha256("このフォルダーのスキルを登録"), 4),
+            bound_receipt("registration_source", "library_manager", "registration_source", "value_sha256", "5" * 64, 5),
+            bound_receipt("runtime_projectless", "context_selection", "project", "text_sha256", _text_sha256("作業対象フォルダー: 指定なし（デスクトップアプリが新規タスク用領域を自動作成）"), 6),
+        ]
 
         observations: list[dict[str, object]] = []
         gui_elements: dict[str, dict[str, object]] = {}
@@ -567,6 +618,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
         )
         registration_observation = {
             "selected_path_sha256": "a" * 64,
+            "registration_source_sha256": "5" * 64,
             "selected_path_visible": True,
             "missing_skill_cause_visible": True,
             "actionable_recovery_visible": True,
@@ -595,6 +647,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
                 "project_sha256": "a" * 64,
                 "native_sequence_sha256": native_digest("missing_skill_registration"),
                 "selected_path_sha256": "a" * 64,
+                "registration_source_sha256": "5" * 64,
                 "selected_path_visible": True,
                 "missing_skill_cause_visible": True,
                 "actionable_recovery_visible": True,
@@ -1629,6 +1682,82 @@ class ExplorerResultsGateTest(unittest.TestCase):
         ]
         self.assertIn("ensure_ascii=True", selection_probe)
 
+    def test_field_collector_powershell5_materializes_all_six_ui_receipts(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        receipt_function = collector[
+            collector.index("function New-UiReceiptEvidence(") :
+            collector.index("function Wait-MissingSkillRecoveryDialog")
+        ]
+        for variable in ("selectedManagerClick", "registrationClick"):
+            assignment = collector[collector.index(f"${variable} =") :]
+            assignment = assignment[: assignment.index("\n    $")]
+            self.assertNotIn("Out-Null", assignment)
+        probe = r'''
+$ErrorActionPreference = "Stop"
+$script:FieldSessionId = "f" * 32
+function Assert-Field($Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
+function Assert-NoRawReceiptDisplayValues($Receipt) {}
+function Get-FieldUiSurfaceWidget($Surface, [string]$Id) {
+    @($Surface.widgets | Where-Object { $_.id -ceq $Id })[0]
+}
+function Get-NativeSequenceSha256($Sequence) {
+    $bytes = [Text.Encoding]::UTF8.GetBytes([string]$Sequence.invocation_id)
+    ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes))).Replace("-", "").ToLowerInvariant()
+}
+function Get-CanonicalJsonSha256($Value) {
+    $bytes = [Text.Encoding]::UTF8.GetBytes(($Value | ConvertTo-Json -Compress -Depth 20))
+    ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes))).Replace("-", "").ToLowerInvariant()
+}
+function New-ProbeObservation([int]$Ordinal, [string]$Phase, [string]$WidgetId, [string]$ClaimField, [string]$Claim, [int]$ProcessId, [string]$Target) {
+    $widget = [ordered]@{ id=$WidgetId; role="button"; state=@{enabled=$true}; viewable=$true; hwnd=(500+$Ordinal); client=@{}; screen=@{} }
+    $widget[$ClaimField] = $Claim
+    $surface = [ordered]@{ widgets=@([pscustomobject]$widget) }
+    $receipt = [ordered]@{ pid=$ProcessId; target_sha256=$Target; phase=$Phase; process_instance_id=("{0:x32}" -f (16+$Ordinal)); generation=("{0:x32}" -f $Ordinal); revision=$Ordinal; ui_surface=[pscustomobject]$surface }
+    [pscustomobject]@{ ui_owner_receipt=[pscustomobject]$receipt }
+}
+'''
+        probe += receipt_function
+        probe += r'''
+$roles = @(
+    @("selected_manager_click", "context_selection", "library_manager", "text_sha256", 4242, "a"),
+    @("manager_remote", "library_manager", "configured_remote", "value_sha256", 4242, "a"),
+    @("background_selection", "context_selection", "selection_choice", "values_sha256", 4343, "b"),
+    @("registration_click", "context_selection", "register_selected", "text_sha256", 4747, "a"),
+    @("registration_source", "library_manager", "registration_source", "value_sha256", 4747, "a"),
+    @("runtime_projectless", "context_selection", "project", "text_sha256", 4848, "e")
+)
+$uiReceipts = @()
+for ($index = 0; $index -lt $roles.Count; $index++) {
+    $item = $roles[$index]
+    $target = ([string]$item[5]) * 64
+    $nativeRole = @("selected_item", "selected_item", "background_site", "missing_skill_registration", "missing_skill_registration", "runtime_skill_projectless")[$index]
+    $native = [pscustomobject]@{ process_id=[int]$item[4]; project_sha256=$target; invocation_id=("{0:x32}" -f (1+$index)) }
+    $observation = New-ProbeObservation (1+$index) ([string]$item[1]) ([string]$item[2]) ([string]$item[3]) ("9"*64) ([int]$item[4]) $target
+    $uiReceipts += New-UiReceiptEvidence ([string]$item[0]) $observation ([string]$item[2]) ([string]$item[3]) $nativeRole $native $target
+}
+if ($uiReceipts.Count -ne 6 -or @($uiReceipts | Where-Object { $null -eq $_ }).Count -ne 0) { throw "receipt materialization failed" }
+[ordered]@{ ui_receipts=$uiReceipts } | ConvertTo-Json -Compress -Depth 30
+'''
+        with tempfile.TemporaryDirectory() as temporary:
+            probe_path = Path(temporary) / "receipt-probe.ps1"
+            probe_path.write_text(probe, encoding="utf-8-sig")
+            completed = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-File", str(probe_path)],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                check=False,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        bundle = json.loads(completed.stdout.strip())
+        self.assertEqual(len(bundle["ui_receipts"]), 6)
+        self.assertTrue(all(bundle["ui_receipts"]))
+
     def test_field_collector_normal_exit_uses_the_owned_cleanup_boundary(self) -> None:
         collector = (
             ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
@@ -2439,6 +2568,89 @@ finally {{
                     return_value=[],
                 ):
                     errors = validate_field_bundle(ledger, bundle_path, invoke_log, ROOT)
+                self.assertTrue(any(expected in error for error in errors), errors)
+
+    def test_field_bundle_accepts_any_receipt_bound_registration_source_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            ledger, bundle_path, invoke_log, bundle, _ = self._field_fixture(Path(temporary))
+            replacement = "6" * 64
+            entries = [
+                json.loads(line)
+                for line in base64.b64decode(bundle["uia_transcript"]["bytes_base64"])
+                .decode("utf-8")
+                .splitlines()
+            ]
+            entries[12]["data"]["registration_source_sha256"] = replacement
+            self._replace_transcript(bundle, entries)
+            bundle["registration_recovery_observation"][
+                "registration_source_sha256"
+            ] = replacement
+            receipt_entry = next(
+                item for item in bundle["ui_receipts"] if item["role"] == "registration_source"
+            )
+            receipt_entry["claim_sha256"] = replacement
+            surface = receipt_entry["receipt"]["ui_surface"]
+            surface["widgets"][0]["value_sha256"] = replacement
+            canonical = lambda value: json.dumps(
+                value, ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")
+            receipt_entry["surface_sha256"] = hashlib.sha256(canonical(surface)).hexdigest()
+            receipt_entry["receipt_sha256"] = hashlib.sha256(
+                canonical(receipt_entry["receipt"])
+            ).hexdigest()
+            self._rewrite_bundle(bundle_path, bundle, ledger)
+            with mock.patch(
+                "integration.explorer_results_gate._verify_windows_field_attestation",
+                return_value=[],
+            ):
+                self.assertEqual(
+                    validate_field_bundle(ledger, bundle_path, invoke_log, ROOT), []
+                )
+
+    def test_field_bundle_rejects_cross_role_binding_swap_and_receipt_reuse(self) -> None:
+        for case in ("native-binding-swap", "receipt-reuse"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                ledger, bundle_path, invoke_log, bundle, _ = self._field_fixture(
+                    Path(temporary)
+                )
+                selected = next(
+                    item
+                    for item in bundle["ui_receipts"]
+                    if item["role"] == "selected_manager_click"
+                )
+                background = next(
+                    item
+                    for item in bundle["ui_receipts"]
+                    if item["role"] == "background_selection"
+                )
+                if case == "native-binding-swap":
+                    binding_keys = (
+                        "native_role",
+                        "invocation_id",
+                        "project_sha256",
+                        "target_sha256",
+                        "process_id",
+                        "native_sequence_sha256",
+                    )
+                    selected_binding = {key: selected[key] for key in binding_keys}
+                    for key in binding_keys:
+                        selected[key] = background[key]
+                        background[key] = selected_binding[key]
+                else:
+                    background["receipt"] = selected["receipt"]
+                    background["receipt_sha256"] = selected["receipt_sha256"]
+                    background["surface_sha256"] = selected["surface_sha256"]
+                self._rewrite_bundle(bundle_path, bundle, ledger)
+                with mock.patch(
+                    "integration.explorer_results_gate._verify_windows_field_attestation",
+                    return_value=[],
+                ):
+                    errors = validate_field_bundle(ledger, bundle_path, invoke_log, ROOT)
+                expected = (
+                    "does not match role"
+                    if case == "native-binding-swap"
+                    else "reuses a receipt"
+                )
                 self.assertTrue(any(expected in error for error in errors), errors)
 
     def test_field_bundle_rejects_rehashed_msix_payload_tampering(self) -> None:

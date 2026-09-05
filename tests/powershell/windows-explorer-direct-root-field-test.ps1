@@ -1947,7 +1947,10 @@ function New-UiReceiptEvidence(
     [string]$Role,
     $Observation,
     [string]$ClaimWidgetId,
-    [string]$ClaimField
+    [string]$ClaimField,
+    [string]$NativeRole,
+    $NativeSequence,
+    [string]$ExpectedTargetSha256
 ) {
     Assert-Field ($ClaimField -in @("text_sha256", "value_sha256", "values_sha256")) `
         "Receipt claim field is not an approved digest field."
@@ -1961,8 +1964,22 @@ function New-UiReceiptEvidence(
     $claim = [string]$widget.$ClaimField
     Assert-Field ($claim -match '^[0-9a-f]{64}$') `
         "Receipt claim digest is missing for role '$Role'."
+    Assert-Field (
+        [int]$receipt.pid -eq [int]$NativeSequence.process_id -and
+        [string]$receipt.target_sha256 -ceq $ExpectedTargetSha256 -and
+        [string]$NativeSequence.project_sha256 -ceq $ExpectedTargetSha256 -and
+        [string]$NativeSequence.invocation_id -match '^[0-9a-f]{32}$' -and
+        [string]$script:FieldSessionId -match '^[0-9a-f]{32}$'
+    ) "Receipt identity does not bind native workflow role '$NativeRole'."
     [ordered]@{
         role = $Role
+        native_role = $NativeRole
+        invocation_id = [string]$NativeSequence.invocation_id
+        project_sha256 = [string]$NativeSequence.project_sha256
+        target_sha256 = [string]$receipt.target_sha256
+        process_id = [int]$receipt.pid
+        native_sequence_sha256 = Get-NativeSequenceSha256 $NativeSequence
+        transcript_session_id = [string]$script:FieldSessionId
         phase = [string]$receipt.phase
         process_instance_id = [string]$receipt.process_instance_id
         generation = [string]$receipt.generation
@@ -2680,7 +2697,7 @@ try {
         $selectedSequence.process_id "context_selection" $selectedGui.element `
         $selectedGui.ui_surface_generation "library_manager" `
         (Get-FieldTargetSha256 $selectedFolder) `
-        "library_manager" "Library Manager" | Out-Null
+        "library_manager" "Library Manager"
     $managerGui = Inspect-LibraryManager $configuredRemote $selectedSequence.process_id
     $managerSnapshot = $managerGui.element_snapshot
 
@@ -2898,7 +2915,7 @@ try {
         $registrationSequence.process_id "context_selection" $registrationGui.element `
         $registrationGui.ui_surface_generation "register_selected" `
         (Get-FieldTargetSha256 $selectedFolder) `
-        "library_manager" "Library Manager" | Out-Null
+        "library_manager" "Library Manager"
     $registrationManager = Inspect-LibraryManager `
         $configuredRemote $registrationSequence.process_id
     $selectedPath = [IO.Path]::GetFullPath($selectedFolder)
@@ -2934,6 +2951,7 @@ try {
             project_sha256 = $registrationSequence.project_sha256
             native_sequence_sha256 = Get-NativeSequenceSha256 $registrationSequence
             selected_path_sha256 = Get-Utf16Sha256 $selectedFolder
+            registration_source_sha256 = Get-Utf8Sha256 $selectedPath
             selected_path_visible = ($selectedPathMatches -eq 1)
             missing_skill_cause_visible = $missingSkillDialog.missing_skill_cause_visible
             actionable_recovery_visible = $missingSkillDialog.actionable_recovery_visible
@@ -3270,20 +3288,35 @@ print(json.dumps(result, separators=(",", ":")))
     }
     $uiReceipts = @(
         New-UiReceiptEvidence `
-            "selected_manager_click" $selectedManagerClick "library_manager" "text_sha256"
+            "selected_manager_click" $selectedManagerClick "library_manager" "text_sha256" `
+            "selected_item" $selectedSequence (Get-FieldTargetSha256 $selectedFolder)
         New-UiReceiptEvidence `
-            "manager_remote" $managerGui "configured_remote" "value_sha256"
+            "manager_remote" $managerGui "configured_remote" "value_sha256" `
+            "selected_item" $selectedSequence (Get-FieldTargetSha256 $selectedFolder)
         New-UiReceiptEvidence `
-            "background_selection" $backgroundGui "selection_choice" "values_sha256"
+            "background_selection" $backgroundGui "selection_choice" "values_sha256" `
+            "background_site" $backgroundSequence (Get-FieldTargetSha256 $backgroundFolder)
         New-UiReceiptEvidence `
-            "registration_click" $registrationClick "register_selected" "text_sha256"
+            "registration_click" $registrationClick "register_selected" "text_sha256" `
+            "missing_skill_registration" $registrationSequence `
+            (Get-FieldTargetSha256 $selectedFolder)
         New-UiReceiptEvidence `
-            "registration_source" $registrationManager "registration_source" "value_sha256"
+            "registration_source" $registrationManager "registration_source" "value_sha256" `
+            "missing_skill_registration" $registrationSequence `
+            (Get-FieldTargetSha256 $selectedFolder)
         New-UiReceiptEvidence `
-            "runtime_projectless" $runtimeGui "project" "text_sha256"
+            "runtime_projectless" $runtimeGui "project" "text_sha256" `
+            "runtime_skill_projectless" $runtimeSequence `
+            (Get-FieldTargetSha256 $runtimeSkillFolder)
     )
     Assert-Field ($uiReceipts.Count -eq 6) `
         "Field evidence must contain all six receipt-bound UI decisions."
+    Assert-Field (@($uiReceipts | Where-Object { $null -eq $_ }).Count -eq 0) `
+        "Field evidence contains a null UI receipt."
+    Assert-Field (@($uiReceipts.role | Sort-Object -Unique).Count -eq 6) `
+        "Field evidence UI receipt roles are missing or duplicated."
+    Assert-Field (@($uiReceipts.receipt_sha256 | Sort-Object -Unique).Count -eq 6) `
+        "Field evidence reuses one owner receipt for multiple UI decisions."
     $releaseVersion = ([string]$status.version) -replace '\.0$', ''
     Assert-Field ($releaseVersion -match '^\d+\.\d+\.\d+$') `
         "Installed package version cannot be converted to a release version."
@@ -3401,6 +3434,7 @@ print(json.dumps(result, separators=(",", ":")))
         }
         registration_recovery_observation = [ordered]@{
             selected_path_sha256 = Get-Utf16Sha256 $selectedFolder
+            registration_source_sha256 = Get-Utf8Sha256 $selectedPath
             selected_path_visible = $true
             missing_skill_cause_visible = $true
             actionable_recovery_visible = $true
