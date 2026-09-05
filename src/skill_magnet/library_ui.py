@@ -39,6 +39,7 @@ from .library_manager import (
 )
 from .ui import (
     UI_OWNER_MAX_BYTES,
+    TkSurfacePublicationRetry,
     UiSurfaceOwnerIdentity,
     UiWidgetSpec,
     _atomic_write_ui_owner_record,
@@ -2521,28 +2522,130 @@ def show_library_manager(
         ),
     )
 
+    manager_surface_publications: dict[str, TkSurfacePublicationRetry] = {}
+    publication_failures: dict[str, BaseException] = {}
+    publication_error_scheduled = False
+
     def publish_manager_surface() -> None:
         if closing or not manager_surface_ready:
             return
-        state = {
-            "processing": busy,
-            "stage": action_stage.get(),
-            "register_selected": register_selected,
-        }
         for identity in tuple(surface_identities):
-            try:
-                publish_tk_ui_surface(
-                    identity,
+            key = str(identity.owner_path)
+            if key not in manager_surface_publications:
+                def publish_one(identity: UiSurfaceOwnerIdentity = identity) -> None:
+                    state = {
+                        "processing": busy,
+                        "stage": action_stage.get(),
+                        "register_selected": register_selected,
+                    }
+                    publish_tk_ui_surface(
+                        identity,
+                        root,
+                        widgets=manager_surface_widgets,
+                        state=state,
+                    )
+
+                manager_surface_publications[key] = TkSurfacePublicationRetry(
                     root,
-                    widgets=manager_surface_widgets,
-                    state=state,
+                    publish_one,
+                    stopped=lambda: closing,
+                    terminal=lambda exc, identity=identity: manager_publication_failed(
+                        identity, exc
+                    ),
+                    succeeded=lambda identity=identity: manager_publication_succeeded(
+                        identity
+                    ),
                 )
-            except Exception:
-                # A context handoff may release one owner before this manager
-                # closes.  A platform-specific widget query can also fail while
-                # Tk is relaying a close event.  Receipt publication is
-                # observational and must not abort the user's recoverable work.
-                continue
+            manager_surface_publications[key].request()
+
+    def manager_publication_failed(
+        identity: UiSurfaceOwnerIdentity, exc: BaseException
+    ) -> None:
+        nonlocal publication_error_scheduled
+        if closing:
+            return
+        # A context owner is intentionally released after its handoff.  Drop
+        # only a provably stale identity; every live-generation failure must be
+        # visible and recoverable instead of disappearing into a catch-all.
+        try:
+            current = _read_ui_owner_record(identity.owner_path)
+            expected_owner_kind = (
+                "context_launcher"
+                if identity.owner_path.name == "context-launcher.owner.json"
+                else "library_manager"
+            )
+            stale = (
+                current.get("schema_version") == 2
+                and current.get("owner_kind") == expected_owner_kind
+                and any(
+                    (
+                        current.get("generation") != identity.generation,
+                        current.get("pid") != identity.pid,
+                        current.get("process_instance_id")
+                        != identity.process_instance_id,
+                        current.get("target_sha256") != identity.target_sha256,
+                        current.get("window_handle") != identity.window_handle,
+                        current.get("phase")
+                        not in {"library_manager_starting", "library_manager"},
+                    )
+                )
+            )
+        except Exception:
+            stale = False
+        if stale:
+            manager_surface_publications.pop(str(identity.owner_path), None)
+            publication_failures.pop(str(identity.owner_path), None)
+            return
+        key = str(identity.owner_path)
+        publication_failures[key] = exc
+        if publication_error_scheduled:
+            return
+        publication_error_scheduled = True
+        root.after_idle(show_manager_publication_error)
+
+    def manager_publication_succeeded(identity: UiSurfaceOwnerIdentity) -> None:
+        publication_failures.pop(str(identity.owner_path), None)
+
+    def show_manager_publication_error() -> None:
+        nonlocal publication_error_scheduled
+        if closing:
+            publication_error_scheduled = False
+            return
+        failures = dict(publication_failures)
+        if not failures:
+            publication_error_scheduled = False
+            return
+        causes = []
+        for path, error in failures.items():
+            code = getattr(error, "winerror", None)
+            cause = (
+                f"Windowsエラー {code}"
+                if code is not None
+                else f"{type(error).__name__}: {str(error).strip() or '詳細なし'}"
+            )
+            causes.append(f"{path}: {cause}")
+        detail = (
+            "Library Managerの操作証跡を更新できませんでした。\n\n"
+            "原因: owner receiptの更新が次の理由で阻害されました。\n"
+            + "\n".join(causes)
+            + "\n\n"
+            "他のSkill Magnet処理や、この状態ファイルを開いているツールを閉じて"
+            "『再試行』を押してください。解消しない場合は『キャンセル』で安全に終了し、"
+            "この原因と対象を診断情報として保存してください。"
+        )
+        retry = messagebox.askretrycancel(
+            "Library Manager — 証跡更新エラー", detail, parent=root
+        )
+        publication_error_scheduled = False
+        if retry:
+            retry_paths = tuple(publication_failures)
+            publication_failures.clear()
+            for path in retry_paths:
+                publisher = manager_surface_publications.get(path)
+                if publisher is not None:
+                    publisher.request()
+        else:
+            close_manager(force=True)
 
     remote.trace_add("write", lambda *_: publish_manager_surface())
     import_source.trace_add("write", lambda *_: publish_manager_surface())
@@ -2950,6 +3053,7 @@ def show_library_manager(
             if active_cancel_event is not None:
                 active_cancel_event.set()
             return
+        closing = True
         cleanup_problem = ""
         try:
             if not managed_repository_has_unfinished_transaction(

@@ -302,6 +302,7 @@ class UiSurfaceOwnerIdentity:
     generation: str
     pid: int
     process_instance_id: str
+    target_sha256: str
     phase: str
     window_handle: int
 
@@ -335,6 +336,7 @@ def ui_surface_owner_identity(
     pid = payload.get("pid")
     generation = payload.get("generation")
     process_instance_id = payload.get("process_instance_id")
+    target_sha256 = payload.get("target_sha256")
     published_at = payload.get("published_at_utc")
     try:
         published = datetime.fromisoformat(str(published_at).replace("Z", "+00:00"))
@@ -347,6 +349,9 @@ def ui_surface_owner_identity(
         or not isinstance(generation, str)
         or not generation
         or process_instance_id != _PROCESS_INSTANCE_ID
+        or not isinstance(target_sha256, str)
+        or len(target_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in target_sha256)
         or age_seconds < -5
         or age_seconds > UI_OWNER_BIND_MAX_AGE_SECONDS
         or payload.get("phase") not in UI_SURFACE_PHASE_TABLE.get(phase, ())
@@ -358,6 +363,7 @@ def ui_surface_owner_identity(
         generation=generation,
         pid=pid,
         process_instance_id=process_instance_id,
+        target_sha256=target_sha256,
         phase=phase,
         window_handle=window_handle,
     )
@@ -541,6 +547,7 @@ def publish_tk_ui_surface(
             current.get("generation") != identity.generation,
             current.get("pid") != identity.pid,
             current.get("process_instance_id") != identity.process_instance_id,
+            current.get("target_sha256") != identity.target_sha256,
             current.get("phase") not in UI_SURFACE_PHASE_TABLE.get(
                 identity.phase, ()
             ),
@@ -563,6 +570,68 @@ def publish_tk_ui_surface(
     current["published_at_utc"] = published_at
     _atomic_write_ui_owner_record(identity.owner_path, current)
     return surface
+
+
+def _is_transient_ui_owner_publication_error(exc: BaseException) -> bool:
+    """Return whether Windows temporarily denied the atomic owner replacement."""
+
+    return isinstance(exc, OSError) and getattr(exc, "winerror", None) in {5, 32, 33}
+
+
+class TkSurfacePublicationRetry:
+    """Coalesce UI receipt publication and retry only transient sharing failures."""
+
+    def __init__(
+        self,
+        root: Any,
+        publish: Callable[[], None],
+        *,
+        stopped: Callable[[], bool],
+        terminal: Callable[[BaseException], None],
+        succeeded: Callable[[], None] | None = None,
+        retry_seconds: float = 2.0,
+    ) -> None:
+        self.root = root
+        self.publish = publish
+        self.stopped = stopped
+        self.terminal = terminal
+        self.succeeded = succeeded
+        self.retry_seconds = retry_seconds
+        self.pending = False
+        self.deadline = 0.0
+        self.delay_ms = 10
+
+    def request(self) -> None:
+        if self.pending or self.stopped():
+            return
+        self.pending = True
+        self.deadline = time.monotonic() + self.retry_seconds
+        self.delay_ms = 10
+        self.root.after_idle(self._attempt)
+
+    def _attempt(self) -> None:
+        if self.stopped():
+            self.pending = False
+            return
+        try:
+            # Rebuild the snapshot on every attempt.  Geometry, state, owner
+            # revision, and the atomic receipt must describe the same instant.
+            self.publish()
+        except Exception as exc:
+            if (
+                _is_transient_ui_owner_publication_error(exc)
+                and time.monotonic() < self.deadline
+            ):
+                delay = self.delay_ms
+                self.delay_ms = min(self.delay_ms * 2, 50)
+                self.root.after(delay, self._attempt)
+                return
+            self.pending = False
+            self.terminal(exc)
+            return
+        self.pending = False
+        if self.succeeded is not None:
+            self.succeeded()
 
 
 def _publish_tk_surface_after_mapping(root: Any, publish: Callable[[], None]) -> None:
@@ -2267,26 +2336,26 @@ def show_context_selection(
         ),
     )
 
-    def publish_surface() -> None:
+    surface_publication: TkSurfacePublicationRetry | None = None
+
+    def publish_surface_now() -> None:
         if surface_identity is None or closing:
             return
-        try:
-            publish_tk_ui_surface(
-                surface_identity,
-                root,
-                widgets=surface_widgets,
-                state={
-                    "language": current_language(),
-                    "selection_mode": "dynamic" if pack_id is None else "fixed",
-                    "processing": processing_active,
-                    "details_visible": details_visible,
-                },
-            )
-        except Exception:
-            # The owner may already be in the next phase or closing.  Geometry
-            # publication is observational and must never break user recovery,
-            # even if a platform-specific Tk query fails unexpectedly.
-            return
+        publish_tk_ui_surface(
+            surface_identity,
+            root,
+            widgets=surface_widgets,
+            state={
+                "language": current_language(),
+                "selection_mode": "dynamic" if pack_id is None else "fixed",
+                "processing": processing_active,
+                "details_visible": details_visible,
+            },
+        )
+
+    def publish_surface() -> None:
+        if surface_publication is not None:
+            surface_publication.request()
 
     def close_context_window() -> None:
         nonlocal closing
@@ -2294,6 +2363,54 @@ def show_context_selection(
         if active_context_cancel is not None:
             active_context_cancel.set()
         root.destroy()
+
+    def publication_failed(exc: BaseException) -> None:
+        if closing:
+            return
+        if surface_identity is not None:
+            try:
+                current = _read_ui_owner_record(surface_identity.owner_path)
+                if any(
+                    (
+                        current.get("generation") != surface_identity.generation,
+                        current.get("pid") != surface_identity.pid,
+                        current.get("process_instance_id")
+                        != surface_identity.process_instance_id,
+                        current.get("target_sha256")
+                        != surface_identity.target_sha256,
+                        current.get("window_handle") != surface_identity.window_handle,
+                        current.get("phase")
+                        not in UI_SURFACE_PHASE_TABLE["context_selection"],
+                    )
+                ):
+                    return
+            except Exception:
+                pass
+        code = getattr(exc, "winerror", None)
+        cause = (
+            f"Windowsエラー {code}"
+            if code is not None
+            else f"{type(exc).__name__}: {str(exc).strip() or '詳細なし'}"
+        )
+        detail = (
+            "画面の操作証跡を更新できませんでした。\n\n"
+            f"原因: owner receiptの更新が {cause} で阻害されました。\n"
+            "他のSkill Magnet処理や、この画面の状態ファイルを開いているツールを閉じて、"
+            "『再試行』を押してください。再試行できない場合は『キャンセル』で安全に終了し、"
+            "表示内容を診断情報として保存してください。"
+        )
+        if messagebox.askretrycancel("Skill Magnet — 証跡更新エラー", detail, parent=root):
+            if surface_publication is not None:
+                surface_publication.request()
+        else:
+            close_context_window()
+
+    surface_publication = TkSurfacePublicationRetry(
+        root,
+        publish_surface_now,
+        stopped=lambda: closing,
+        terminal=publication_failed,
+    )
 
     cancel_button.configure(command=close_context_window)
     apply_language()

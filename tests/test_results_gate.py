@@ -2055,8 +2055,15 @@ Update-FieldOwnerRevision $generation 8 $ownerRevisions
         ]
         self.assertIn("FileAttributes]::ReparsePoint", strict_read)
         self.assertIn("262144", strict_read)
-        self.assertIn("[IO.FileShare]::Read", strict_read)
-        self.assertIn("$stream.CopyTo($buffer)", strict_read)
+        self.assertIn("[SkillMagnetStableBytes]::Read", strict_read)
+        self.assertIn("[byte[]]$stable.Bytes", strict_read)
+        self.assertIn("return $null", strict_read)
+        self.assertIn('"changed_during_read", "path_identity_changed"', strict_read)
+        self.assertIn('"sharing_violation", "not_found"', strict_read)
+        self.assertIn("cannot be safely read", strict_read)
+        self.assertIn("FileShare.ReadWrite | FileShare.Delete", collector)
+        self.assertIn("GetFileInformationByHandle", collector)
+        self.assertIn("path_identity_changed", collector)
         self.assertIn("duplicate JSON key", strict_read)
         self.assertIn("object_pairs_hook=unique_object", strict_read)
         self.assertIn("Get-BytesSha256 $beforeBytes", strict_read)
@@ -3146,6 +3153,69 @@ finally {{
             )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertTrue(completed.stdout.strip(), repr((completed.stdout, completed.stderr)))
+        observation = json.loads(completed.stdout.strip())
+        self.assertTrue(all(observation.values()), observation)
+
+    @unittest.skipUnless(os.name == "nt", "requires Windows file identities")
+    def test_owner_receipt_reader_detects_in_place_and_path_swap_races(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        csharp = collector.split(') -TypeDefinition @"', 1)[1].split('"@', 1)[0]
+        encoded = base64.b64encode(csharp.encode("utf-8")).decode("ascii")
+        probe = rf'''
+$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("{encoded}"))
+Add-Type -ReferencedAssemblies @("UIAutomationClient","UIAutomationTypes","WindowsBase") -TypeDefinition $source
+$root = Join-Path ([IO.Path]::GetTempPath()) ("skill-magnet-owner-read-" + [guid]::NewGuid().ToString("N"))
+[IO.Directory]::CreateDirectory($root) | Out-Null
+try {{
+    $path = Join-Path $root "owner.json"
+    [IO.File]::WriteAllText($path, '{{"revision":1}}' + "`n", [Text.UTF8Encoding]::new($false))
+    $stable = [SkillMagnetStableBytes]::Read($path, 262144)
+    [SkillMagnetStableBytes]::TestAfterFirstRead = [Action]{{
+        [IO.File]::WriteAllText($path, '{{"revision":2}}' + "`n", [Text.UTF8Encoding]::new($false))
+    }}
+    $rewrite = [SkillMagnetStableBytes]::Read($path, 262144)
+    [SkillMagnetStableBytes]::TestAfterFirstRead = $null
+    [IO.File]::WriteAllText($path, '{{"revision":3}}' + "`n", [Text.UTF8Encoding]::new($false))
+    [SkillMagnetStableBytes]::TestBeforePathReopen = [Action]{{
+        Move-Item -LiteralPath $path -Destination ($path + ".old")
+        [IO.File]::WriteAllText($path, '{{"revision":4}}' + "`n", [Text.UTF8Encoding]::new($false))
+    }}
+    $swap = [SkillMagnetStableBytes]::Read($path, 262144)
+    [SkillMagnetStableBytes]::TestBeforePathReopen = $null
+    $recovered = [SkillMagnetStableBytes]::Read($path, 262144)
+    [pscustomobject]@{{
+        initial_stable = $stable.Stable
+        rewrite_rejected = -not $rewrite.Stable
+        path_swap_rejected = -not $swap.Stable -and $swap.Error -eq "path_identity_changed"
+        recovered_stable = $recovered.Stable
+        file_share_delete_present = $source.Contains("FileShare.ReadWrite | FileShare.Delete")
+    }} | ConvertTo-Json -Compress
+}}
+finally {{
+    [SkillMagnetStableBytes]::TestAfterFirstRead = $null
+    [SkillMagnetStableBytes]::TestBeforePathReopen = $null
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}}
+'''
+        with tempfile.TemporaryDirectory() as temporary:
+            probe_path = Path(temporary) / "stable-owner-probe.ps1"
+            probe_path.write_text(probe, encoding="utf-8-sig")
+            completed = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-File", str(probe_path)],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                check=False,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
         observation = json.loads(completed.stdout.strip())
         self.assertTrue(all(observation.values()), observation)
 

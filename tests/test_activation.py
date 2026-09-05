@@ -67,6 +67,7 @@ from skill_magnet.platforms import (
 )
 from skill_magnet.ui import (
     ContextUiAction,
+    TkSurfacePublicationRetry,
     UiWidgetSpec,
     _initial_context_selection,
     _atomic_write_ui_owner_record,
@@ -3595,6 +3596,161 @@ class ActivationEndToEndTest(unittest.TestCase):
         final = acquire_context_ui_lease(lease_dir, self.project)
         self.assertTrue(final.acquired)
         final.release()
+
+    def test_ui_surface_publication_retries_transient_owner_contention(self) -> None:
+        class Root:
+            def __init__(self) -> None:
+                self.idle: list[object] = []
+                self.timers: list[object] = []
+
+            def after_idle(self, callback: object) -> None:
+                self.idle.append(callback)
+
+            def after(self, _milliseconds: int, callback: object) -> None:
+                self.timers.append(callback)
+
+        root = Root()
+        attempts: list[int] = []
+        terminal: list[BaseException] = []
+
+        def publish() -> None:
+            attempts.append(len(attempts) + 1)
+            if len(attempts) == 1:
+                error = PermissionError("owner is temporarily held")
+                error.winerror = 5  # type: ignore[attr-defined]
+                raise error
+
+        publication = TkSurfacePublicationRetry(
+            root,
+            publish,
+            stopped=lambda: False,
+            terminal=terminal.append,
+        )
+        publication.request()
+        publication.request()
+        self.assertEqual(len(root.idle), 1)
+        root.idle.pop()()  # type: ignore[operator]
+        self.assertEqual(attempts, [1])
+        self.assertEqual(len(root.timers), 1)
+        self.assertTrue(publication.pending)
+        root.timers.pop()()  # type: ignore[operator]
+        self.assertEqual(attempts, [1, 2])
+        self.assertFalse(publication.pending)
+        self.assertEqual(terminal, [])
+
+        permanent: list[BaseException] = []
+        failed = TkSurfacePublicationRetry(
+            root,
+            lambda: (_ for _ in ()).throw(
+                OSError(22, "stable malformed publication")
+            ),
+            stopped=lambda: False,
+            terminal=permanent.append,
+        )
+        failed.request()
+        root.idle.pop()()  # type: ignore[operator]
+        self.assertEqual(len(permanent), 1)
+        self.assertFalse(failed.pending)
+
+        expired_errors: list[BaseException] = []
+        transient = PermissionError("held through deadline")
+        transient.winerror = 32  # type: ignore[attr-defined]
+        expired = TkSurfacePublicationRetry(
+            root,
+            lambda: (_ for _ in ()).throw(transient),
+            stopped=lambda: False,
+            terminal=expired_errors.append,
+            retry_seconds=-1,
+        )
+        expired.request()
+        root.idle.pop()()  # type: ignore[operator]
+        self.assertEqual(expired_errors, [transient])
+        self.assertEqual(root.timers, [])
+
+        stopped = False
+        stopped_attempts: list[bool] = []
+        closing_publication = TkSurfacePublicationRetry(
+            root,
+            lambda: stopped_attempts.append(True),
+            stopped=lambda: stopped,
+            terminal=terminal.append,
+        )
+        closing_publication.request()
+        stopped = True
+        root.idle.pop()()  # type: ignore[operator]
+        self.assertEqual(stopped_attempts, [])
+        self.assertFalse(closing_publication.pending)
+
+        retry_root = Root()
+        closed_after_contention = False
+        retry_calls: list[bool] = []
+        retry_terminals: list[BaseException] = []
+        held = PermissionError("temporary sharing violation")
+        held.winerror = 5  # type: ignore[attr-defined]
+
+        def retry_then_close() -> None:
+            retry_calls.append(True)
+            raise held
+
+        scheduled_then_closed = TkSurfacePublicationRetry(
+            retry_root,
+            retry_then_close,
+            stopped=lambda: closed_after_contention,
+            terminal=retry_terminals.append,
+        )
+        scheduled_then_closed.request()
+        retry_root.idle.pop()()  # type: ignore[operator]
+        self.assertEqual(len(retry_root.timers), 1)
+        closed_after_contention = True
+        retry_root.timers.pop()()  # type: ignore[operator]
+        self.assertEqual(retry_calls, [True])
+        self.assertEqual(retry_terminals, [])
+        self.assertFalse(scheduled_then_closed.pending)
+
+        if os.name == "nt":
+            import ctypes
+
+            with tempfile.TemporaryDirectory() as temporary:
+                owner_path = Path(temporary) / "owner.json"
+                _atomic_write_ui_owner_record(owner_path, {"attempt": 1})
+                create_file = ctypes.windll.kernel32.CreateFileW
+                create_file.restype = ctypes.c_void_p
+                handle = create_file(
+                    str(owner_path),
+                    0x80000000,  # GENERIC_READ
+                    1,  # FILE_SHARE_READ: deliberately denies replacement
+                    None,
+                    3,  # OPEN_EXISTING
+                    0x80,
+                    None,
+                )
+                self.assertNotIn(handle, (0, ctypes.c_void_p(-1).value))
+                actual_root = Root()
+                actual_errors: list[BaseException] = []
+                actual = TkSurfacePublicationRetry(
+                    actual_root,
+                    lambda: _atomic_write_ui_owner_record(
+                        owner_path, {"attempt": 2}
+                    ),
+                    stopped=lambda: False,
+                    terminal=actual_errors.append,
+                )
+                try:
+                    actual.request()
+                    actual_root.idle.pop()()  # type: ignore[operator]
+                    self.assertEqual(
+                        json.loads(owner_path.read_text(encoding="utf-8"))["attempt"],
+                        1,
+                    )
+                    self.assertEqual(len(actual_root.timers), 1)
+                finally:
+                    ctypes.windll.kernel32.CloseHandle(handle)
+                actual_root.timers.pop()()  # type: ignore[operator]
+                self.assertEqual(
+                    json.loads(owner_path.read_text(encoding="utf-8"))["attempt"],
+                    2,
+                )
+                self.assertEqual(actual_errors, [])
 
     def test_ui_surface_republishes_same_generation_after_tk_is_mapped(self) -> None:
         selected = self.root / "mapped-selected"

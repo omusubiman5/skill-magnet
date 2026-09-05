@@ -705,6 +705,154 @@ public sealed class SkillMagnetLogSnapshot {
     public bool Stable;
     public string Error;
 }
+public sealed class SkillMagnetStableBytesSnapshot {
+    public byte[] Bytes;
+    public bool Stable;
+    public string Error;
+}
+public static class SkillMagnetStableBytes {
+    public static Action TestAfterFirstRead;
+    public static Action TestBeforePathReopen;
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BY_HANDLE_FILE_INFORMATION {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandle(
+        IntPtr handle, out BY_HANDLE_FILE_INFORMATION information);
+    private static bool Info(FileStream stream, out BY_HANDLE_FILE_INFORMATION value) {
+        return GetFileInformationByHandle(
+            stream.SafeFileHandle.DangerousGetHandle(), out value);
+    }
+    private static string Identity(BY_HANDLE_FILE_INFORMATION value) {
+        return value.VolumeSerialNumber.ToString("x8") + ":" +
+            value.FileIndexHigh.ToString("x8") + value.FileIndexLow.ToString("x8");
+    }
+    private static long Size(BY_HANDLE_FILE_INFORMATION value) {
+        return ((long)value.FileSizeHigh << 32) | value.FileSizeLow;
+    }
+    private static long WriteTicks(BY_HANDLE_FILE_INFORMATION value) {
+        return ((long)value.LastWriteTime.dwHighDateTime << 32) |
+            (uint)value.LastWriteTime.dwLowDateTime;
+    }
+    private static byte[] ReadExact(FileStream stream, int length) {
+        byte[] bytes = new byte[length];
+        stream.Seek(0, SeekOrigin.Begin);
+        int offset = 0;
+        while (offset < length) {
+            int count = stream.Read(bytes, offset, length - offset);
+            if (count <= 0) return null;
+            offset += count;
+        }
+        return bytes;
+    }
+    private static bool Equal(byte[] left, byte[] right) {
+        if (left == null || right == null || left.Length != right.Length) return false;
+        for (int index = 0; index < left.Length; index++)
+            if (left[index] != right[index]) return false;
+        return true;
+    }
+    public static SkillMagnetStableBytesSnapshot Read(string path, int maximum) {
+        SkillMagnetStableBytesSnapshot result = new SkillMagnetStableBytesSnapshot();
+        try {
+            string full = Path.GetFullPath(path);
+            FileAttributes attributes = File.GetAttributes(full);
+            FileAttributes parentAttributes = File.GetAttributes(Path.GetDirectoryName(full));
+            if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0 ||
+                (parentAttributes & FileAttributes.ReparsePoint) != 0) {
+                result.Error = "not_regular"; return result;
+            }
+            BY_HANDLE_FILE_INFORMATION firstInfo;
+            BY_HANDLE_FILE_INFORMATION secondInfo;
+            byte[] first;
+            byte[] second;
+            using (FileStream stream = new FileStream(
+                full, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete)) {
+                if (!Info(stream, out firstInfo)) {
+                    result.Error = "identity_unavailable"; return result;
+                }
+                long length = Size(firstInfo);
+                if (length <= 0 || length > maximum) {
+                    result.Error = "invalid_length"; return result;
+                }
+                first = ReadExact(stream, (int)length);
+                Action fault = TestAfterFirstRead;
+                if (fault != null) fault();
+                second = ReadExact(stream, (int)length);
+                if (!Info(stream, out secondInfo) ||
+                    !String.Equals(Identity(firstInfo), Identity(secondInfo), StringComparison.Ordinal) ||
+                    Size(firstInfo) != Size(secondInfo) ||
+                    WriteTicks(firstInfo) != WriteTicks(secondInfo) || !Equal(first, second)) {
+                    result.Error = "changed_during_read"; return result;
+                }
+            }
+            attributes = File.GetAttributes(full);
+            parentAttributes = File.GetAttributes(Path.GetDirectoryName(full));
+            if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0 ||
+                (parentAttributes & FileAttributes.ReparsePoint) != 0) {
+                result.Error = "path_changed"; return result;
+            }
+            Action pathFault = TestBeforePathReopen;
+            if (pathFault != null) pathFault();
+            BY_HANDLE_FILE_INFORMATION reopened;
+            BY_HANDLE_FILE_INFORMATION reopenedAfter;
+            byte[] finalBytes;
+            using (FileStream stream = new FileStream(
+                full, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete)) {
+                if (!Info(stream, out reopened)) {
+                    result.Error = "identity_unavailable"; return result;
+                }
+                long reopenedLength = Size(reopened);
+                if (reopenedLength <= 0 || reopenedLength > maximum) {
+                    result.Error = "invalid_length"; return result;
+                }
+                finalBytes = ReadExact(stream, (int)reopenedLength);
+                if (!Info(stream, out reopenedAfter)) {
+                    result.Error = "identity_unavailable"; return result;
+                }
+            }
+            if (!String.Equals(Identity(firstInfo), Identity(reopened), StringComparison.Ordinal) ||
+                Size(firstInfo) != Size(reopened) ||
+                WriteTicks(firstInfo) != WriteTicks(reopened) || !Equal(first, finalBytes)) {
+                result.Error = "path_identity_changed"; return result;
+            }
+            if (!String.Equals(Identity(reopened), Identity(reopenedAfter), StringComparison.Ordinal) ||
+                Size(reopened) != Size(reopenedAfter) ||
+                WriteTicks(reopened) != WriteTicks(reopenedAfter)) {
+                result.Error = "changed_during_read"; return result;
+            }
+            attributes = File.GetAttributes(full);
+            parentAttributes = File.GetAttributes(Path.GetDirectoryName(full));
+            if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0 ||
+                (parentAttributes & FileAttributes.ReparsePoint) != 0) {
+                result.Error = "path_changed"; return result;
+            }
+            result.Bytes = first;
+            result.Stable = true;
+            return result;
+        }
+        catch (FileNotFoundException) { result.Error = "not_found"; return result; }
+        catch (DirectoryNotFoundException) { result.Error = "not_found"; return result; }
+        catch (IOException error) {
+            int code = error.HResult & 0xffff;
+            result.Error = (code == 32 || code == 33) ? "sharing_violation" : "io_error";
+            return result;
+        }
+        catch (UnauthorizedAccessException) { result.Error = "access_denied"; return result; }
+        catch { result.Error = "unexpected_error"; return result; }
+    }
+}
 public static class SkillMagnetStableLog {
     public static Action TestAfterReadBeforeFinalIdentity;
     [StructLayout(LayoutKind.Sequential)]
@@ -1603,28 +1751,21 @@ function Read-ValidatedFieldContextOwner() {
         ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and
         ($parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0
     ) "Context UI owner receipt and its state directory must not be reparse points."
-    $stream = [IO.FileStream]::new(
-        $item.FullName,
-        [IO.FileMode]::Open,
-        [IO.FileAccess]::Read,
-        [IO.FileShare]::Read
-    )
-    try {
-        Assert-Field ($stream.Length -gt 0 -and $stream.Length -le 262144) `
-            "Context UI owner receipt size is outside the accepted range."
-        $buffer = [IO.MemoryStream]::new()
-        try {
-            $stream.CopyTo($buffer)
-            $beforeBytes = $buffer.ToArray()
-        }
-        finally { $buffer.Dispose() }
-        $pinnedItem = Get-Item -LiteralPath $script:FieldContextOwnerPath -Force
-        Assert-Field (
-            ($pinnedItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and
-            [long]$pinnedItem.Length -eq $stream.Length
-        ) "Context UI owner receipt path changed while its pinned handle was open."
+    $stable = [SkillMagnetStableBytes]::Read($item.FullName, 262144)
+    if (-not $stable.Stable) {
+        # An atomic producer replacement or an in-place read race is
+        # transitional.  The caller's bounded poll retries it; stable malformed
+        # JSON still reaches the strict parser below and fails closed.
+        if ([string]$stable.Error -in @(
+            "changed_during_read", "path_identity_changed",
+            "sharing_violation", "not_found"
+        )) { return $null }
+        throw (
+            "Context UI owner receipt cannot be safely read: " +
+            [string]$stable.Error
+        )
     }
-    finally { $stream.Dispose() }
+    $beforeBytes = [byte[]]$stable.Bytes
     $encoded = [Convert]::ToBase64String($beforeBytes)
     $validator = @'
 import base64
