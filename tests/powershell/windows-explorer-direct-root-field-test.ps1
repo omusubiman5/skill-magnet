@@ -546,18 +546,6 @@ public static class SkillMagnetFieldInput {
         }
         return null;
     }
-    private static bool UiaChainContainsHwnd(AutomationElement element, IntPtr expectedRoot) {
-        AutomationElement current = element;
-        TreeWalker walker = TreeWalker.RawViewWalker;
-        for (int depth = 0; depth < 64 && current != null; depth++) {
-            try {
-                if (current.Current.NativeWindowHandle == expectedRoot.ToInt32()) return true;
-                current = walker.GetParent(current);
-            }
-            catch { return false; }
-        }
-        return false;
-    }
     private static bool RowMatches(
         AutomationElement child, IntPtr root, uint expectedProcessId,
         string expectedRowRuntimeKey, int expectedRowControlType,
@@ -585,6 +573,10 @@ public static class SkillMagnetFieldInput {
         string receiptPath, string expectedReceiptSha256,
         string expectedProcessInstanceId, string expectedGeneration,
         long expectedRevision, string expectedSemanticId,
+        bool requireImmutableChild, string expectedChildRuntimeKey,
+        int expectedChildControlType, double expectedChildX, double expectedChildY,
+        double expectedChildWidth, double expectedChildHeight,
+        bool expectedChildEnabled, bool expectedChildOffscreen,
         string expectedRowRuntimeKey, int expectedRowControlType,
         string expectedRowNameSha256, double expectedRowX, double expectedRowY,
         double expectedRowWidth, double expectedRowHeight, bool rightClick) {
@@ -616,6 +608,14 @@ public static class SkillMagnetFieldInput {
         System.Windows.Rect initialUiaRectangle = initialUia.Current.BoundingRectangle;
         bool initialUiaEnabled = initialUia.Current.IsEnabled;
         bool initialUiaOffscreen = initialUia.Current.IsOffscreen;
+        if (requireImmutableChild && (
+            !String.Equals(initialUiaRuntimeKey, expectedChildRuntimeKey,
+                StringComparison.Ordinal) ||
+            initialUiaControlType != expectedChildControlType ||
+            !SameRectangle(initialUiaRectangle, new System.Windows.Rect(
+                expectedChildX, expectedChildY, expectedChildWidth, expectedChildHeight)) ||
+            initialUiaEnabled != expectedChildEnabled ||
+            initialUiaOffscreen != expectedChildOffscreen)) return false;
         if (String.IsNullOrEmpty(initialUiaRuntimeKey) || !RowMatches(
             initialUia, root, expectedProcessId, expectedRowRuntimeKey,
             expectedRowControlType, expectedRowNameSha256, expectedRowX, expectedRowY,
@@ -654,6 +654,14 @@ public static class SkillMagnetFieldInput {
             !SameRectangle(finalUia.Current.BoundingRectangle, initialUiaRectangle) ||
             finalUia.Current.IsEnabled != initialUiaEnabled ||
             finalUia.Current.IsOffscreen != initialUiaOffscreen ||
+            (requireImmutableChild && (
+                !String.Equals(RuntimeKey(finalUia), expectedChildRuntimeKey,
+                    StringComparison.Ordinal) ||
+                finalUia.Current.ControlType.Id != expectedChildControlType ||
+                !SameRectangle(finalUia.Current.BoundingRectangle, new System.Windows.Rect(
+                    expectedChildX, expectedChildY, expectedChildWidth, expectedChildHeight)) ||
+                finalUia.Current.IsEnabled != expectedChildEnabled ||
+                finalUia.Current.IsOffscreen != expectedChildOffscreen)) ||
             !RowMatches(finalUia, root, expectedProcessId, expectedRowRuntimeKey,
                 expectedRowControlType, expectedRowNameSha256, expectedRowX, expectedRowY,
                 expectedRowWidth, expectedRowHeight) ||
@@ -717,6 +725,53 @@ public static class SkillMagnetStableLog {
         long fileTime = ((long)value.LastWriteTime.dwHighDateTime << 32) |
             (uint)value.LastWriteTime.dwLowDateTime;
         return fileTime;
+    }
+    public static SkillMagnetLogSnapshot ReadPinned(string path, FileStream stream) {
+        SkillMagnetLogSnapshot result = new SkillMagnetLogSnapshot();
+        try {
+            string full = Path.GetFullPath(path);
+            FileAttributes attributes = File.GetAttributes(full);
+            if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0) {
+                result.Error = "not_regular"; return result;
+            }
+            BY_HANDLE_FILE_INFORMATION before;
+            BY_HANDLE_FILE_INFORMATION after;
+            if (!Info(stream, out before)) { result.Error = "identity_unavailable"; return result; }
+            long length = Size(before);
+            if (length < 0 || length > 16 * 1024 * 1024 || (length % 2) != 0) {
+                result.Error = "invalid_length"; return result;
+            }
+            byte[] bytes = new byte[(int)length];
+            stream.Seek(0, SeekOrigin.Begin);
+            int offset = 0;
+            while (offset < bytes.Length) {
+                int count = stream.Read(bytes, offset, bytes.Length - offset);
+                if (count <= 0) { result.Error = "short_read"; return result; }
+                offset += count;
+            }
+            Action fault = TestAfterReadBeforeFinalIdentity;
+            if (fault != null) fault();
+            if (!Info(stream, out after)) { result.Error = "identity_unavailable"; return result; }
+            if (!String.Equals(Identity(before), Identity(after), StringComparison.Ordinal) ||
+                Size(before) != Size(after) || WriteTicks(before) != WriteTicks(after)) {
+                result.Error = "changed_during_read"; return result;
+            }
+            attributes = File.GetAttributes(full);
+            if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0) {
+                result.Error = "path_changed"; return result;
+            }
+            result.Text = new UnicodeEncoding(false, false, true).GetString(bytes);
+            result.Identity = Identity(before);
+            result.Length = length;
+            result.LastWriteUtcTicks = WriteTicks(before);
+            result.Complete = length == 0 || result.Text.EndsWith("\r\n", StringComparison.Ordinal);
+            result.Stable = true;
+            return result;
+        }
+        catch (DecoderFallbackException) { result.Error = "invalid_utf16"; return result; }
+        catch (IOException) { result.Error = "io_error"; return result; }
+        catch (UnauthorizedAccessException) { result.Error = "access_denied"; return result; }
+        catch { result.Error = "unexpected_error"; return result; }
     }
     public static SkillMagnetLogSnapshot Read(string path) {
         SkillMagnetLogSnapshot result = new SkillMagnetLogSnapshot();
@@ -785,6 +840,8 @@ public sealed class SkillMagnetStableLogReader : IDisposable {
     private readonly FileStream guard;
     private long lockedLength;
     private string identity;
+    private readonly System.Collections.Generic.List<Tuple<long, long>> locks =
+        new System.Collections.Generic.List<Tuple<long, long>>();
     private readonly System.Collections.Generic.List<MemoryMappedFile> mappings =
         new System.Collections.Generic.List<MemoryMappedFile>();
     public SkillMagnetStableLogReader(string value) {
@@ -813,7 +870,7 @@ public sealed class SkillMagnetStableLogReader : IDisposable {
         catch { return null; }
     }
     public SkillMagnetLogSnapshot Read() {
-        SkillMagnetLogSnapshot first = SkillMagnetStableLog.Read(path);
+        SkillMagnetLogSnapshot first = SkillMagnetStableLog.ReadPinned(path, guard);
         if (!first.Stable || !first.Complete) return first;
         if (identity != null && !String.Equals(identity, first.Identity,
             StringComparison.Ordinal)) {
@@ -823,18 +880,27 @@ public sealed class SkillMagnetStableLogReader : IDisposable {
             first.Stable = false; first.Error = "persistent_truncation"; return first;
         }
         if (first.Length > lockedLength) {
+            long offset = lockedLength;
+            long count = first.Length - lockedLength;
+            try { guard.Lock(offset, count); }
+            catch { first.Stable = false; first.Error = "append_lock_failed"; return first; }
             MemoryMappedFile mapping;
             try {
                 mapping = MemoryMappedFile.CreateFromFile(
                     guard, null, first.Length, MemoryMappedFileAccess.Read,
                     HandleInheritability.None, true);
             }
-            catch { first.Stable = false; first.Error = "append_mapping_failed"; return first; }
+            catch {
+                try { guard.Unlock(offset, count); } catch { }
+                first.Stable = false; first.Error = "append_mapping_failed"; return first;
+            }
             string lockedText = ReadGuardText(first.Length);
             if (!String.Equals(first.Text, lockedText, StringComparison.Ordinal)) {
                 mapping.Dispose();
+                try { guard.Unlock(offset, count); } catch { }
                 first.Stable = false; first.Error = "changed_before_append_lock"; return first;
             }
+            locks.Add(Tuple.Create(offset, count));
             mappings.Add(mapping);
             lockedLength = first.Length;
             identity = first.Identity;
@@ -844,9 +910,21 @@ public sealed class SkillMagnetStableLogReader : IDisposable {
         return first;
     }
     public void Dispose() {
-        foreach (MemoryMappedFile mapping in mappings) mapping.Dispose();
-        mappings.Clear();
-        guard.Dispose();
+        try {
+            foreach (Tuple<long, long> range in locks) {
+                try { guard.Unlock(range.Item1, range.Item2); } catch { }
+            }
+            locks.Clear();
+        }
+        finally {
+            try {
+                foreach (MemoryMappedFile mapping in mappings) {
+                    try { mapping.Dispose(); } catch { }
+                }
+                mappings.Clear();
+            }
+            finally { guard.Dispose(); }
+        }
     }
 }
 "@
@@ -1056,7 +1134,21 @@ function Invoke-CheckedExplorerPhysicalClick(
     $rowControlType = 0
     $rowNameSha256 = ""
     $rowX = $rowY = $rowWidth = $rowHeight = [double]0
+    $requireImmutableChild = $null -ne $ExpectedRowSnapshot
+    $childRuntimeKey = ""
+    $childControlType = 0
+    $childX = $childY = $childWidth = $childHeight = [double]0
+    $childEnabled = $true
+    $childOffscreen = $false
     if ($null -ne $ExpectedRowSnapshot) {
+        $childRuntimeKey = [string]$ExpectedRowSnapshot.child_runtime_key
+        $childControlType = [int]$ExpectedRowSnapshot.child_control_type
+        $childX = [double]$ExpectedRowSnapshot.child_x
+        $childY = [double]$ExpectedRowSnapshot.child_y
+        $childWidth = [double]$ExpectedRowSnapshot.child_width
+        $childHeight = [double]$ExpectedRowSnapshot.child_height
+        $childEnabled = [bool]$ExpectedRowSnapshot.child_enabled
+        $childOffscreen = [bool]$ExpectedRowSnapshot.child_offscreen
         $rowRuntimeKey = [string]$ExpectedRowSnapshot.runtime_key
         $rowControlType = [int]$ExpectedRowSnapshot.control_type
         $rowNameSha256 = [string]$ExpectedRowSnapshot.name_sha256
@@ -1072,6 +1164,8 @@ function Invoke-CheckedExplorerPhysicalClick(
         $X, $Y, $expectedHwnd, $rootHandle, $rootPid,
         [string]$identity.executable_path, [long]$identity.start_time_utc_ticks,
         $false, $nameSha256, "", "", "", "", [long]0, "",
+        $requireImmutableChild, $childRuntimeKey, $childControlType,
+        $childX, $childY, $childWidth, $childHeight, $childEnabled, $childOffscreen,
         $rowRuntimeKey, $rowControlType, $rowNameSha256,
         $rowX, $rowY, $rowWidth, $rowHeight, $RightClick
     )) "Explorer target changed at the final input boundary; no mouse input was sent."
@@ -2020,7 +2114,9 @@ function Invoke-FieldUiSurfaceWidget(
             [string]$finalReceipt.owner.process_instance_id,
             [string]$ExpectedGeneration,
             [long]$finalReceipt.surface.revision,
-            [string]$Id, "", 0, "", [double]0, [double]0,
+            [string]$Id, $false, "", 0, [double]0, [double]0,
+            [double]0, [double]0, $true, $false,
+            "", 0, "", [double]0, [double]0,
             [double]0, [double]0, $false
         )) "Receipt-bound '$Id' cursor/hit identity changed; no mouse input was sent."
         if ($ExpectedNextPhase -and $ExpectedNextTitlePrefix) {

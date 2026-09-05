@@ -2107,6 +2107,12 @@ if (@($uiReceipts | Where-Object { $_.project_sha256 -ceq $_.target_sha256 }).Co
             "expectedGeneration",
             "expectedRevision",
             "expectedSemanticId",
+            "requireImmutableChild",
+            "expectedChildRuntimeKey",
+            "expectedChildControlType",
+            "expectedChildWidth",
+            "expectedChildEnabled",
+            "expectedChildOffscreen",
             "TestAfterInitialValidation",
         ):
             self.assertIn(required, checked)
@@ -2322,7 +2328,8 @@ try {{
     $hwndResult = [SkillMagnetFieldInput]::CheckedClickCurrent(
         $point.X, $point.Y, $button.Handle, $root.Handle, [uint32]$process.Id,
         $exe, [long]$ticks, $true, $nameSha,
-        "", "", "", "", [long]0, "", "", 0, "",
+        "", "", "", "", [long]0, "", $false, "", 0,
+        [double]0, [double]0, [double]0, [double]0, $true, $false, "", 0, "",
         [double]0, [double]0, [double]0, [double]0, $false
     )
     [SkillMagnetFieldInput]::TestAfterInitialValidation = $null
@@ -2348,7 +2355,8 @@ try {{
     $receiptResult = [SkillMagnetFieldInput]::CheckedClickCurrent(
         $point.X, $point.Y, $button.Handle, $root.Handle, [uint32]$process.Id,
         $exe, [long]$ticks, $true, $nameSha, $receiptPath, $receiptSha,
-        $processInstance, $generation, [long]1, "guarded", "", 0, "",
+        $processInstance, $generation, [long]1, "guarded", $false, "", 0,
+        [double]0, [double]0, [double]0, [double]0, $true, $false, "", 0, "",
         [double]0, [double]0, [double]0, [double]0, $false
     )
     [SkillMagnetFieldInput]::TestAfterInitialValidation = $null
@@ -2361,7 +2369,8 @@ try {{
     $uiaResult = [SkillMagnetFieldInput]::CheckedClickCurrent(
         $point.X, $point.Y, $button.Handle, $root.Handle, [uint32]$process.Id,
         $exe, [long]$ticks, $true, $nameSha, $receiptPath, $receiptSha,
-        $processInstance, $generation, [long]1, "guarded", "", 0, "",
+        $processInstance, $generation, [long]1, "guarded", $false, "", 0,
+        [double]0, [double]0, [double]0, [double]0, $true, $false, "", 0, "",
         [double]0, [double]0, [double]0, [double]0, $false
     )
     [SkillMagnetFieldInput]::TestAfterInitialValidation = $null
@@ -2488,6 +2497,8 @@ function Run-Fault([string]$Kind, [int]$Offset) {{
             [IO.Path]::GetFullPath($process.MainModule.FileName),
             [long]$process.StartTime.ToUniversalTime().Ticks,
             $true, (Sha "guarded-child"), "", "", "", "", [long]0, "",
+            $false, "", 0, [double]0, [double]0,
+            [double]0, [double]0, $true, $false,
             $rowRuntime, [int]$rowUia.Current.ControlType.Id, (Sha $rowUia.Current.Name),
             [double]$rowRect.X, [double]$rowRect.Y,
             [double]$rowRect.Width, [double]$rowRect.Height, $false
@@ -2593,7 +2604,7 @@ function Run-Sequence([string]$Kind, [int]$Offset) {{
         [Windows.Forms.Application]::DoEvents()
         if ($Kind -eq "reparent") {{ $competitor.Controls.Add($button) }}
         elseif ($Kind -eq "move") {{ $row.SetBounds(21, 30, 260, 80) }}
-        else {{
+        elseif ($Kind -notlike "boundary_*") {{
             $root.Controls.Remove($row)
             $replacement = [Windows.Forms.Panel]::new(); $replacement.Text = "selected-row"
             $replacement.SetBounds(20, 30, 260, 80)
@@ -2605,6 +2616,18 @@ function Run-Sequence([string]$Kind, [int]$Offset) {{
         [Windows.Forms.Application]::DoEvents()
         [SkillMagnetFieldInput]::SetCursorPos($point.X, $point.Y) | Out-Null
         [SkillMagnetFieldInput]::FocusWindow($root.Handle) | Out-Null
+        if ($Kind -eq "boundary_child_move") {{
+            [SkillMagnetFieldInput]::TestAfterInitialValidation = [Action]{{
+                $button.SetBounds(31, 20, 170, 40)
+                [Windows.Forms.Application]::DoEvents()
+            }}
+        }}
+        elseif ($Kind -eq "boundary_child_disable") {{
+            [SkillMagnetFieldInput]::TestAfterInitialValidation = [Action]{{
+                $button.Enabled = $false
+                [Windows.Forms.Application]::DoEvents()
+            }}
+        }}
         $rightRejected = $false
         try {{
             Invoke-CheckedExplorerPhysicalClick `
@@ -2613,13 +2636,18 @@ function Run-Sequence([string]$Kind, [int]$Offset) {{
         [Windows.Forms.Application]::DoEvents()
         return $left -and $rightRejected
     }}
-    finally {{ $competitor.Close(); $root.Close() }}
+    finally {{
+        [SkillMagnetFieldInput]::TestAfterInitialValidation = $null
+        $competitor.Close(); $root.Close()
+    }}
 }}
 $script:rightCount = 0
 [pscustomobject]@{{
     reparent = Run-Sequence "reparent" 0
     move = Run-Sequence "move" 4
     same_name_swap = Run-Sequence "same_name_swap" 8
+    boundary_child_move = Run-Sequence "boundary_child_move" 12
+    boundary_child_disable = Run-Sequence "boundary_child_disable" 16
     right_mouse_zero = $script:rightCount -eq 0
 }} | ConvertTo-Json -Compress
 '''
@@ -2697,6 +2725,9 @@ $script:rightCount = 0
         self.assertIn("GetFileInformationByHandle", native_reader)
         self.assertIn("MemoryMappedFile.CreateFromFile", native_reader)
         self.assertIn("mappings.Add(mapping)", native_reader)
+        self.assertIn("guard.Lock(offset, count)", native_reader)
+        self.assertIn("guard.Unlock(range.Item1, range.Item2)", native_reader)
+        self.assertIn("locks.Add(Tuple.Create(offset, count))", native_reader)
         self.assertIn("$snapshot = $script:InvokeLogReaders[$full].Read()", reader)
         self.assertNotIn("ReadAllText", reader)
 
@@ -2741,14 +2772,28 @@ try {{
     $path = Join-Path $root "invoke.log"
     Write-Utf16 $path "one`r`n"
     $initial = @(Read-InvokeLines $path).Count -eq 1
+    $sameLengthWriteRejected = $false
+    try {{
+        $attack = [IO.FileStream]::new($path, [IO.FileMode]::Open,
+            [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)
+        try {{
+            $same = [Text.Encoding]::Unicode.GetBytes("two`r`n")
+            $attack.Position = 0
+            $attack.Write($same, 0, $same.Length)
+            $attack.Flush($true)
+        }} finally {{ $attack.Dispose() }}
+    }} catch {{ $sameLengthWriteRejected = $true }}
+    Append-Utf16 $path "append-ok`r`n"
+    $normalLines = @(Read-InvokeLines $path)
+    $normalEofAppend = $normalLines.Count -eq 2
     Append-Utf16 $path "part"
-    $partialHeld = @(Read-InvokeLines $path).Count -eq 1
+    $partialHeld = @(Read-InvokeLines $path).Count -eq 2
     Append-Utf16 $path "ial`r`n"
-    $partialCompleted = @(Read-InvokeLines $path).Count -eq 2
+    $partialCompleted = @(Read-InvokeLines $path).Count -eq 3
     Append-Utf16 $path "terminal"
-    $partialTerminalHeld = @(Read-InvokeLines $path).Count -eq 2
+    $partialTerminalHeld = @(Read-InvokeLines $path).Count -eq 3
     Append-Utf16 $path "`r`n"
-    $partialTerminalCompleted = @(Read-InvokeLines $path).Count -eq 3
+    $partialTerminalCompleted = @(Read-InvokeLines $path).Count -eq 4
 
     $truncateRejected = $false
     try {{ Write-Utf16 $path "x`r`n" }} catch {{ $truncateRejected = $true }}
@@ -2759,7 +2804,16 @@ try {{
     Write-Utf16 $path "one`r`n"
     Read-InvokeLines $path | Out-Null
     $incompleteRewriteRejected = $false
-    try {{ Write-Utf16 $path "x" }} catch {{ $incompleteRewriteRejected = $true }}
+    try {{
+        $attack = [IO.FileStream]::new($path, [IO.FileMode]::Open,
+            [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)
+        try {{
+            $attack.SetLength(0)
+            $forged = [Text.Encoding]::Unicode.GetBytes("one`r`nforged`r`n")
+            $attack.Write($forged, 0, $forged.Length)
+            $attack.Flush($true)
+        }} finally {{ $attack.Dispose() }}
+    }} catch {{ $incompleteRewriteRejected = $true }}
     $forgedRegrowthRejected = $incompleteRewriteRejected -and
         (@(Read-InvokeLines $path).Count -eq 1)
 
@@ -2796,6 +2850,8 @@ try {{
 
     [pscustomobject]@{{
         initial = $initial
+        same_length_write_rejected = $sameLengthWriteRejected
+        normal_eof_append = $normalEofAppend
         partial_held = $partialHeld
         partial_completed = $partialCompleted
         partial_terminal_held = $partialTerminalHeld
