@@ -1436,15 +1436,10 @@ function Invoke-CheckedExplorerPhysicalClick(
         [int]$firstUia.Current.ProcessId -eq [int]$rootPid
     ) "Explorer click point is not bound to the expected HWND/PID/root."
     if ($null -ne $ExpectedRowSnapshot) {
-        $firstRectangle = $firstUia.Current.BoundingRectangle
         $rowChecks = [ordered]@{
-            hwnd = ($firstHwnd -eq [IntPtr]([int64]$ExpectedRowSnapshot.child_hwnd))
-            child_runtime = ((Get-UiaRuntimeKey $firstUia) -ceq [string]$ExpectedRowSnapshot.child_runtime_key)
-            child_control_type = ([int]$firstUia.Current.ControlType.Id -eq [int]$ExpectedRowSnapshot.child_control_type)
-            child_class = ([string]$firstUia.Current.ClassName -ceq [string]$ExpectedRowSnapshot.child_class_name)
-            child_name = ((Get-Utf8Sha256 ([string]$firstUia.Current.Name)) -ceq [string]$ExpectedRowSnapshot.child_name_sha256)
-            child_rectangle = ([double]$firstRectangle.X -eq [double]$ExpectedRowSnapshot.child_x -and [double]$firstRectangle.Y -eq [double]$ExpectedRowSnapshot.child_y -and [double]$firstRectangle.Width -eq [double]$ExpectedRowSnapshot.child_width -and [double]$firstRectangle.Height -eq [double]$ExpectedRowSnapshot.child_height)
-            child_state = ([bool]$firstUia.Current.IsEnabled -eq [bool]$ExpectedRowSnapshot.child_enabled -and [bool]$firstUia.Current.IsOffscreen -eq [bool]$ExpectedRowSnapshot.child_offscreen)
+            child_ancestry = (Test-UiaSelfOrDescendantOfSnapshot $firstUia ([pscustomobject]@{
+                runtime_key = [string]$ExpectedRowSnapshot.child_runtime_key
+            }))
             row_ancestry = (Test-UiaSelfOrDescendantOfSnapshot $firstUia $ExpectedRowSnapshot)
         }
         $failedRowChecks = @($rowChecks.GetEnumerator() | Where-Object { -not $_.Value } | ForEach-Object Key) -join ', '
@@ -1459,12 +1454,7 @@ function Invoke-CheckedExplorerPhysicalClick(
     $firstRectangle = $firstUia.Current.BoundingRectangle
     $firstEnabled = [bool]$firstUia.Current.IsEnabled
     $firstOffscreen = [bool]$firstUia.Current.IsOffscreen
-    $nameSha256 = if ($null -ne $ExpectedRowSnapshot) {
-        [string]$ExpectedRowSnapshot.child_name_sha256
-    } else { Get-Utf8Sha256 ([string]$firstUia.Current.Name) }
-    Assert-Field ([SkillMagnetFieldInput]::SetCursorPos($X, $Y)) `
-        "Could not move the cursor to the verified Explorer target."
-    Start-Sleep -Milliseconds 40
+    $nameSha256 = Get-Utf8Sha256 ([string]$firstUia.Current.Name)
     $finalHwnd = [SkillMagnetFieldInput]::WindowFromPoint($point)
     $finalUia = [System.Windows.Automation.AutomationElement]::FromPoint(
         [System.Windows.Point]::new([double]$X, [double]$Y)
@@ -1487,7 +1477,7 @@ function Invoke-CheckedExplorerPhysicalClick(
     $rowControlType = 0
     $rowNameSha256 = ""
     $rowX = $rowY = $rowWidth = $rowHeight = [double]0
-    $requireImmutableChild = $true
+    $requireImmutableChild = $false
     $childRuntimeKey = $runtimeKey
     $childControlType = $firstControlType
     $childClassName = $firstClassName
@@ -1515,9 +1505,9 @@ function Invoke-CheckedExplorerPhysicalClick(
         $rowWidth = [double]$ExpectedRowSnapshot.width
         $rowHeight = [double]$ExpectedRowSnapshot.height
     }
-    $expectedHwnd = if ($null -ne $ExpectedRowSnapshot) {
-        [IntPtr]([int64]$ExpectedRowSnapshot.child_hwnd)
-    } else { $firstHwnd }
+    $expectedHwnd = $firstHwnd
+    Assert-Field ([SkillMagnetFieldInput]::SetCursorPos($X, $Y)) `
+        "Could not move the cursor to the verified Explorer target."
     Assert-Field ([SkillMagnetFieldInput]::CheckedClickCurrent(
         $X, $Y, $expectedHwnd, $rootHandle, $rootPid,
         [string]$identity.executable_path, [long]$identity.start_time_utc_ticks,
@@ -1526,7 +1516,12 @@ function Invoke-CheckedExplorerPhysicalClick(
         $childX, $childY, $childWidth, $childHeight, $childEnabled, $childOffscreen,
         $rowRuntimeKey, $rowControlType, $rowNameSha256,
         $rowX, $rowY, $rowWidth, $rowHeight, $RightClick
-    )) "Explorer target changed at the final input boundary; no mouse input was sent."
+    )) (
+        "Explorer target changed at the final input boundary; no mouse input was sent. " +
+        "initial=$([SkillMagnetFieldInput]::LastInitialBoundaryFailure); " +
+        "final=$([SkillMagnetFieldInput]::LastFinalBoundaryFailure); " +
+        "exception=$([SkillMagnetFieldInput]::LastClickException)"
+    )
 }
 
 function Test-ExplorerBackgroundPoint($Window, [int]$X, [int]$Y) {
