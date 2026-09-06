@@ -3321,13 +3321,7 @@ function New-UiReceiptEvidence(
 function Wait-MissingSkillRecoveryDialog([int]$ExpectedProcessId, [int]$Seconds = 30) {
     $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
     do {
-        $windowCondition = New-Object System.Windows.Automation.PropertyCondition(
-            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-            [System.Windows.Automation.ControlType]::Window
-        )
-        $windows = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
-            [System.Windows.Automation.TreeScope]::Children, $windowCondition
-        )
+        $windows = @(Get-VisibleWindowsByPrefix "" $ExpectedProcessId)
         foreach ($window in @($windows)) {
             try {
                 if ($window.Current.IsOffscreen -or [int]$window.Current.ProcessId -ne $ExpectedProcessId) {

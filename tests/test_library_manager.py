@@ -106,6 +106,47 @@ class LibraryManagerTests(unittest.TestCase):
                 f"delay={delay} stdout={completed.stdout} stderr={completed.stderr}",
             )
 
+    @unittest.skipUnless(os.name == "nt", "actual Windows Tk startup lifecycle")
+    def test_register_selected_rejects_missing_skill_before_library_prepare(self) -> None:
+        source_root = Path(__file__).resolve().parents[1]
+        code = "\n".join(
+            (
+                "import ctypes,sys,tempfile,threading,time",
+                "from pathlib import Path",
+                f"sys.path.insert(0, {str(source_root / 'src')!r})",
+                "import tkinter.messagebox as messagebox",
+                "import tkinter.ttk as ttk",
+                "import skill_magnet.library_ui as ui",
+                "root=Path(tempfile.mkdtemp(prefix='skill-magnet-register-invalid-'))",
+                "selected=root/'empty-selected'; selected.mkdir()",
+                "messages=[]",
+                "entries=[]",
+                "def capture_error(title,message,parent=None):",
+                " messages.append((title,message))",
+                " stack=list(parent.winfo_children())",
+                " while stack:",
+                "  widget=stack.pop(); stack.extend(widget.winfo_children())",
+                "  if isinstance(widget,ttk.Entry): entries.append(widget.get())",
+                "messagebox.showerror=capture_error",
+                "def unexpected_prepare(path): raise AssertionError('managed prepare ran before source validation')",
+                "ui.prepare_managed_repository=unexpected_prepare",
+                "ui.configured_repository_reference=lambda path: ('https://example.invalid/verified.git','a'*40)",
+                "def ready(hwnd):",
+                " def close():",
+                "  time.sleep(2); ctypes.windll.user32.PostMessageW(hwnd,0x0010,0,0)",
+                " threading.Thread(target=close,daemon=True).start()",
+                f"ui.show_library_manager(config_path=Path({str(source_root / 'skill-magnet.json')!r}),state_dir=root/'state',initial_repository=selected,register_selected=True,window_ready=ready)",
+                "assert len(messages)==1, messages",
+                "assert 'SKILL.md' in messages[0][1], messages",
+                "assert 'https://example.invalid/verified.git' in entries, entries",
+                "assert not (root/'state'/'library'/'skill-magnet-skills').exists()",
+            )
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, timeout=15
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
 
     def make_source_skill(self, parent: Path, skill_id: str, description: str = "Updated purpose") -> Path:
         source = parent / skill_id

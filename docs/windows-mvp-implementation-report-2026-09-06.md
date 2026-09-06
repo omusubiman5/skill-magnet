@@ -17,6 +17,8 @@
 
 実Explorerの局所再起動確認（12.38秒）：同じ選択folderでPID 16504→閉鎖→PID 31956の新規起動が成功。両回とも確認画面・ownerのcontext_selectionを観測し、閉鎖後はPID/window/ownerが消滅。config/library/transactionsとfolder内容は前後不変。証跡：`%TEMP%/skill-magnet-explorer-selected-relaunch/result.json`。8番目timeoutはこの局所経路では再現しないため、製品コードは追加変更しない。
 
+候補 `87e8f67` は前回の起動timeoutを通過し、空フォルダー登録で `Specific missing-SKILL.md recovery dialog did not appear`。direct登録でも先に「ローカルライブラリを読み取れません」が表示された。`finish_window_initialization` のcatalog_error分岐が `run_initial_registration` より先にreturnする実装と一致する。登録元の検査前に保管庫の移行・復旧が走り、無効な入力の原因を利用者に示せない製品側の順序問題と確定した。対策は登録元の読み取り検査だけを起動workerの先頭へ移し、無効なら保管庫の移行・読込・登録へ進めないこと。正常な登録元では既存の所有権・catalog検査を維持し、保護条件を迂回しない。
+
 ## 出荷範囲
 
 Windows Explorerからの起動、既存スキルの登録・更新・削除とGitHub反映、Codex Desktopアプリ／Claude Codeデスクトップアプリへの依頼受け渡し、エラー・中断からの復旧。

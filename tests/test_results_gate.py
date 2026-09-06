@@ -1917,6 +1917,12 @@ if (@($uiReceipts | Where-Object { $_.project_sha256 -ceq $_.target_sha256 }).Co
         ]
         self.assertIn("Get-VisibleWindowsByPrefix $Prefix $ProcessId", closed_wait)
         self.assertIn("VisibleTopLevelWindows([uint32]$ProcessId)", collector)
+        missing_wait = collector[
+            collector.index("function Wait-MissingSkillRecoveryDialog") :
+            collector.index("function Read-InvokeLines")
+        ]
+        self.assertIn('Get-VisibleWindowsByPrefix "" $ExpectedProcessId', missing_wait)
+        self.assertNotIn("RootElement.FindAll", missing_wait)
         self.assertIn("Close-LibraryManagerRecoverably $managerGui.element", collector)
         self.assertIn("Close-LibraryManagerRecoverably `", registration)
 

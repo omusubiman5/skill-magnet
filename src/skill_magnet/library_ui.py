@@ -2945,6 +2945,20 @@ def show_library_manager(
             next_remote, next_commit = configured_repository_reference(config_path)
             if cancel_event.is_set():
                 raise SkillMagnetError("終了操作を受け付けたため、起動確認を中止しました")
+            if register_selected:
+                try:
+                    if initial_repository is None:
+                        raise SkillMagnetError("右クリックしたフォルダーを取得できませんでした")
+                    require_registration_source(
+                        str(initial_repository), cancel_event=cancel_event
+                    )
+                except Exception as exc:
+                    return {
+                        "initial_registration_error": exc,
+                        "repair_notice": next_repair_notice,
+                        "configured_remote": next_remote,
+                        "configured_commit": next_commit,
+                    }
 
             next_recovery: dict[str, Any] = {"recovered": False}
             next_catalog_error: str | None
@@ -3016,6 +3030,12 @@ def show_library_manager(
             catalog_error = data.get("catalog_error")
             offer_remote_restore = bool(data.get("offer_remote_restore"))
             remote.set(configured_remote)
+            initial_registration_error = data.get("initial_registration_error")
+            if isinstance(initial_registration_error, Exception):
+                manager_surface_ready = True
+                publish_manager_surface()
+                show_error(initial_registration_error)
+                return
             if recovery_button is not None:
                 if offer_remote_restore:
                     recovery_button.pack(side="left", padx=3)
