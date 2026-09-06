@@ -1934,6 +1934,18 @@ function Invoke-RecoveryDialogOk(
         [int]$Dialog.Current.ProcessId -eq $ExpectedProcessId -and
         -not [bool]$Dialog.Current.IsOffscreen
     ) "Recovery dialog is not the expected visible process-owned window."
+    $dialogHandle = [IntPtr]([int64]$Dialog.Current.NativeWindowHandle)
+    Assert-Field ($dialogHandle -ne [IntPtr]::Zero) `
+        "Recovery dialog has no native window handle for the physical-input boundary."
+    Assert-Field ([SkillMagnetFieldInput]::FocusWindow($dialogHandle)) `
+        "Could not foreground the recovery dialog before its physical-input boundary."
+    Start-Sleep -Milliseconds 100
+    $Dialog = [System.Windows.Automation.AutomationElement]::FromHandle($dialogHandle)
+    Assert-Field (
+        $null -ne $Dialog -and
+        [int]$Dialog.Current.ProcessId -eq $ExpectedProcessId -and
+        -not [bool]$Dialog.Current.IsOffscreen
+    ) "Recovery dialog changed while it was foregrounded."
     $buttons = @($Dialog.FindAll(
         [System.Windows.Automation.TreeScope]::Descendants,
         [System.Windows.Automation.Condition]::TrueCondition
@@ -1966,9 +1978,6 @@ function Invoke-RecoveryDialogOk(
         $x = [int]($bounds.Left + ($bounds.Width / 2))
         $y = [int]($bounds.Top + ($bounds.Height / 2))
         $runtimeKey = Get-UiaRuntimeKey $button
-        $dialogHandle = [IntPtr]([int64]$Dialog.Current.NativeWindowHandle)
-        Assert-Field ($dialogHandle -ne [IntPtr]::Zero) `
-            "Recovery dialog has no native window handle for the physical-input boundary."
         $process = Get-Process -Id $ExpectedProcessId
         Assert-Field ([SkillMagnetFieldInput]::SetCursorPos($x, $y)) `
             "Could not move the cursor to the visible recovery OK action."
@@ -1984,7 +1993,10 @@ function Invoke-RecoveryDialogOk(
             (Get-Utf8Sha256 ([string]$button.Current.Name)), $false
         )
         Assert-Field $nativeClicked `
-            "Recovery OK action changed at the final physical-input boundary."
+            ("Recovery OK action changed at the physical-input boundary; " +
+             "initial=$([SkillMagnetFieldInput]::LastInitialBoundaryFailure); " +
+             "final=$([SkillMagnetFieldInput]::LastFinalBoundaryFailure); " +
+             "exception=$([SkillMagnetFieldInput]::LastClickException).")
     }
     Wait-VisibleWindowClosed $ExpectedProcessId $title
     if ($ExpectProcessExit) { Wait-ProcessExited $ExpectedProcessId }

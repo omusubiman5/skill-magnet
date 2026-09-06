@@ -35,4 +35,22 @@ Windows Explorerからの起動、既存スキルの登録・更新・削除とG
 | 利用者の実 `C:/Projects/cangjie-skill-clean/books` の検出 | 元データ変更なし。codex-cli 9、conflict-clarity 12、harness-bootstrap-prompt-v2-1 13、合計3パック34スキル |
 | 差分の空白エラー | なし |
 
+全体試験：414件、387.088秒。旧release台帳（187件・旧メニュー仕様）との不一致1件、スキップ1件。それ以外は成功。正式field成功後に台帳を実測更新し、この不一致を再検証する。
+
+候補 `bd49017` のwheel SHA-256：`1441b5f59bce28c1d60a238a84b89ab5782600b4285696a3ae7a653ccfa39f40`。同一wheelを導入し、source／wheel／installedのcli.py SHA-256が一致。context-menu statusはusable、native bindingはすべて一致、隔離native contract試験は成功。
+
+同候補の実Explorer試験ではManager遷移を通過した。次の復旧ダイアログで試験側クリックが拒否されたため診断を追加し、`initial=foreground` と確定した。試験がダイアログを前面化せずに「前面であること」を要求していた。対象を前面化・再取得してから既存の判定を行う最小修正を検証する。製品の配布内容はこの試験変更では変わらない。
+
 単体テスト成功は実Explorer操作、実GitHub公開、実デスクトップ受け渡しの成功を意味しない。これらの実機結果、配布物、公開情報は確認後に追記する。
+
+## 実GitHubの登録・更新・削除・再開
+
+合成スキルだけを置く非公開保管庫 `omusubiman5/skill-magnet-mvp-smoke-20260906` を作成して確認した。ユーザーの既存保管庫・本番設定には変更を加えていない。試験コード・一時設定は `%TEMP%/skill-magnet-mvp-github-20260906` にある。
+
+| 操作 | PR | 検証済みmerge commit |
+|---|---|---|
+| 登録・同一内容の再登録 | #1 | `2ad6bc6bb7b0c74bdb541f577734549e9ffb4f61` |
+| 更新 | #2 | `b92b45855f94d994f68535137d369c44471dfb4c` |
+| 削除 | #3 | `6c94b99499ab07caf18e54c41d73622f847b58a8` |
+
+全3件で実GitHubへのpush・PR・merge・remote bytes検証・隔離設定へのactivateが成功した。publish後に新しいLibraryTransactionインスタンスで再開し、同一PRを再利用した。activateの再実行も同じreceiptを返した。PRは3件だけで全件MERGED、READMEは残存。これはManagerが使う処理の実外部操作試験であり、GUI上の全CRUDクリックを行った試験とは区別する。
