@@ -95,9 +95,9 @@ try {
 
     $defaultConfig = python -c "from skill_magnet.cli import _default_config_path; print(_default_config_path())"
     $priorConfig = Join-Path $testBase "prior-skill-magnet.json"
-    $prior = Get-Content -LiteralPath $defaultConfig -Raw | ConvertFrom-Json
+    $prior = Get-Content -Encoding UTF8 -LiteralPath $defaultConfig -Raw | ConvertFrom-Json
     $prior.packs[0].purpose = "Prior installed release used only by the rollback lifecycle."
-    $prior | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $priorConfig -Encoding UTF8
+    [System.IO.File]::WriteAllText($priorConfig, ($prior | ConvertTo-Json -Depth 20), [System.Text.UTF8Encoding]::new($false))
 
     $installOutput = python -m skill_magnet --config $priorConfig install-context-menu `
         --platform windows --confirm | Out-String

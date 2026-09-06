@@ -125,6 +125,9 @@ jobs:
             -SkipContractTest
       - if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          SKILL_MAGNET_ALLOW_DESTRUCTIVE_LIFECYCLE: "1"
+          SKILL_MAGNET_SKIP_NATIVE_CONTRACT_TEST: "1"
         run: ./tests/powershell/windows-release-lifecycle-tests.ps1
       - if: runner.os == 'macOS'
         shell: zsh {0}

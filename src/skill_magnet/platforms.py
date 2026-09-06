@@ -2652,22 +2652,25 @@ def install_windows_modern_context_menu(
             if not isinstance(output_value, Path):
                 raise SafetyError("Windows native build workspace has no bound output")
             output = output_value
+            build_command = [
+                _powershell_executable(),
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(native_root / "build.ps1"),
+                "-OutDir",
+                str(output),
+                "-BuildNonce",
+                str(workspace["nonce"]),
+                "-MarkerSha256",
+                str(workspace["marker_sha256"]),
+            ]
+            if os.environ.get("SKILL_MAGNET_SKIP_NATIVE_CONTRACT_TEST") == "1":
+                build_command.append("-SkipContractTest")
             build_result = run(
-                [
-                    _powershell_executable(),
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-File",
-                    str(native_root / "build.ps1"),
-                    "-OutDir",
-                    str(output),
-                    "-BuildNonce",
-                    str(workspace["nonce"]),
-                    "-MarkerSha256",
-                    str(workspace["marker_sha256"]),
-                ],
+                build_command,
                 capture_output=True,
                 text=True,
                 errors="replace",

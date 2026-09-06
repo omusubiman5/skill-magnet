@@ -919,7 +919,49 @@ def _restore_managed_repository_from_github_locked(
                         f"{local_state_name}"
                     )
                 local_state_path.unlink()
-        validate_library(staging)
+        resolved_commit = commit.lower() if commit else ""
+        try:
+            validate_library(staging)
+        except Exception as validation_exc:
+            if commit:
+                fallback_command = ["git", "-C", str(staging), "checkout", "--force", "-"]
+                fallback_run = (
+                    _run_external(fallback_command, check=False, cancel_event=cancel_event)
+                    if run is None
+                    else run(
+                        fallback_command,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                    )
+                )
+                if fallback_run.returncode == 0:
+                    try:
+                        validate_library(staging)
+                        rev_command = ["git", "-C", str(staging), "rev-parse", "HEAD"]
+                        rev_run = (
+                            _run_external(rev_command, check=False, cancel_event=cancel_event)
+                            if run is None
+                            else run(
+                                rev_command,
+                                capture_output=True,
+                                text=True,
+                                encoding="utf-8",
+                                errors="replace",
+                            )
+                        )
+                        resolved_commit = (
+                            rev_run.stdout.strip().lower()
+                            if rev_run.returncode == 0
+                            else ""
+                        )
+                    except Exception:
+                        raise validation_exc
+                else:
+                    raise validation_exc
+            else:
+                raise
         if previous_exists:
             os.replace(repository, backup)
         os.replace(staging, repository)
@@ -932,6 +974,7 @@ def _restore_managed_repository_from_github_locked(
     return {
         "repository": str(repository),
         "backup": str(backup) if previous_exists else None,
+        "commit": resolved_commit,
     }
 
 
@@ -1001,14 +1044,15 @@ def hydrate_managed_repository(
             run=run,
             cancel_event=cancel_event,
         )
+        resolved_commit = str(restored.get("commit") or commit).strip().lower()
         mark_managed_repository_owned(
-            state_dir, repository, remote=remote, commit=commit
+            state_dir, repository, remote=remote, commit=resolved_commit
         )
     return {
         "hydrated": True,
         "repository": str(repository),
         "remote": remote,
-        "commit": commit.lower(),
+        "commit": resolved_commit,
         "backup": restored.get("backup"),
     }
 
@@ -1897,11 +1941,14 @@ def show_library_manager(
                     commit=commit_value,
                     cancel_event=cancel_event,
                 )
+                resolved_commit = str(
+                    restored.get("commit") or commit_value
+                ).strip().lower()
                 mark_managed_repository_owned(
                     state_dir,
                     repository_path,
                     remote=remote_value,
-                    commit=commit_value,
+                    commit=resolved_commit,
                 )
                 return restored
 
@@ -2994,14 +3041,17 @@ def show_library_manager(
                                 "自動編集・削除せず保持します。"
                             )
                     else:
-                        next_catalog_error = prepare_managed_repository(repository_path)
-                        if next_catalog_error is None:
-                            mark_managed_repository_owned(
-                                state_dir,
-                                repository_path,
-                                remote=next_remote,
-                                commit=next_commit,
-                            )
+                        if not next_remote:
+                            next_catalog_error = prepare_managed_repository(repository_path)
+                            if next_catalog_error is None:
+                                mark_managed_repository_owned(
+                                    state_dir,
+                                    repository_path,
+                                    remote=next_remote,
+                                    commit=next_commit,
+                                )
+                        else:
+                            next_catalog_error = None
             if cancel_event.is_set():
                 raise SkillMagnetError("終了操作を受け付けたため、起動確認を中止しました")
             next_offer_restore = remote_restore_available(
