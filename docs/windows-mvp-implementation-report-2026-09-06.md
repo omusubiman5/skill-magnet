@@ -13,6 +13,7 @@
 - 実Explorerから統合画面を起動し、依頼入力の初期focus、Shift+Tab、実行先の矢印選択、Tab巡回、EnterによるLibrary Manager起動を実機確認した。Managerの残存プロセスは所有証跡と `processing=false` を照合して終了。次回起動でstale lockが自動回復し、正式fieldが合格した。
 - 判定側修正：モーダル表示中に正常にdisabledとなるManager rootだけを許容し、クリック対象のenabled必須は維持した。CMSはWindows PowerShellへファイル引数で渡し、Authenticodeは既存のPowerShell 7を分離利用する。署名status、thumbprint、subject、鍵OIDの検査は維持した。旧署名付きbundleではCMS／Authenticodeのエラーが消え、候補commit・wheel・導入版・件数の更新待ちだけとなった。
 - push・CI・mergeは本記録の次に実行する。
+- CIの419件統合suiteはWindows MVPで実行する。macOSは本MVPの合否対象外だが、standalone wheel、cross-platform artifact gate、Finder release lifecycleは維持する。standalone wheelのnative build工程では重複するCOM契約試験を省き、後続のWindows release lifecycleで実施する。
 
 以下は調査当時の候補・失敗を残した履歴であり、最新配布物の状態ではない。
 
