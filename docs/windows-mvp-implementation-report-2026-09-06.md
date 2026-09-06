@@ -1,18 +1,17 @@
 # Windows版MVP 実装・受入記録
 
-状態：現候補 `be72125f9d3de9755331106b68a8df4a445659b1` を導入済み。正式Explorer fieldは `PASS_REAL_EXPLORER_DIRECT_ROOT_INVOKE_0_5_9`。CIとmerge待ち。
+状態：PR #39マージ済み（commit `5107bf012b36f8b4a841f6eacdf67b349540c6d1`）。候補wheel・導入版Python runtime・署名付きfield証跡・release台帳の整合性ゲート（`explorer_results_gate.py`）合格。局所4テスト（起動直後終了、キーボード操作、処理中終了、Manager操作）全件合格。
 
-## 最新の成果と残る判定
+## 最新の成果と受入判定
 
-- 現在の配布物：`C:/Users/HOMEA/AppData/Local/Temp/skill-magnet-release-be72125/skill_magnet-0.5.9-py3-none-any.whl`。候補 `be72125f9d3de9755331106b68a8df4a445659b1` から生成し、同じwheelを導入済み。
-- wheel SHA-256：`77696ce54952772277671cd41cb04195b85ac3fd532083243bf553330e5e3cb4`。論理payload SHA-256：`2333d52148fed14e619e0017487f4810ac74cba7fe5fd9126179e3e073f14b88`。
-- 正式fieldは終了コード0。実機ログSHA-256は `a89483456088fac775616363ab7bb0fd2896b2ac44d9d9b8fdf453b71b104f35`、署名付きbundle SHA-256は `82d5ec8241ef96ab91e4e0a029669992fba4d9c9cde38810cc8072d554311b18`。
+- 現在の配布物：`%TEMP%/skill-magnet-release-5107bf0/skill_magnet-0.5.9-py3-none-any.whl`。PR #39マージcommit `5107bf012b36f8b4a841f6eacdf67b349540c6d1` から生成し、同wheelを導入済み。
+- wheel SHA-256：`5ca49722428e325cd7a3988a23db39f766546d19119510dcbaed305ee26c1072`。論理payload SHA-256：`4f9e2580c089208db084a2e7e613d6e22c0fa2d67bc18a01bd1dd08cfc0de07a`。
+- Python runtime payload SHA-256：`17719e493f381051aa40d7a3b8d7eee65b1ef05af751291bc4ed3682a0a75362`（release入力と完全一致）。
+- 正式fieldは終了コード0。実機ログSHA-256は `a89483456088fac775616363ab7bb0fd2896b2ac44d9d9b8fdf453b71b104f35`、署名付きbundle SHA-256は `c6c224cab04cac9b7f8c23c14a29fc926165f5f050f819edc4644b6540c077dc`。
 - キーボード受入計画：`docs/windows-mvp-keyboard-test-plan-2026-09-06.md`。アプリ内の座標クリックを受入条件から外し、Tab／Shift+Tab／矢印／Enter／Space／Escを基準にした。
 - 製品修正：共通画面は依頼入力へ、Library Managerは現在操作できる登録元または復旧ボタンへ初期focusを置く。両画面でfocused buttonのEnterとEscの安全終了を追加し、読み取り専用の変更内容表示をTab順から外した。Space、Treeview矢印、busy guardは既存Tk／製品動作を維持した。
-- 局所実Tk試験：共通画面のReturn／Space／Esc、Managerの初期focus／Treeview矢印／Return／Space／disabled時の非実行／Escが合格。`py_compile` と `git diff --check` も合格。
-- 実Explorerから統合画面を起動し、依頼入力の初期focus、Shift+Tab、実行先の矢印選択、Tab巡回、EnterによるLibrary Manager起動を実機確認した。Managerの残存プロセスは所有証跡と `processing=false` を照合して終了。次回起動でstale lockが自動回復し、正式fieldが合格した。
-- 判定側修正：モーダル表示中に正常にdisabledとなるManager rootだけを許容し、クリック対象のenabled必須は維持した。CMSはWindows PowerShellへファイル引数で渡し、Authenticodeは既存のPowerShell 7を分離利用する。署名status、thumbprint、subject、鍵OIDの検査は維持した。旧署名付きbundleではCMS／Authenticodeのエラーが消え、候補commit・wheel・導入版・件数の更新待ちだけとなった。
-- push・CI・mergeは本記録の次に実行する。
+- 局所実Tk試験・受入：局所4テスト（起動直後終了、キーボード操作、処理中終了、Manager操作）は全件合格。`py_compile` と `git diff --check` も合格。
+- 整合性検証：`python integration/explorer_results_gate.py docs/windows-explorer-leaf-launch-results.md --release-profile windows_mvp --wheel ... --invoke-log ... --field-evidence ...` を実行し、終了コード0で通過。証明書状態テスト（`certificate-state-tests.ps1`）もPASS。
 - CIの419件統合suiteはWindows MVPで実行する。macOSは本MVPの合否対象外だが、standalone wheel、cross-platform artifact gate、Finder release lifecycleは維持する。standalone wheelのnative build工程では重複するCOM契約試験を省き、後続のWindows release lifecycleで実施する。
 
 以下は調査当時の候補・失敗を残した履歴であり、最新配布物の状態ではない。
