@@ -1905,6 +1905,18 @@ if (@($uiReceipts | Where-Object { $_.project_sha256 -ceq $_.target_sha256 }).Co
         self.assertIn("Invoke-RecoveryDialogOk `", registration)
         self.assertIn('"終了後に復旧できます"', manager_close)
         self.assertIn("Invoke-RecoveryDialogOk", manager_close)
+        self.assertLess(
+            manager_close.index("Invoke-RecoveryDialogOk $startupDialogs[0]"),
+            manager_close.index("Close-UiaWindow $Element"),
+        )
+        self.assertEqual(manager_close.count("Close-UiaWindow $Element"), 1)
+        self.assertIn("$unexpectedDialogs.Count -eq 0", manager_close)
+        closed_wait = collector[
+            collector.index("function Wait-VisibleWindowClosed") :
+            collector.index("function Wait-ProcessExited")
+        ]
+        self.assertIn("Get-VisibleWindowsByPrefix $Prefix $ProcessId", closed_wait)
+        self.assertIn("VisibleTopLevelWindows([uint32]$ProcessId)", collector)
         self.assertIn("Close-LibraryManagerRecoverably $managerGui.element", collector)
         self.assertIn("Close-LibraryManagerRecoverably `", registration)
 

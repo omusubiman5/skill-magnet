@@ -1,6 +1,17 @@
 # Windows版MVP 実装・受入記録
 
-状態：作業中。公開完了を示す文書ではない。
+状態：修正済み配布候補を出力・導入済み。終了操作の局所実機確認は合格。正式field・公開判定を継続中。
+
+## 今回の出力
+
+- 配布候補：`outputs/windows-mvp-a0e1639/skill_magnet-0.5.9-py3-none-any.whl`
+- 最終fieldログ：`outputs/windows-mvp-a0e1639/field-result.log`
+- 現在のcommit：`a0e16394806500e2a57f6265f71aaef939cb51fa`
+- wheelは製品コードの候補 `bd49017` から生成。後続commitは試験・文書だけで、配布内容は同じ。
+- 最後の実機失敗：`Library Manager remained visible after user-recoverable close; windows=Library Manager`。PID 22360の局所probeで、native EnumWindowsは可視の起動案内・終了案内（class `#32770`）を検出したが、UIA RootElement.Childrenは本体だけを返した。両案内はHWNDからのUIA取得では正しいPID・可視Windowとして取得できた。試験の検索漏れにより起動案内を閉じる前に本体へWM_CLOSEを送り、終了案内が重なっていた。WM_CLOSEが無視されたという仮説は棄却。試験側のみ、同PIDのnative可視Windowを検索へ併合し「起動案内OK→本体を一度だけ閉じる→終了案内OK」とする修正を検証中。
+- 正式field成功証拠は未生成。release台帳更新、製品branchのpush・mergeは未完了。
+
+終了修正の確認：fresh direct Manager PID 26376に修正済み `Close-LibraryManagerRecoverably` を実行し、起動案内OK→本体WM_CLOSE 1回→終了案内OK→プロセス終了を11.77秒で確認。libraryの前後SHA-256はともに `9779285d13e5bcc6b01ff3616ec7786f37078154001e11e49aae45c391c8fb7a`。ログ：`%TEMP%/skill-magnet-close-helper-fresh/{stdout,stderr}.log`。これは実際の試験関数による局所実機結果で、全Explorer経路の成功とは区別する。
 
 ## 出荷範囲
 

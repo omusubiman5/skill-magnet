@@ -451,6 +451,10 @@ public static class SkillMagnetFieldInput {
         uint sourceThreadId, uint targetThreadId, bool attach);
     [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hWnd);
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+    [DllImport("user32.dll")] private static extern bool EnumWindows(
+        EnumWindowsProc callback, IntPtr lParam);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(
         IntPtr hWnd, out uint processId);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(
@@ -477,6 +481,18 @@ public static class SkillMagnetFieldInput {
         StringBuilder text = new StringBuilder(length + 1);
         GetWindowText(hWnd, text, text.Capacity);
         return text.ToString();
+    }
+    public static long[] VisibleTopLevelWindows(uint expectedProcessId) {
+        var handles = new System.Collections.Generic.List<long>();
+        EnumWindows(delegate(IntPtr hWnd, IntPtr ignored) {
+            uint processId;
+            GetWindowThreadProcessId(hWnd, out processId);
+            if (processId == expectedProcessId && IsWindowVisible(hWnd)) {
+                handles.Add(hWnd.ToInt64());
+            }
+            return true;
+        }, IntPtr.Zero);
+        return handles.ToArray();
     }
     public static bool ConfigureInputDpiAwareness(out string diagnostic) {
         IntPtr requested = new IntPtr(-4); // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
@@ -2096,14 +2112,45 @@ function Get-VisibleWindowsByPrefix([string]$Prefix, [int]$ProcessId = 0) {
     $windows = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
         [System.Windows.Automation.TreeScope]::Children, $condition
     )
-    @($windows | Where-Object {
+    $matches = @()
+    $handles = @{}
+    foreach ($window in @($windows)) {
         try {
-            -not $_.Current.IsOffscreen -and
-            ($ProcessId -le 0 -or [int]$_.Current.ProcessId -eq $ProcessId) -and
-            $_.Current.Name.StartsWith($Prefix, [StringComparison]::Ordinal)
+            $handle = [int64]$window.Current.NativeWindowHandle
+            if (
+                -not $window.Current.IsOffscreen -and
+                ($ProcessId -le 0 -or [int]$window.Current.ProcessId -eq $ProcessId) -and
+                $window.Current.Name.StartsWith($Prefix, [StringComparison]::Ordinal) -and
+                -not $handles.ContainsKey($handle)
+            ) {
+                $handles[$handle] = $true
+                $matches += $window
+            }
         }
-        catch { $false }
-    })
+        catch { }
+    }
+    if ($ProcessId -gt 0) {
+        foreach ($rawHandle in [SkillMagnetFieldInput]::VisibleTopLevelWindows([uint32]$ProcessId)) {
+            try {
+                $handle = [int64]$rawHandle
+                $window = [System.Windows.Automation.AutomationElement]::FromHandle(
+                    [IntPtr]$handle
+                )
+                if (
+                    $null -ne $window -and
+                    -not $window.Current.IsOffscreen -and
+                    [int]$window.Current.ProcessId -eq $ProcessId -and
+                    $window.Current.Name.StartsWith($Prefix, [StringComparison]::Ordinal) -and
+                    -not $handles.ContainsKey($handle)
+                ) {
+                    $handles[$handle] = $true
+                    $matches += $window
+                }
+            }
+            catch { }
+        }
+    }
+    @($matches)
 }
 
 function Wait-VisibleWindowByPrefix(
@@ -2123,9 +2170,7 @@ function Wait-VisibleWindowByPrefix(
 function Wait-VisibleWindowClosed([int]$ProcessId, [string]$Prefix, [int]$Seconds = 30) {
     $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
     do {
-        $matches = @(Get-VisibleWindowsByPrefix $Prefix | Where-Object {
-            try { [int]$_.Current.ProcessId -eq $ProcessId } catch { $false }
-        })
+        $matches = @(Get-VisibleWindowsByPrefix $Prefix $ProcessId)
         if ($matches.Count -eq 0) { return }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
@@ -2142,6 +2187,25 @@ function Wait-ProcessExited([int]$ProcessId, [int]$Seconds = 30) {
 }
 
 function Close-LibraryManagerRecoverably($Element, [int]$ExpectedProcessId) {
+    $startupDialogs = @(Get-VisibleWindowsByPrefix `
+        "ローカルライブラリを読み取れません" $ExpectedProcessId)
+    Assert-Field ($startupDialogs.Count -le 1) `
+        "Library Manager exposed multiple startup-recovery dialogs while closing."
+    if ($startupDialogs.Count -eq 1) {
+        $detail = Get-VisibleDescendantText $startupDialogs[0]
+        Assert-Field (
+            $detail -like "*原因:*" -and
+            $detail -like "*次の操作:*" -and
+            $detail -like "*GitHubから復旧*"
+        ) "Library Manager startup warning has no concrete cause and recovery action."
+        Invoke-RecoveryDialogOk $startupDialogs[0] $ExpectedProcessId $false
+    }
+    $rootHandle = [int64]$Element.Current.NativeWindowHandle
+    $unexpectedDialogs = @(Get-VisibleWindowsByPrefix "" $ExpectedProcessId | Where-Object {
+        try { [int64]$_.Current.NativeWindowHandle -ne $rootHandle } catch { $true }
+    })
+    Assert-Field ($unexpectedDialogs.Count -eq 0) `
+        "Library Manager exposed an unknown dialog while closing."
     Close-UiaWindow $Element
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
     do {
