@@ -8,6 +8,8 @@ Skill Magnetの目的は、GitHub固定commitに保管されたskillをLLMへ単
 
 ## 現在の状態
 
+今回の出荷対象はWindows版MVPです。右クリック起動、スキル登録・更新・削除、Codex Desktopアプリ／Claude Codeデスクトップアプリへの受け渡し、途中失敗からの復旧を受入対象とします。macOS対応は維持しますが、このMVPの合格をmacOSを含む全製品完成とは扱いません。出荷範囲は `policy/product-policy.json` の `release_profiles.windows_mvp`、実行方針は [MVP製品化指示書](docs/mvp-shortest-productization-plan-2026-09-06.md) に定めます。出荷対象の定義は、公開済みという意味ではありません。
+
 GitHub中心の手動activation経路は、スキルパックを一つ選ぶUXです。通常右クリックの正規入口は、子メニューを持たない `Skill Magnet` 一つです。これを押して開く共通画面で対象パックを選び、Codex DesktopアプリまたはClaude Codeデスクトップアプリと依頼内容を明示します。Codexを選ぶとCodex Desktopの新規taskへ、Claudeを選ぶとClaude Desktop内の新規Claude Code sessionへ、パック内の全スキルと依頼が渡されます。CLI/TUIやWebブラウザは製品handoff先にしません。skill contentの永続的な正本は該当するユーザー所有GitHub repositoryだけで、Skill Magnetは固定commitをメモリ上で検証します。promptには固定commitの全SKILL.md URLとdigestを渡し、INDEXが存在するpackではINDEXのURLとdigestも渡します。library編集時だけ製品所有の隔離workspaceを使い、実行用にはmaterializeせず、有効化完了後に削除します。両デスクトップアプリには全skillの読了、trigger/boundaryと存在する場合のINDEX関係に基づく必要最小集合の選定、最低1つの具体的適用、実依頼の完了を必須化します。skillの説明・一覧・準備確認だけで終了することを禁止します。Skill MagnetはAPI keyや従量課金APIを使わず、既存のCodex DesktopまたはClaude利用プランへhandoffします。handoff受理は回答完了を意味せず、Skill MagnetはLLM回答を取得・検証したとは主張しません。Windows ExplorerとmacOS Finderは規範policy上のsupported adapterです。
 
 旧MVPの `sync` は `~/.agents/skills` と `~/.claude/skills` への常設コピーを前提とし、現在の製品ポリシーに適合しません。CLIから恒久的に無効化しており、overrideはありません。

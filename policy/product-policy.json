@@ -153,6 +153,15 @@
     "requires_all_supported_platform_adapters": true,
     "single_platform_is_complete": false
   },
+  "release_profiles": {
+    "windows_mvp": {
+      "platforms": ["windows_explorer"],
+      "target_applications": ["codex_desktop", "claude_code_desktop"],
+      "requires_library_crud_and_recovery": true,
+      "requires_installed_explorer_acceptance": true,
+      "claims_all_platform_completion": false
+    }
+  },
   "legacy_persistent_sync": {
     "default_enabled": false,
     "production_use": "permanently_prohibited",

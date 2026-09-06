@@ -116,6 +116,36 @@ def git(repo: Path, *args: str) -> str:
 
 
 class ContextBackgroundOperationTest(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "requires real Windows Tk")
+    def test_context_action_reclaims_tk_cycles_before_manager_worker(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        probe = repository_root / "tests" / "chooser_manager_gc_probe.py"
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(repository_root / "src")
+        for attempt in range(5):
+            with tempfile.TemporaryDirectory() as temporary:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(probe),
+                        "--config",
+                        str(repository_root / "skill-magnet.json"),
+                        "--project",
+                        str(repository_root),
+                        "--state-dir",
+                        str(Path(temporary) / "state"),
+                    ],
+                    cwd=repository_root,
+                    env=environment,
+                    text=True,
+                    capture_output=True,
+                    timeout=15,
+                )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('"worker_gc_completed": true', result.stdout)
+            self.assertNotIn("Variable.__del__", result.stderr)
+            self.assertNotIn("main thread is not in main loop", result.stderr)
+
     def test_operation_is_non_blocking_and_close_signal_is_observed(self) -> None:
         entered = threading.Event()
 

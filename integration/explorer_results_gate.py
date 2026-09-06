@@ -3306,6 +3306,8 @@ def validate_field_bundle(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate current Explorer release evidence.")
     parser.add_argument("results", type=Path)
+    parser.add_argument("--release-profile", choices=["windows_mvp"],
+                        help="Validate the Windows MVP; does not certify macOS completion.")
     parser.add_argument("--observed-test-count", type=int)
     parser.add_argument("--wheel", type=Path)
     parser.add_argument("--invoke-log", type=Path)
@@ -3323,6 +3325,11 @@ def main(argv: list[str] | None = None) -> int:
     ):
         parser.error("--invoke-log and --field-evidence are required for the release gate")
     repository = args.results.resolve().parents[1]
+    if args.release_profile:
+        policy = json.loads((repository / "policy/product-policy.json").read_text(encoding="utf-8"))
+        profile = policy["release_profiles"][args.release_profile]
+        if profile["platforms"] != ["windows_explorer"] or profile["claims_all_platform_completion"]:
+            parser.error("Windows MVP must remain scoped to Windows Explorer")
     sys.path.insert(0, str(repository / "src"))
     from skill_magnet.core import Config
     from skill_magnet.platforms import windows_menu_leaves
@@ -3365,6 +3372,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {error}")
     if errors:
         return 1
+    if args.release_profile:
+        print("Release profile: windows_mvp (macOS completion is not certified)")
     print(
         "PASS: local self-signed release evidence matches product configuration "
         "and test suite; public distribution is not claimed"

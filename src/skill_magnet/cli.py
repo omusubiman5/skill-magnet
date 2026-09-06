@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import json
 import os
@@ -601,6 +602,9 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             if isinstance(contract, ContextUiAction):
                 try:
+                    # The destroyed selector can retain Tk Variable cycles.  Reclaim
+                    # them on Tk's creating thread before the Manager worker starts.
+                    gc.collect()
                     if contract.name == "library_manager":
                         _show_library_manager_ui(
                             args,

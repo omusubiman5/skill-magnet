@@ -83,6 +83,7 @@ jobs:
         run: >-
           python integration/explorer_results_gate.py
           docs/windows-explorer-leaf-launch-results.md
+          --release-profile windows_mvp
           --wheel "$env:SKILL_MAGNET_WHEEL"
           --invoke-log docs/evidence/windows-explorer-direct-root-0.5.9.log
           --field-evidence docs/evidence/windows-explorer-direct-root-0.5.9.json
