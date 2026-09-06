@@ -3292,7 +3292,11 @@ function New-UiReceiptEvidence(
 ) {
     Assert-Field ($ClaimField -in @("text_sha256", "value_sha256", "values_sha256")) `
         "Receipt claim field is not an approved digest field."
-    $receipt = if ($Observation.PSObject.Properties.Name -contains "click_owner_receipt") {
+    $receipt = if (
+        ($Observation -is [System.Collections.IDictionary] -and
+            $Observation.Contains("click_owner_receipt")) -or
+        $Observation.PSObject.Properties.Name -contains "click_owner_receipt"
+    ) {
         $Observation.click_owner_receipt
     } else {
         $Observation.ui_owner_receipt
