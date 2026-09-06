@@ -22,6 +22,8 @@ Windows Explorerからの起動、既存スキルの登録・更新・削除とG
 
 製品修正：`cli.py` のManager／登録画面への遷移直前に `gc.collect()` を追加し、破棄済みselectorのTk循環参照を作成スレッドで回収する。遷移後の背景スレッドへ解放を持ち越さない。
 
+ネイティブ試験修正：不正manifest試験が自ら `Invoke` を呼んだ後、そのログをメニュー列挙の副作用と誤判定していた。列挙のみの無ログ確認をInvoke試験前へ移し、不正Invoke後は子プロセスが起動していないことを検査する。隔離した導入DLLで成功した。
+
 回帰試験は旧Tk rootを弱参照で確認する。主スレッドGCなしの対照は参照残存で失敗し、製品修正ありは5プロセスすべてで参照消滅と背景GC成功を確認した。Manager部分をstubにした原因回帰試験であり、実Explorer受入は別途行う。
 
 | 対象 | 結果 |
@@ -30,6 +32,7 @@ Windows Explorerからの起動、既存スキルの登録・更新・削除とG
 | `test_library_manager.py` | 57件成功、79.644秒 |
 | transaction resilience／concurrency／library data safety／GitHub source | 36件成功、6.104秒 |
 | Tk循環参照回収の回帰 | 修正なしは失敗、修正あり5プロセス成功（1テスト、3.955秒） |
+| 利用者の実 `C:/Projects/cangjie-skill-clean/books` の検出 | 元データ変更なし。codex-cli 9、conflict-clarity 12、harness-bootstrap-prompt-v2-1 13、合計3パック34スキル |
 | 差分の空白エラー | なし |
 
 単体テスト成功は実Explorer操作、実GitHub公開、実デスクトップ受け渡しの成功を意味しない。これらの実機結果、配布物、公開情報は確認後に追記する。

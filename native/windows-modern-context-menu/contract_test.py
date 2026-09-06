@@ -471,6 +471,10 @@ def main() -> int:
                     release(enumerator)
                 raise RuntimeError("direct root unexpectedly exposes subcommands")
 
+            log_path = Path(local_app_data) / "SkillMagnet" / "ContextMenu" / "invoke.log"
+            if log_path.exists():
+                raise RuntimeError("menu inspection produced an invoke event")
+
             original_manifest = menu_path.read_bytes()
             invalid_manifests = (
                 (
@@ -511,9 +515,12 @@ def main() -> int:
             finally:
                 menu_path.write_bytes(original_manifest)
 
-            log_path = Path(local_app_data) / "SkillMagnet" / "ContextMenu" / "invoke.log"
-            if log_path.exists():
-                raise RuntimeError("menu inspection produced an invoke event")
+            invalid_log = log_path.read_text(encoding="utf-16-le")
+            if any(
+                f"event={event}" in invalid_log
+                for event in ("child_exited", "child_running", "child_wait_failed")
+            ):
+                raise RuntimeError("invalid menu manifest launched a child process")
 
             selected_item = ctypes.c_void_p()
             selected_items = ctypes.c_void_p()
