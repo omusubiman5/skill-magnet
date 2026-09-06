@@ -2660,7 +2660,8 @@ def show_context_selection(
         except Exception:
             root.destroy()
             raise
-    root.mainloop()
+    if not closing:
+        root.mainloop()
     # A withdrawn root still counts toward Tk's mainloop window count and is
     # tkinter's default root.  Keeping it would outlive the next Manager UI.
     root.destroy()
