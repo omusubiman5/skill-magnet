@@ -454,7 +454,7 @@ class ActivationEndToEndTest(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.previous_local_app_data = os.environ.get("LOCALAPPDATA")
-        os.environ.setdefault("LOCALAPPDATA", str(self.root / "local-app-data"))
+        os.environ["LOCALAPPDATA"] = str(self.root / "local-app-data")
         native_output = (
             Path(__file__).resolve().parents[1]
             / "native"

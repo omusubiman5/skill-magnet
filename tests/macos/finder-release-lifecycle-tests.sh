@@ -22,8 +22,8 @@ for runtime in codex claude; do
   [[ -f "${document}" ]] || { print -u2 "Finder workflow was not installed"; exit 1; }
   production_digest="$(shasum -a 256 "${document}" | awk '{print $1}')"
 
-  status="$(python -m skill_magnet context-menu-status --platform macos)"
-  python - "${status}" <<'PY'
+  menu_status="$(python -m skill_magnet context-menu-status --platform macos)"
+  python - "${menu_status}" <<'PY'
 import json
 import sys
 
