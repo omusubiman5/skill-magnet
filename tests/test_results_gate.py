@@ -1916,6 +1916,11 @@ if (@($uiReceipts | Where-Object { $_.project_sha256 -ceq $_.target_sha256 }).Co
             collector.index("function Wait-ProcessExited")
         ]
         self.assertIn("Get-VisibleWindowsByPrefix $Prefix $ProcessId", closed_wait)
+        self.assertIn("$ExactWindowHandle.ToInt64()", closed_wait)
+        self.assertIn(
+            "Wait-VisibleWindowClosed $ExpectedProcessId $title 30 $dialogHandle",
+            recovery_action,
+        )
         self.assertIn("VisibleTopLevelWindows([uint32]$ProcessId)", collector)
         missing_wait = collector[
             collector.index("function Wait-MissingSkillRecoveryDialog") :
@@ -1923,6 +1928,8 @@ if (@($uiReceipts | Where-Object { $_.project_sha256 -ceq $_.target_sha256 }).Co
         ]
         self.assertIn('Get-VisibleWindowsByPrefix "" $ExpectedProcessId', missing_wait)
         self.assertNotIn("RootElement.FindAll", missing_wait)
+        self.assertIn("#32770", missing_wait)
+        self.assertIn("ClassName", missing_wait)
         self.assertIn("Close-LibraryManagerRecoverably $managerGui.element", collector)
         self.assertIn("Close-LibraryManagerRecoverably `", registration)
 

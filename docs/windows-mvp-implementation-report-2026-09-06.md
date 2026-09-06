@@ -21,6 +21,8 @@
 
 `c457c65` で上記順序を修正。実Tk subprocessの回帰1件（案内のmessageboxは記録用stub）でSKILL.mdエラー・設定済みURL・保管庫未作成を確認、2.574秒。wheel再生成・導入成功（SHA-256 `76abd3cc87aeef972dfbd591e9f4089436b865e116d60d9e272eb1ded0a8f635`、論理payload `a0b3e08cdb98ce1dcf5ef068a145272a258eba413d6b367420265b9561dac040`）。sourceと導入版library_ui.pyのSHA-256は `3222a4cbe07962dbb36d629f95746e4e24bfbf8c9bd7d72b04fc9dc58f13fbc0` で一致。standalone配布物の実dialog確認は別に実施する。
 
+導入版の実案内ではSKILL.md不足と選び直し方法の表示が成功。閉鎖試験は本体と案内の同名だけでなく、取得対象そのものを誤っていた。PID 30856で旧helper返却が本体（HWND 57871158、TkTopLevel）と実測し、native MessageBox（HWND 1379742、class #32770）を再取得。同じ生存プロセスでOK→本体閉鎖→プロセス終了が2.32秒で成功した。案内検索を#32770へ限定し、閉鎖確認は当該HWNDだけを対象とした。証拠：`%TEMP%/skill-magnet-missing-dialog-identity/{identity,close-result}.json`。製品の追加変更はしていない。
+
 ## 出荷範囲
 
 Windows Explorerからの起動、既存スキルの登録・更新・削除とGitHub反映、Codex Desktopアプリ／Claude Codeデスクトップアプリへの依頼受け渡し、エラー・中断からの復旧。

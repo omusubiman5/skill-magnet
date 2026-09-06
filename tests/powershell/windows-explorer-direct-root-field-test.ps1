@@ -2014,7 +2014,7 @@ function Invoke-RecoveryDialogOk(
              "final=$([SkillMagnetFieldInput]::LastFinalBoundaryFailure); " +
              "exception=$([SkillMagnetFieldInput]::LastClickException).")
     }
-    Wait-VisibleWindowClosed $ExpectedProcessId $title
+    Wait-VisibleWindowClosed $ExpectedProcessId $title 30 $dialogHandle
     if ($ExpectProcessExit) { Wait-ProcessExited $ExpectedProcessId }
 }
 
@@ -2178,10 +2178,23 @@ function Wait-VisibleWindowByPrefix(
     )
 }
 
-function Wait-VisibleWindowClosed([int]$ProcessId, [string]$Prefix, [int]$Seconds = 30) {
+function Wait-VisibleWindowClosed(
+    [int]$ProcessId,
+    [string]$Prefix,
+    [int]$Seconds = 30,
+    [IntPtr]$ExactWindowHandle = [IntPtr]::Zero
+) {
     $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
     do {
         $matches = @(Get-VisibleWindowsByPrefix $Prefix $ProcessId)
+        if ($ExactWindowHandle -ne [IntPtr]::Zero) {
+            $matches = @($matches | Where-Object {
+                try {
+                    [int64]$_.Current.NativeWindowHandle -eq $ExactWindowHandle.ToInt64()
+                }
+                catch { $false }
+            })
+        }
         if ($matches.Count -eq 0) { return }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
@@ -3327,6 +3340,7 @@ function Wait-MissingSkillRecoveryDialog([int]$ExpectedProcessId, [int]$Seconds 
                 if ($window.Current.IsOffscreen -or [int]$window.Current.ProcessId -ne $ExpectedProcessId) {
                     continue
                 }
+                if ($window.Current.ClassName -cne "#32770") { continue }
                 $text = Get-VisibleDescendantText $window
                 if ($text -notlike "*SKILL.md*") { continue }
                 $specific = $text -like "*選択したフォルダー内*"
