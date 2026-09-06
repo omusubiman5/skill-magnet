@@ -216,12 +216,21 @@ class ProductPolicyTest(unittest.TestCase):
                     self.policy["principles_ja"],
                 )
 
-    def test_library_manager_is_reachable_from_context_menu_without_auto_writes(self) -> None:
+    def test_library_manager_automates_only_an_explicit_crud_mutation(self) -> None:
         manager = self.policy["library_manager_ui"]
         self.assertEqual(manager["entrypoint"], "skill_magnet_context_menu")
         self.assertTrue(manager["selected_folder_prefill"])
-        self.assertFalse(manager["automatic_publish"])
-        self.assertFalse(manager["automatic_activation"])
+        self.assertEqual(
+            manager["mutation_trigger"], "explicit_register_update_or_delete"
+        )
+        self.assertTrue(manager["automatic_publish"])
+        self.assertTrue(manager["automatic_merge"])
+        self.assertTrue(manager["automatic_activation"])
+        self.assertEqual(
+            manager["automatic_scope"], "only_the_confirmed_library_mutation"
+        )
+        self.assertTrue(manager["requires_recoverable_transaction_before_mutation"])
+        self.assertFalse(manager["stage_buttons_required"])
 
 
 if __name__ == "__main__":

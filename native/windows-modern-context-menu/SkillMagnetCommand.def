@@ -1,0 +1,6 @@
+LIBRARY SkillMagnetCommand
+
+EXPORTS
+    DllGetClassObject PRIVATE
+    DllCanUnloadNow PRIVATE
+    SkillMagnetNativeSourceSha256

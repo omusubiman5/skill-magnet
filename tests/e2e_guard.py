@@ -10,7 +10,9 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 
-TRACKED_PROCESS_NAMES = frozenset({"pythonw.exe", "codex.exe", "cmd.exe"})
+TRACKED_PROCESS_NAMES = frozenset(
+    {"python.exe", "pythonw.exe", "codex.exe", "cmd.exe"}
+)
 
 
 @dataclass(frozen=True)
@@ -57,7 +59,7 @@ def windows_process_records() -> list[ProcessRecord]:
         return []
     script = (
         "Get-CimInstance Win32_Process | "
-        "Where-Object {$_.Name -in @('pythonw.exe','codex.exe','cmd.exe')} | "
+        "Where-Object {$_.Name -in @('python.exe','pythonw.exe','codex.exe','cmd.exe')} | "
         "Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress"
     )
     completed = subprocess.run(
@@ -103,7 +105,7 @@ def assert_e2e_clean(
     testcase.assertEqual(
         residuals,
         [],
-        "exact-command-line pythonw/codex/cmd residuals remain",
+        "exact-command-line python/pythonw/codex/cmd residuals remain",
     )
     process_rows = windows_process_records() if records is None else list(records)
     descendants = descendant_residuals(process_rows, root_process_ids)

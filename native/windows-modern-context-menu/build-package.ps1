@@ -4,21 +4,48 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+function Get-SkillMagnetSha256Hex {
+    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
+
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = $algorithm.ComputeHash($Bytes)
+    }
+    finally {
+        $algorithm.Dispose()
+    }
+    return [System.BitConverter]::ToString($digest).Replace("-", "").ToLowerInvariant()
+}
+
 . (Join-Path $PSScriptRoot "certificate-state.ps1")
 Import-Module Microsoft.PowerShell.Security
 Import-Module PKI
-$subject = "CN=Skill Magnet Local"
+$subject = $script:SkillMagnetCertificateSubject
 $statePath = Join-Path $ExternalLocation "certificate-state.json"
 $previousState = $null
 if (Test-Path -LiteralPath $statePath -PathType Leaf) {
     try {
         $candidateState = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
-        if ($candidateState.thumbprint -match '^[0-9A-Fa-f]{40}$') {
-            $previousState = $candidateState
+        $candidateState = Assert-SkillMagnetCertificateState -State $candidateState
+        $candidateMyPath = (
+            "Cert:\CurrentUser\My\" +
+            ([string]$candidateState.thumbprint).ToUpperInvariant()
+        )
+        if (-not (Test-Path -LiteralPath $candidateMyPath)) {
+            throw "matching CurrentUser\\My certificate is missing"
         }
+        $candidateCertificate = Get-Item -LiteralPath $candidateMyPath
+        Assert-SkillMagnetCertificateDeletionOwnership `
+            -State $candidateState `
+            -CurrentUserMyCertificate $candidateCertificate | Out-Null
+        $previousState = $candidateState
     }
     catch {
-        throw "Existing certificate ownership state is invalid; refusing to overwrite it."
+        throw (
+            "Existing certificate ownership state is invalid or unverifiable; " +
+            "refusing to overwrite it. " + $_.Exception.Message
+        )
     }
 }
 $sdk = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Directory |
@@ -32,7 +59,7 @@ if (-not (Test-Path -LiteralPath $makeAppx) -or -not (Test-Path -LiteralPath $si
 
 $certificates = @(
     Get-ChildItem Cert:\CurrentUser\My |
-        Where-Object { $_.Subject -eq $subject -and $_.HasPrivateKey }
+        Where-Object { Test-SkillMagnetProductCertificate -Certificate $_ }
 )
 # Reuse a certificate already trusted by the machine whenever possible. A new
 # thumbprint would force an unexpected UAC prompt during an otherwise routine
@@ -48,11 +75,16 @@ if (-not $certificate) {
 $createdMy = $false
 if (-not $certificate) {
     $certificate = New-SelfSignedCertificate -Type Custom -Subject $subject `
-        -FriendlyName "Skill Magnet local package signing" `
+        -FriendlyName $script:SkillMagnetCertificateFriendlyName `
         -KeyUsage DigitalSignature -KeyExportPolicy Exportable `
         -CertStoreLocation Cert:\CurrentUser\My `
         -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")
     $createdMy = $true
+}
+if (-not (Test-SkillMagnetProductCertificate `
+    -Certificate $certificate `
+    -ExpectedThumbprint ([string]$certificate.Thumbprint))) {
+    throw "The selected signing certificate is not a verified Skill Magnet product certificate."
 }
 $trusted = Test-Path -LiteralPath ("Cert:\CurrentUser\TrustedPeople\" + $certificate.Thumbprint)
 $createdTrust = -not $trusted
@@ -73,14 +105,54 @@ try {
         & $signTool sign /fd SHA256 /s My /sha1 $certificate.Thumbprint $binary
         if ($LASTEXITCODE -ne 0) { throw "signtool failed for $binaryName ($LASTEXITCODE)." }
     }
+    $nativeSourcePath = Join-Path $ExternalLocation "SkillMagnetNativeSource.json"
+    if (-not (Test-Path -LiteralPath $nativeSourcePath -PathType Leaf)) {
+        throw "Required native source manifest is missing: SkillMagnetNativeSource.json"
+    }
+    try {
+        $nativeSource = Get-Content -LiteralPath $nativeSourcePath -Raw | ConvertFrom-Json
+    }
+    catch {
+        throw "Native source manifest is not valid JSON."
+    }
+    if (
+        $nativeSource.schema_version -ne 1 -or
+        $nativeSource.contract -ne "skill-magnet-native-source-v1" -or
+        ([string]$nativeSource.source_tree_sha256) -notmatch '^[0-9a-f]{64}$' -or
+        @($nativeSource.inputs).Count -eq 0
+    ) {
+        throw "Native source manifest contract is invalid."
+    }
+    $artifactRecords = @()
+    foreach ($artifactName in @("SkillMagnetCommand.dll", "SkillMagnetIdentity.exe")) {
+        $artifactPath = Join-Path $ExternalLocation $artifactName
+        $artifactBytes = [System.IO.File]::ReadAllBytes($artifactPath)
+        $artifactHash = Get-SkillMagnetSha256Hex -Bytes $artifactBytes
+        $artifactRecords += [ordered]@{
+            path = $artifactName
+            size = $artifactBytes.Length
+            sha256 = $artifactHash
+        }
+    }
+    $nativeSource | Add-Member -NotePropertyName artifacts `
+        -NotePropertyValue $artifactRecords -Force
+    [System.IO.File]::WriteAllText(
+        $nativeSourcePath,
+        (($nativeSource | ConvertTo-Json -Depth 5 -Compress) + "`n"),
+        [System.Text.UTF8Encoding]::new($false)
+    )
     $layout = Join-Path $temporary "layout"
     New-Item -ItemType Directory -Path $layout | Out-Null
     foreach ($fileName in @(
         "AppxManifest.xml",
         "SkillMagnetCommand.dll",
         "SkillMagnetIdentity.exe",
+        "SkillMagnetNativeSource.json",
         "SkillMagnetMenu.tsv"
     )) {
+        if (-not (Test-Path -LiteralPath (Join-Path $ExternalLocation $fileName) -PathType Leaf)) {
+            throw "Required package input is missing: $fileName"
+        }
         Copy-Item -LiteralPath (Join-Path $ExternalLocation $fileName) `
             -Destination (Join-Path $layout $fileName)
     }

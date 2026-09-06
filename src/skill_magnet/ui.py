@@ -3,9 +3,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
+import sys
+import threading
+import time
 import webbrowser
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 from urllib.parse import quote, urlencode
 
 from .activation import (
@@ -18,7 +24,1004 @@ from .activation import (
     _RuntimeFailed,
     validate_task_workspace,
 )
-from .core import SkillMagnetError, normalize_display_text
+from .core import SkillMagnetError, _is_link, normalize_display_text
+from .diagnostics import (
+    close_ui_publication_diagnostics,
+    record_ui_publication_event,
+)
+
+
+UI_OWNER_SCHEMA_VERSION = 2
+UI_OWNER_MAX_BYTES = 256 * 1024
+UI_OWNER_BIND_MAX_AGE_SECONDS = 300
+_PROCESS_INSTANCE_ID = os.urandom(16).hex()
+_PROCESS_STARTED_AT_UNIX_NS = time.time_ns()
+
+# A completion phase is never published without its matching UI surface.
+# Window discovery happens first under an explicit starting phase; the first
+# surface publication atomically advances the same owner generation to the
+# completion phase.
+UI_SURFACE_PHASE_TABLE = {
+    "context_selection": frozenset(
+        {"context_starting", "context_selection"}
+    ),
+    "library_manager": frozenset(
+        {"library_manager_starting", "library_manager"}
+    ),
+}
+UI_SURFACE_STARTING_PHASE = {
+    "context_selection": "context_starting",
+    "library_manager": "library_manager_starting",
+}
+UI_SURFACE_STARTING_PHASES = frozenset(UI_SURFACE_STARTING_PHASE.values())
+
+
+def _owner_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _path_identity_sha256(path: Path) -> str:
+    normalized = os.path.normcase(os.path.normpath(str(path.resolve())))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _owner_json_loads(raw: bytes) -> dict[str, Any]:
+    if len(raw) > UI_OWNER_MAX_BYTES:
+        raise SkillMagnetError("UI owner record is too large")
+
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise SkillMagnetError(f"UI owner record contains duplicate key: {key}")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicates)
+    except (UnicodeDecodeError, ValueError) as exc:
+        if isinstance(exc, SkillMagnetError):
+            raise
+        raise SkillMagnetError("UI owner record is not valid JSON") from exc
+    if not isinstance(value, dict):
+        raise SkillMagnetError("UI owner record must be a JSON object")
+    return value
+
+
+def _read_ui_owner_record(path: Path) -> dict[str, Any]:
+    if os.path.lexists(path) and _is_link(path):
+        raise SkillMagnetError(f"UI owner record is a link or junction: {path}")
+    try:
+        # Enforce the bound while reading.  Reading the whole file and checking
+        # afterwards lets a corrupt receipt consume unbounded memory before the
+        # guard can run.
+        with path.open("rb") as stream:
+            raw = stream.read(UI_OWNER_MAX_BYTES + 1)
+    except OSError as exc:
+        raise SkillMagnetError("UI owner record is unavailable") from exc
+    return _owner_json_loads(raw)
+
+
+def _atomic_write_ui_owner_record(path: Path, payload: dict[str, Any]) -> None:
+    """Write an owner record without following or replacing a reparse target."""
+
+    parent = path.parent
+    if _is_link(parent):
+        raise SkillMagnetError(f"UI state directory is a link or junction: {parent}")
+    if os.path.lexists(path) and _is_link(path):
+        raise SkillMagnetError(f"UI owner record is a link or junction: {path}")
+    encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n"
+    if len(encoded) > UI_OWNER_MAX_BYTES:
+        raise SkillMagnetError("UI owner record is too large")
+    temporary = path.with_name(
+        f".{path.name}.{payload.get('generation', 'unknown')}.{os.urandom(8).hex()}.tmp"
+    )
+    try:
+        if os.path.lexists(temporary):
+            raise SkillMagnetError("UI owner temporary path already exists")
+        with temporary.open("xb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if _is_link(temporary):
+            raise SkillMagnetError("UI owner temporary path became a link or junction")
+        if os.path.lexists(path) and _is_link(path):
+            raise SkillMagnetError(f"UI owner record became a link or junction: {path}")
+        os.replace(temporary, path)
+    finally:
+        if os.path.lexists(temporary) and not _is_link(temporary):
+            temporary.unlink(missing_ok=True)
+
+
+def _new_ui_owner_record(
+    *, owner_kind: str, target_digest: str, phase: str
+) -> dict[str, Any]:
+    return {
+        "schema_version": UI_OWNER_SCHEMA_VERSION,
+        "owner_kind": owner_kind,
+        "pid": os.getpid(),
+        "process_instance_id": _PROCESS_INSTANCE_ID,
+        "process_started_at_unix_ns": _PROCESS_STARTED_AT_UNIX_NS,
+        "target_sha256": target_digest,
+        "generation": os.urandom(16).hex(),
+        "phase": phase,
+        "window_handle": 0,
+        "revision": 1,
+        "published_at_utc": _owner_timestamp(),
+    }
+
+
+def _is_current_ui_owner(
+    payload: dict[str, Any], expected: dict[str, Any], *, require_window: bool = True
+) -> bool:
+    keys = [
+        "schema_version", "pid", "process_instance_id", "generation", "target_sha256"
+    ]
+    if require_window:
+        keys.extend(("phase", "window_handle"))
+    return (
+        payload.get("schema_version") == UI_OWNER_SCHEMA_VERSION
+        and all(payload.get(key) == expected.get(key) for key in keys)
+    )
+
+
+def _remove_owned_ui_owner_record(
+    path: Path, expected: dict[str, Any], *, require_window: bool = True
+) -> None:
+    if not os.path.lexists(path):
+        return
+    current = _read_ui_owner_record(path)
+    if not _is_current_ui_owner(current, expected, require_window=require_window):
+        return
+    path.unlink(missing_ok=True)
+
+
+def start_context_background_operation(
+    operation: Callable[[threading.Event], Any],
+    *,
+    name: str,
+    cancel_event: threading.Event | None = None,
+) -> tuple[threading.Event, threading.Thread, dict[str, Any]]:
+    """Run context validation without blocking Tk's event thread.
+
+    The event is deliberately exposed to the window lifecycle even though the
+    current GitHub archive reader can only observe cancellation between bounded
+    network calls.  A daemon worker therefore never keeps a closed Explorer
+    launcher alive, and no Tk object is accessed from the worker thread.
+    """
+
+    event = cancel_event or threading.Event()
+    outcome: dict[str, Any] = {}
+
+    def work() -> None:
+        try:
+            if event.is_set():
+                raise SkillMagnetError("操作は開始前に取り消されました")
+            value = operation(event)
+            if event.is_set():
+                raise SkillMagnetError("操作は取り消されました")
+            outcome["value"] = value
+        except BaseException as exc:
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=work, name=name, daemon=True)
+    worker.start()
+    return event, worker, outcome
+
+
+@dataclass
+class ContextUiLease:
+    """Process-wide lease for the Explorer launcher UI.
+
+    Explorer can dispatch the same command repeatedly while Python is still
+    starting. The OS file lock is released automatically after a crash, so a
+    stale owner record can never make the UI permanently unavailable.
+    """
+
+    path: Path
+    acquired: bool
+    owner: dict[str, Any]
+    handle: Any | None = None
+    owner_path: Path | None = None
+
+    def publish_window(self, *, phase: str, window_handle: int) -> None:
+        """Atomically retarget duplicate launches to the currently visible UI.
+
+        The unified chooser and Library Manager run sequentially in one process
+        while this lease remains held.  Keeping the destroyed chooser's HWND in
+        the owner record makes a repeated Explorer click look unrecoverable even
+        though Library Manager is alive.  Publish every phase transition through
+        the locked record that competing processes already read.
+        """
+
+        if not self.acquired or self.handle is None:
+            raise SkillMagnetError("Context UI lease is not owned by this process")
+        if phase not in UI_SURFACE_STARTING_PHASE:
+            raise SkillMagnetError(f"Unknown context UI lease phase: {phase}")
+        if not isinstance(window_handle, int) or window_handle <= 0:
+            raise SkillMagnetError("Visible UI window handle is unavailable")
+        payload = dict(self.owner)
+        if self.owner_path is not None and self.owner_path.exists():
+            current = _read_ui_owner_record(self.owner_path)
+            if not _is_current_ui_owner(current, self.owner, require_window=False):
+                raise SkillMagnetError("Context UI owner changed before phase publication")
+            payload = current
+        payload.pop("ui_surface", None)
+        payload.update(
+            phase=UI_SURFACE_STARTING_PHASE[phase],
+            window_handle=window_handle,
+            revision=int(payload.get("revision", 0)) + 1,
+            published_at_utc=_owner_timestamp(),
+        )
+        encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n"
+        self.handle.seek(1)
+        self.handle.truncate()
+        self.handle.write(encoded)
+        self.handle.flush()
+        os.fsync(self.handle.fileno())
+        if self.owner_path is not None:
+            _atomic_write_ui_owner_record(self.owner_path, payload)
+        self.owner = payload
+
+    def release(self) -> None:
+        if not self.acquired:
+            return
+        try:
+            if self.owner_path is not None:
+                try:
+                    _remove_owned_ui_owner_record(
+                        self.owner_path, self.owner, require_window=False
+                    )
+                except (OSError, SkillMagnetError):
+                    pass
+        finally:
+            try:
+                if self.handle is not None:
+                    try:
+                        _unlock_context_ui_file(self.handle)
+                    except OSError:
+                        pass
+            finally:
+                if self.handle is not None:
+                    try:
+                        self.handle.close()
+                    except OSError:
+                        pass
+                self.handle = None
+                self.acquired = False
+
+
+UI_SURFACE_SCHEMA_VERSION = 1
+UI_SURFACE_BOOLEAN_STATE_KEYS = frozenset(
+    {"processing", "details_visible", "register_selected"}
+)
+UI_SURFACE_HASHED_STATE_KEYS = frozenset({"language", "selection_mode", "stage"})
+
+
+@dataclass(frozen=True)
+class UiSurfaceOwnerIdentity:
+    """Identity of the live owner record a visible UI surface belongs to."""
+
+    owner_path: Path
+    generation: str
+    pid: int
+    process_instance_id: str
+    target_sha256: str
+    phase: str
+    window_handle: int
+
+
+@dataclass(frozen=True)
+class UiWidgetSpec:
+    """A stable, user-visible widget entry for the recovery receipt.
+
+    Display values are opt-in and are always represented only by a digest.
+    In particular, the request entry has no value at all, so user
+    instructions can never be copied into the process-owner record.
+    """
+
+    identifier: str
+    widget: Any
+    role: str
+    text: str | Callable[[], str] | None = None
+    value: str | Callable[[], str] | None = None
+    values: tuple[str, ...] | Callable[[], tuple[str, ...]] | None = None
+
+
+def ui_surface_owner_identity(
+    owner_path: Path,
+    *,
+    phase: str,
+    window_handle: int,
+) -> UiSurfaceOwnerIdentity:
+    """Bind a surface publisher to one live, already-published UI generation."""
+
+    payload = _read_ui_owner_record(owner_path)
+    pid = payload.get("pid")
+    generation = payload.get("generation")
+    process_instance_id = payload.get("process_instance_id")
+    target_sha256 = payload.get("target_sha256")
+    published_at = payload.get("published_at_utc")
+    try:
+        published = datetime.fromisoformat(str(published_at).replace("Z", "+00:00"))
+        age_seconds = (datetime.now(timezone.utc) - published).total_seconds()
+    except (TypeError, ValueError):
+        age_seconds = UI_OWNER_BIND_MAX_AGE_SECONDS + 1
+    if (
+        payload.get("schema_version") != UI_OWNER_SCHEMA_VERSION
+        or pid != os.getpid()
+        or not isinstance(generation, str)
+        or not generation
+        or process_instance_id != _PROCESS_INSTANCE_ID
+        or not isinstance(target_sha256, str)
+        or len(target_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in target_sha256)
+        or age_seconds < -5
+        or age_seconds > UI_OWNER_BIND_MAX_AGE_SECONDS
+        or payload.get("phase") not in UI_SURFACE_PHASE_TABLE.get(phase, ())
+        or payload.get("window_handle") != window_handle
+    ):
+        raise SkillMagnetError("Visible UI owner record changed before publication")
+    return UiSurfaceOwnerIdentity(
+        owner_path=owner_path,
+        generation=generation,
+        pid=pid,
+        process_instance_id=process_instance_id,
+        target_sha256=target_sha256,
+        phase=phase,
+        window_handle=window_handle,
+    )
+
+
+def _screen_rect(widget: Any, *, window: bool = False) -> dict[str, int]:
+    """Return a real native screen rectangle, with a Tk geometry fallback."""
+
+    handle = int(widget.winfo_id())
+    if os.name == "nt" and handle > 0:
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            user32 = ctypes.windll.user32
+            if window:
+                handle = int(user32.GetAncestor(handle, 2)) or handle  # GA_ROOT
+            rect = wintypes.RECT()
+            if user32.IsWindow(handle) and user32.GetWindowRect(handle, ctypes.byref(rect)):
+                return {
+                    "x": int(rect.left),
+                    "y": int(rect.top),
+                    "width": int(rect.right - rect.left),
+                    "height": int(rect.bottom - rect.top),
+                }
+        except (AttributeError, OSError, TypeError, ValueError):
+            pass
+    return {
+        "x": int(widget.winfo_rootx()),
+        "y": int(widget.winfo_rooty()),
+        "width": int(widget.winfo_width()),
+        "height": int(widget.winfo_height()),
+    }
+
+
+def tk_top_level_window_handle(root: Any) -> int:
+    """Return the native top-level HWND rather than a Tk child wrapper."""
+
+    handle = int(root.winfo_id())
+    if os.name == "nt" and handle > 0:
+        try:
+            import ctypes
+
+            return int(ctypes.windll.user32.GetAncestor(handle, 2)) or handle
+        except (AttributeError, OSError, TypeError, ValueError):
+            pass
+    return handle
+
+
+def _surface_value(value: str | Callable[[], str] | None) -> str | None:
+    if callable(value):
+        return str(value())
+    return value
+
+
+def _surface_sha256(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _safe_surface_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Publish only explicitly classified, non-secret control state."""
+
+    safe: dict[str, Any] = {}
+    for key, value in state.items():
+        if key in UI_SURFACE_BOOLEAN_STATE_KEYS and isinstance(value, bool):
+            safe[key] = value
+            continue
+        if key in UI_SURFACE_HASHED_STATE_KEYS and isinstance(value, str) and value:
+            safe[f"{key}_sha256"] = _surface_sha256(value)
+            continue
+        if key in UI_SURFACE_HASHED_STATE_KEYS and (value is None or value == ""):
+            continue
+        raise SkillMagnetError(f"Unapproved UI surface state: {key}")
+    return safe
+
+
+def build_tk_ui_surface(
+    root: Any,
+    *,
+    identity: UiSurfaceOwnerIdentity,
+    widgets: tuple[UiWidgetSpec, ...],
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a semantic and geometric snapshot of one visible Tk window."""
+
+    root.update_idletasks()
+    client_screen = {
+        "x": int(root.winfo_rootx()),
+        "y": int(root.winfo_rooty()),
+        "width": int(root.winfo_width()),
+        "height": int(root.winfo_height()),
+    }
+    entries: list[dict[str, Any]] = []
+    for spec in widgets:
+        widget = spec.widget
+        if widget is None:
+            continue
+        screen = _screen_rect(widget)
+        try:
+            configured_state = str(widget.cget("state"))
+        except Exception:
+            configured_state = "normal"
+        try:
+            enabled = bool(widget.instate(("!disabled",)))
+        except Exception:
+            enabled = configured_state != "disabled"
+        entry: dict[str, Any] = {
+            "id": spec.identifier,
+            "role": spec.role,
+            "state": {"configured": configured_state, "enabled": enabled},
+            "viewable": bool(widget.winfo_viewable()),
+            "hwnd": int(widget.winfo_id()),
+            "client": {
+                "x": screen["x"] - client_screen["x"],
+                "y": screen["y"] - client_screen["y"],
+                "width": screen["width"],
+                "height": screen["height"],
+            },
+            "screen": screen,
+        }
+        # Free-form task requests are never persisted, not even as digests:
+        # hashes would still allow equality testing against guessed content.
+        suppress_content_digest = spec.identifier == "request"
+        if spec.text is not None and not suppress_content_digest:
+            display_text = _surface_value(spec.text) or ""
+            if display_text:
+                entry["text_sha256"] = _surface_sha256(display_text)
+        selected_value = None if suppress_content_digest else _surface_value(spec.value)
+        if selected_value:
+            entry["value_sha256"] = _surface_sha256(selected_value)
+        available_values = (
+            None
+            if suppress_content_digest
+            else (spec.values() if callable(spec.values) else spec.values)
+        )
+        if available_values is not None:
+            normalized_values = [str(value) for value in available_values]
+            if normalized_values:
+                canonical_values = json.dumps(
+                    normalized_values,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                entry["values_sha256"] = _surface_sha256(canonical_values)
+        entries.append(entry)
+    window_title = str(root.title())
+    return {
+        "schema_version": UI_SURFACE_SCHEMA_VERSION,
+        "generation": identity.generation,
+        "pid": identity.pid,
+        "phase": identity.phase,
+        "window": {
+            "hwnd": identity.window_handle,
+            "title_sha256": _surface_sha256(window_title),
+            "client": client_screen,
+            "screen": _screen_rect(root, window=True),
+        },
+        "state": _safe_surface_state(state),
+        "widgets": entries,
+    }
+
+
+def publish_tk_ui_surface(
+    identity: UiSurfaceOwnerIdentity,
+    root: Any,
+    *,
+    widgets: tuple[UiWidgetSpec, ...],
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    """Atomically attach the latest surface to the matching owner generation."""
+
+    if tk_top_level_window_handle(root) != identity.window_handle:
+        raise SkillMagnetError("Visible UI top-level window changed before publication")
+    surface = build_tk_ui_surface(
+        root, identity=identity, widgets=widgets, state=state
+    )
+    current = _read_ui_owner_record(identity.owner_path)
+    if any(
+        (
+            current.get("schema_version") != UI_OWNER_SCHEMA_VERSION,
+            current.get("generation") != identity.generation,
+            current.get("pid") != identity.pid,
+            current.get("process_instance_id") != identity.process_instance_id,
+            current.get("target_sha256") != identity.target_sha256,
+            current.get("phase") not in UI_SURFACE_PHASE_TABLE.get(
+                identity.phase, ()
+            ),
+            current.get("window_handle") != identity.window_handle,
+        )
+    ):
+        raise SkillMagnetError("Visible UI owner changed; stale surface was not published")
+    previous_revision = current.get("revision", 0)
+    next_revision = (
+        int(previous_revision) + 1
+        if isinstance(previous_revision, int) and previous_revision >= 0
+        else 1
+    )
+    published_at = _owner_timestamp()
+    surface["revision"] = next_revision
+    surface["published_at_utc"] = published_at
+    current["ui_surface"] = surface
+    current["phase"] = identity.phase
+    current["revision"] = next_revision
+    current["published_at_utc"] = published_at
+    _atomic_write_ui_owner_record(identity.owner_path, current)
+    return surface
+
+
+def _is_transient_ui_owner_publication_error(exc: BaseException) -> bool:
+    """Return whether Windows temporarily denied the atomic owner replacement."""
+
+    return isinstance(exc, OSError) and getattr(exc, "winerror", None) in {5, 32, 33}
+
+
+class TkSurfacePublicationRetry:
+    """Coalesce UI receipt publication and retry only transient sharing failures."""
+
+    def __init__(
+        self,
+        root: Any,
+        publish: Callable[[], None],
+        *,
+        stopped: Callable[[], bool],
+        terminal: Callable[[BaseException], None],
+        succeeded: Callable[[], None] | None = None,
+        identity: Callable[[], UiSurfaceOwnerIdentity | None] | None = None,
+        retry_seconds: float = 2.0,
+    ) -> None:
+        self.root = root
+        self.publish = publish
+        self.stopped = stopped
+        self.terminal = terminal
+        self.succeeded = succeeded
+        self.identity = identity
+        self.retry_seconds = retry_seconds
+        self.pending = False
+        self.deadline = 0.0
+        self.delay_index = 0
+        self.attempt = 0
+        self.token = 0
+        self.expired_token = 0
+        self.watchdog_timer: threading.Timer | None = None
+        self.closed = False
+        self.after_ids: set[str] = set()
+
+    def _record(
+        self, event: str, *, revision: int | None = None, winerror: int | None = None
+    ) -> None:
+        if self.closed:
+            return
+        try:
+            identity = self.identity() if self.identity is not None else None
+            if identity is not None:
+                record_ui_publication_event(
+                    event,
+                    identity,
+                    revision=revision,
+                    attempt=self.attempt,
+                    winerror=winerror,
+                )
+        except Exception:
+            # Identity/diagnostic lookup is observability only.
+            return
+
+    def _schedule(self, milliseconds: int, callback: Callable[[], None]) -> bool:
+        try:
+            after_id: str | None = None
+
+            def run() -> None:
+                if after_id is not None:
+                    self.after_ids.discard(after_id)
+                if not self.closed:
+                    callback()
+
+            after_id = self.root.after(milliseconds, run)
+            self.after_ids.add(after_id)
+            return True
+        except Exception as exc:
+            if self.stopped():
+                self.pending = False
+                self.token += 1
+                self._record("retry_stopped")
+            else:
+                self.pending = False
+                self.token += 1
+                self._record("retry_terminal", winerror=getattr(exc, "winerror", None))
+                self.terminal(exc)
+            return False
+
+    def request(self) -> None:
+        if self.closed:
+            return
+        if self.stopped():
+            self._record("retry_stopped")
+            return
+        if self.pending:
+            self._record("retry_coalesce")
+            return
+        self.pending = True
+        self.deadline = time.monotonic() + self.retry_seconds
+        self.delay_index = 0
+        self.attempt = 0
+        self.token += 1
+        token = self.token
+        self._record("retry_request")
+        # after_idle can be starved by a continuous Tk event stream.  A timer
+        # is mandatory for the first dispatch and an independent watchdog
+        # makes a lost callback terminal instead of leaving a starting receipt.
+        if not self._schedule(0, lambda: self._attempt(token)):
+            return
+        if not self._schedule(
+            max(1, int(self.retry_seconds * 1000)), lambda: self._watchdog(token)
+        ):
+            return
+        self.watchdog_timer = threading.Timer(
+            max(0.001, self.retry_seconds), self._expire_from_watchdog_thread, (token,)
+        )
+        self.watchdog_timer.daemon = True
+        self.watchdog_timer.start()
+
+    def _expire_from_watchdog_thread(self, token: int) -> None:
+        # This thread never calls Tk.  It only marks expiry and queues telemetry;
+        # the next Tk callback performs the user-visible terminal transition.
+        if not self.closed and token == self.token and self.pending:
+            self.expired_token = token
+            self._record("retry_expired")
+
+    def _cancel_watchdog(self) -> None:
+        timer = self.watchdog_timer
+        self.watchdog_timer = None
+        if timer is not None:
+            timer.cancel()
+
+    def close(self) -> None:
+        self.closed = True
+        self.pending = False
+        self.token += 1
+        self._cancel_watchdog()
+        for after_id in tuple(self.after_ids):
+            try:
+                self.root.after_cancel(after_id)
+            except Exception:
+                pass
+        self.after_ids.clear()
+        try:
+            identity = self.identity() if self.identity is not None else None
+        except Exception:
+            identity = None
+        if identity is not None:
+            close_ui_publication_diagnostics(identity)
+
+    def _watchdog(self, token: int) -> None:
+        if token != self.token or not self.pending:
+            return
+        if self.stopped():
+            self.pending = False
+            self.token += 1
+            self._cancel_watchdog()
+            self._record("retry_stopped")
+            return
+        self.pending = False
+        self.token += 1
+        self._cancel_watchdog()
+        error = TimeoutError("UI receipt publication callback did not complete")
+        self._record("retry_terminal")
+        self.terminal(error)
+
+    def _attempt(self, token: int) -> None:
+        if token != self.token or not self.pending:
+            return
+        if self.expired_token == token:
+            self._watchdog(token)
+            return
+        if self.stopped():
+            self.pending = False
+            self.token += 1
+            self._cancel_watchdog()
+            self._record("retry_stopped")
+            return
+        self.attempt += 1
+        self._record("retry_attempt")
+        try:
+            # Rebuild the snapshot on every attempt.  Geometry, state, owner
+            # revision, and the atomic receipt must describe the same instant.
+            result = self.publish()
+        except Exception as exc:
+            winerror = getattr(exc, "winerror", None)
+            self._record("retry_error", winerror=winerror)
+            if (
+                _is_transient_ui_owner_publication_error(exc)
+                and time.monotonic() < self.deadline
+            ):
+                delays = (13, 31, 47)
+                delay = delays[min(self.delay_index, len(delays) - 1)]
+                self.delay_index += 1
+                self._record("retry_scheduled", winerror=winerror)
+                self._schedule(delay, lambda: self._attempt(token))
+                return
+            self.pending = False
+            self.token += 1
+            self._cancel_watchdog()
+            self._record("retry_terminal", winerror=winerror)
+            self.terminal(exc)
+            return
+        self.pending = False
+        self.token += 1
+        self._cancel_watchdog()
+        revision = result.get("revision") if isinstance(result, dict) else None
+        self._record("retry_success", revision=revision)
+        if self.succeeded is not None:
+            self.succeeded()
+
+
+def _publish_tk_surface_after_mapping(
+    root: Any, publish: Callable[[], None]
+) -> Callable[[], None]:
+    """Republish the same lease after Tk has mapped its widgets."""
+
+    closed = False
+    after_ids: set[str] = set()
+
+    def schedule(milliseconds: int, callback: Callable[[], None]) -> None:
+        after_id: str | None = None
+
+        def run() -> None:
+            if after_id is not None:
+                after_ids.discard(after_id)
+            if not closed:
+                callback()
+
+        try:
+            after_id = (
+                root.after_idle(run)
+                if milliseconds == 0
+                else root.after(milliseconds, run)
+            )
+            after_ids.add(after_id)
+        except Exception:
+            return
+
+    def publish_when_viewable() -> None:
+        try:
+            root.update_idletasks()
+            if not bool(root.winfo_viewable()):
+                schedule(10, publish_when_viewable)
+                return
+            publish()
+        except RuntimeError:
+            # Closing before the idle callback is a normal, recoverable exit.
+            return
+        except Exception as exc:
+            if type(exc).__module__ == "_tkinter" and type(exc).__name__ == "TclError":
+                return
+            raise
+
+    schedule(0, publish_when_viewable)
+
+    def cancel() -> None:
+        nonlocal closed
+        closed = True
+        for after_id in tuple(after_ids):
+            try:
+                root.after_cancel(after_id)
+            except Exception:
+                pass
+        after_ids.clear()
+
+    return cancel
+
+
+def _try_lock_context_ui_file(handle: Any) -> bool:
+    handle.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
+    import fcntl
+
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError):
+        return False
+    return True
+
+
+@dataclass(frozen=True)
+class ContextUiAction:
+    name: str
+
+
+def _unlock_context_ui_file(handle: Any) -> None:
+    handle.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def acquire_context_ui_lease(state_dir: Path, project: Path) -> ContextUiLease:
+    """Allow one root-launcher process and recover automatically after exit."""
+
+    if os.path.lexists(state_dir) and _is_link(state_dir):
+        raise SkillMagnetError(f"Context UI state directory is a link or junction: {state_dir}")
+    state_dir = state_dir.resolve()
+    state_dir.mkdir(parents=True, exist_ok=True)
+    path = state_dir / "context-launcher.lock"
+    owner_path = state_dir / "context-launcher.owner.json"
+    if os.path.lexists(path) and _is_link(path):
+        raise SkillMagnetError(f"Context UI lock is a link or junction: {path}")
+    payload = _new_ui_owner_record(
+        owner_kind="context_launcher",
+        target_digest=_path_identity_sha256(project),
+        phase="context_starting",
+    )
+    path.touch(exist_ok=True)
+    handle = path.open("r+b")
+    if path.stat().st_size == 0:
+        handle.write(b"\0")
+        handle.flush()
+    if _try_lock_context_ui_file(handle):
+        try:
+            handle.seek(1)
+            handle.truncate()
+            handle.write(json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+            _atomic_write_ui_owner_record(owner_path, payload)
+        except Exception:
+            _unlock_context_ui_file(handle)
+            handle.close()
+            raise
+        return ContextUiLease(path, True, payload, handle, owner_path)
+    owner: dict[str, Any] = {}
+    for _ in range(10):
+        try:
+            with path.open("rb") as reader:
+                reader.seek(1)
+                owner = _owner_json_loads(reader.read(UI_OWNER_MAX_BYTES + 1))
+        except (OSError, SkillMagnetError):
+            owner = {}
+        if _try_lock_context_ui_file(handle):
+            try:
+                handle.seek(1)
+                handle.truncate()
+                handle.write(json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+                _atomic_write_ui_owner_record(owner_path, payload)
+            except Exception:
+                _unlock_context_ui_file(handle)
+                handle.close()
+                raise
+            return ContextUiLease(path, True, payload, handle, owner_path)
+        time.sleep(0.02)
+    legacy_project = owner.get("project")
+    owner["same_request"] = bool(
+        payload["target_sha256"] == owner.get("target_sha256")
+        or (
+            isinstance(legacy_project, str)
+            and os.path.normcase(os.path.normpath(str(project.resolve())))
+            == os.path.normcase(os.path.normpath(legacy_project))
+        )
+    )
+    handle.close()
+    return ContextUiLease(path, False, owner, owner_path=owner_path)
+
+
+def focus_context_ui(owner: dict[str, Any]) -> bool:
+    """Bring the already-running launcher window forward on Windows."""
+
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        pid = int(owner.get("pid", 0))
+        if pid <= 0:
+            return False
+        user32 = ctypes.windll.user32
+        candidates: list[tuple[int, str]] = []
+
+        def top_level(hwnd: int) -> int:
+            try:
+                root_hwnd = int(user32.GetAncestor(hwnd, 2))  # GA_ROOT
+            except (AttributeError, TypeError, ValueError):
+                root_hwnd = 0
+            return root_hwnd or hwnd
+
+        def owned_visible(hwnd: int) -> bool:
+            process_id = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+            return process_id.value == pid and bool(user32.IsWindowVisible(hwnd))
+
+        def title(hwnd: int) -> str:
+            length = int(user32.GetWindowTextLengthW(hwnd))
+            if length <= 0:
+                return ""
+            value = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, value, length + 1)
+            return value.value
+
+        preferred = owner.get("window_handle")
+        if isinstance(preferred, int) and preferred > 0:
+            preferred = top_level(preferred)
+            if owned_visible(preferred):
+                candidates.append((preferred, title(preferred)))
+        callback_type = ctypes.WINFUNCTYPE(
+            wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
+        )
+
+        @callback_type
+        def collect(hwnd: int, _: int) -> bool:
+            process_id = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+            candidate = int(hwnd)
+            if process_id.value == pid and user32.IsWindowVisible(hwnd) and all(
+                existing[0] != candidate for existing in candidates
+            ):
+                candidates.append((candidate, title(candidate)))
+            return True
+
+        user32.EnumWindows(collect, 0)
+        if not candidates:
+            return False
+        phase = str(owner.get("phase", ""))
+        expected_title = (
+            "Library Manager"
+            if phase in {"library_manager_starting", "library_manager"}
+            else "Skill Magnet"
+        )
+        candidates.sort(
+            key=lambda candidate: (
+                expected_title.casefold() not in candidate[1].casefold(),
+                candidate[0] != preferred,
+            )
+        )
+        hwnd = candidates[0][0]
+        user32.ShowWindowAsync(hwnd, 9)  # SW_RESTORE
+        user32.SetForegroundWindow(hwnd)
+        # Windows can reject foreground transfer for focus-stealing policy even
+        # after locating and restoring the correct live window.  The duplicate
+        # still must not advise killing that live owner process.
+        return bool(user32.IsWindowVisible(hwnd))
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
 
 
 _CONTEXT_UI_TEXT = {
@@ -141,6 +1144,100 @@ def context_ui_request_error(language: str, purpose: str) -> str | None:
     return None if purpose.strip() else context_ui_text(language, "empty_request")
 
 
+def context_selection_choice_map(
+    engine: ActivationEngine,
+) -> dict[str, tuple[str, str | None]]:
+    """Build unique user labels without leaking internal IDs into the selector."""
+
+    candidates: list[tuple[str, str, str | None]] = []
+    for pack in engine.config.packs.values():
+        if pack.selection_kind == "package":
+            candidates.append(
+                (f"Skill Pack: {normalize_display_text(pack.menu_label)}", pack.pack_id, None)
+            )
+        else:
+            candidates.extend(
+                (
+                    f"Skill: {normalize_display_text(pack.skill_display_name(skill))}",
+                    pack.pack_id,
+                    skill,
+                )
+                for skill in pack.skills
+            )
+    counts: dict[str, int] = {}
+    for base, _, _ in candidates:
+        counts[base] = counts.get(base, 0) + 1
+    ordinals: dict[str, int] = {}
+    choices: dict[str, tuple[str, str | None]] = {}
+    reserved = set(counts)
+    for base, candidate_pack, candidate_skill in candidates:
+        ordinals[base] = ordinals.get(base, 0) + 1
+        if counts[base] == 1:
+            label = base
+        else:
+            label = f"{base} （同名 {ordinals[base]}）"
+            collision = 1
+            while label in reserved or label in choices:
+                label = f"{base} （同名 {ordinals[base]}・候補 {collision}）"
+                collision += 1
+        choices[label] = (candidate_pack, candidate_skill)
+    return choices
+
+
+def _initial_context_selection(
+    choices: dict[str, tuple[str, str | None]],
+    *,
+    pack_id: str | None,
+    skill_id: str | None,
+) -> tuple[str, str, str]:
+    """Return one internally consistent initial selector state."""
+
+    if pack_id is not None:
+        return pack_id, skill_id or "", ""
+    label = next(iter(choices), "")
+    selected = choices.get(label)
+    if selected is None:
+        return "", "", ""
+    return selected[0], selected[1] or "", label
+
+
+def context_ui_details(language: str, details: dict[str, object]) -> str:
+    """Format verified selection details; placeholders are never release evidence."""
+
+    skill_ids = tuple(str(item) for item in details["skill_ids"])
+    return "\n".join(
+        (
+            context_ui_text(
+                language, "internal_skill_id", skill_id=", ".join(skill_ids)
+            ),
+            context_ui_text(language, "pack_id", pack_id=details["pack_id"]),
+            context_ui_text(
+                language,
+                "included_skills",
+                count=details["skill_count"],
+                skills=", ".join(skill_ids),
+            ),
+            context_ui_text(
+                language, "repository", repository=details["repository_url"]
+            ),
+            context_ui_text(language, "version", version=details["expected_commit"]),
+            context_ui_text(
+                language,
+                "approved",
+                approved_by=details["approved_by"],
+                approved_at=details["approved_at"],
+            ),
+            context_ui_text(
+                language,
+                "digests",
+                skill_ids_digest=details["skill_ids_digest"],
+                instruction_digest=details["instruction_digest"],
+                acceptance_digest=details["acceptance_digest"],
+            ),
+        )
+    )
+
+
 def context_error_message(error: Exception | str, language: str | None = None) -> str:
     language = language or _context_ui_language
     message = str(error)
@@ -148,15 +1245,17 @@ def context_error_message(error: Exception | str, language: str | None = None) -
         if language == "en":
             message += (
                 "\n\nUpdate safely: review and approve the new source commit; update the "
-                "configured expected commit and skill digests; reinstall the Explorer "
-                "menu; verify the selected leaf matches; then retry from a clean source HEAD."
+                "configured expected commit and skill digests in Library Manager; close and "
+                "reopen the Skill Magnet selection screen; then retry from a clean source HEAD."
             )
         else:
             message = (
                 "Skillパックの現在のHEADが、承認済みコミットと一致しません。"
                 "\n\n安全に更新するには、新しいsource commitを確認・承認し、設定済みの"
-                "expected commitとSkill digestを更新してExplorerメニューを再インストールし、"
-                "選択したleafが一致することを確認してから、cleanなsource HEADで再試行してください。"
+                "expected commitとSkill digestをLibrary Managerで更新してください。"
+                "その後、Skill Magnetの選択画面を閉じて開き直し、cleanなsource HEADで"
+                "再試行してください。packやskillの内容変更だけでは右クリックメニューの"
+                "再インストールは不要です。"
             )
     elif language != "en":
         message = f"処理を開始できませんでした。\n\n{message}"
@@ -193,7 +1292,13 @@ def context_result_surface(result: dict[str, object]) -> dict[str, str]:
     }
 
 
-def context_failure_surface(error: Exception) -> dict[str, str]:
+def context_failure_surface(
+    error: Exception,
+    *,
+    config_path: Path | None = None,
+    state_dir: Path | None = None,
+    platform: str | None = None,
+) -> dict[str, str]:
     """Map typed failures to a Japanese fail-closed result surface."""
     if isinstance(error, _LaunchFailed):
         return {
@@ -235,17 +1340,84 @@ def context_failure_surface(error: Exception) -> dict[str, str]:
             "not_completed": "成功として表示していません。保存や変更が行われた範囲は確認できません。",
             "next_action": "保存証拠を確認し、同じ依頼を再実行してください。",
         }
+    message = str(error).strip() or error.__class__.__name__
+    folded = message.casefold()
+    repair_argv = [sys.executable, "-I", "-m", "skill_magnet"]
+    if config_path is not None:
+        repair_argv.extend(("--config", str(config_path.resolve())))
+        if state_dir is not None:
+            repair_argv.extend(("--state-dir", str(state_dir.resolve())))
+    repair_argv.extend(("library", "ui"))
+    repair_command = subprocess.list2cmdline(repair_argv)
+    menu_repair_argv = [sys.executable, "-I", "-m", "skill_magnet"]
+    if config_path is not None:
+        menu_repair_argv.extend(("--config", str(config_path.resolve())))
+    if state_dir is not None:
+        menu_repair_argv.extend(("--state-dir", str(state_dir.resolve())))
+    repair_platform = platform or ("windows" if os.name == "nt" else "macos")
+    menu_repair_argv.extend(
+        ("install-context-menu", "--platform", repair_platform, "--confirm")
+    )
+    menu_repair_command = subprocess.list2cmdline(menu_repair_argv)
+    terminal_name = "Windows Terminal" if repair_platform == "windows" else "Terminal"
+    if "after menu installation" in folded or "reinstall required" in folded:
+        next_action = (
+            f"{terminal_name}で「{menu_repair_command}」を一度実行し、"
+            "完了後に同じ右クリック操作を再試行してください。"
+            "Library Managerも同じSkill Magnet画面から開けます。"
+        )
+    elif "selection screen" in folded or "while confirming" in folded:
+        next_action = (
+            "現在のSkill Magnet画面を閉じ、対象フォルダーを右クリックして"
+            "「Skill Magnet」をもう一度開いてください。現在の設定から選択肢を読み直します。"
+            "packやskillの内容変更だけでは右クリックメニューの再インストールは不要です。"
+        )
+    elif "config" in folded or "json" in folded or "設定" in message:
+        next_action = (
+            f"{terminal_name}で「{repair_command}」を実行して"
+            "Library Managerを開き、GitHub URLと登録内容を修復してから再実行してください。"
+        )
+    elif "library manager" in folded:
+        next_action = (
+            f"{terminal_name}で「{repair_command}」を再実行してください。"
+            "同じ原因が表示される場合は、表示されたパスの書き込み権限または空き容量を"
+            "修復してから再実行してください。"
+        )
+    elif "workspace" in folded or "folder" in folded or "directory" in folded:
+        next_action = (
+            "対象フォルダーそのものを右クリックするか、そのフォルダーを開いた状態で"
+            "余白を右クリックして再実行してください。"
+        )
+    elif "interrupted" in folded or "transaction" in folded or "attempt" in folded:
+        next_action = (
+            "右クリックの「Skill Magnet」を押し、開いた画面の「Library Manager」で"
+            "表示された中断処理を「続きから再開」または「最初からやり直す」で復旧してください。"
+        )
+    else:
+        next_action = (
+            f"{terminal_name}で「{repair_command}」を実行し、"
+            "画面の復旧操作を実行してください。解消しない場合は、この原因文を"
+            "そのまま対応報告へ添付してください。"
+        )
     return {
         "state": "blocked",
         "title": "実行を続けられません",
-        "cause": "安全確認または起動前検証を満たせませんでした。",
+        "cause": message,
         "not_completed": "依頼は完了扱いにしていません。",
-        "next_action": "選択内容と保存証拠を確認し、原因を解消してから再実行してください。",
+        "next_action": next_action,
     }
 
 
-def context_failure_message(error: Exception) -> str:
-    surface = context_failure_surface(error)
+def context_failure_message(
+    error: Exception,
+    *,
+    config_path: Path | None = None,
+    state_dir: Path | None = None,
+    platform: str | None = None,
+) -> str:
+    surface = context_failure_surface(
+        error, config_path=config_path, state_dir=state_dir, platform=platform
+    )
     return "\n\n".join(
         (
             surface["title"],
@@ -493,45 +1665,48 @@ def context_selection_details(
     menu_skill_digest: str | None = None,
     menu_instruction_digest: str | None = None,
     menu_acceptance_digest: str | None = None,
+    record_rejections: bool = True,
 ) -> dict[str, object]:
     project = validate_task_workspace(project)
+
+    def reject(reason: str) -> None:
+        if record_rejections:
+            engine.record_rejection(pack_id=pack_id, runtime=runtime, reason=reason)
+
     if pack_id not in engine.config.packs:
-        engine.record_rejection(
-            pack_id=pack_id, runtime=runtime, reason="unknown_pack"
-        )
+        reject("unknown_pack")
         raise SkillMagnetError(f"Unknown skill pack: {pack_id}")
     if runtime not in {"codex", "claude"}:
-        engine.record_rejection(
-            pack_id=pack_id, runtime=runtime, reason="unknown_runtime"
-        )
+        reject("unknown_runtime")
         raise SkillMagnetError(f"Unknown target AI: {runtime}")
     pack = engine.config.packs[pack_id]
     if skill_id is not None and skill_id not in pack.skills:
-        engine.record_rejection(
-            pack_id=pack_id, runtime=runtime, reason="unknown_skill"
-        )
+        reject("unknown_skill")
         raise SkillMagnetError(f"Unknown skill for pack {pack_id}: {skill_id}")
-    skill_digest = hashlib.sha256(
+    pack_membership_digest = hashlib.sha256(
         json.dumps(pack.skills, ensure_ascii=False, separators=(",", ":")).encode(
             "utf-8"
         )
     ).hexdigest()
     if menu_commit is not None and menu_commit != pack.expected_commit:
-        engine.record_rejection(
-            pack_id=pack_id, runtime=runtime, reason="stale_menu_commit"
+        reject("stale_menu_commit")
+        raise SkillMagnetError(
+            "Pack version changed after the selection screen opened; close and reopen Skill Magnet"
         )
-        raise SkillMagnetError("Pack version changed after menu installation; reinstall required")
-    if menu_skill_digest is not None and menu_skill_digest != skill_digest:
-        engine.record_rejection(
-            pack_id=pack_id, runtime=runtime, reason="stale_menu_membership"
+    if menu_skill_digest is not None and menu_skill_digest != pack_membership_digest:
+        reject("stale_menu_membership")
+        raise SkillMagnetError(
+            "Pack membership changed after the selection screen opened; close and reopen Skill Magnet"
         )
-        raise SkillMagnetError("Pack membership changed after menu installation; reinstall required")
     if pack.selection_kind == "package" and skill_id is not None:
-        engine.record_rejection(
-            pack_id=pack_id, runtime=runtime, reason="invalid_package_selection"
-        )
+        reject("invalid_package_selection")
         raise SkillMagnetError(f"Pack {pack_id} must be selected as a complete package")
     selected_skills = (skill_id,) if skill_id is not None else pack.skills
+    selected_skills_digest = hashlib.sha256(
+        json.dumps(selected_skills, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
 
     def selection_digest(filename: str) -> str:
         if skill_id is not None:
@@ -548,15 +1723,15 @@ def context_selection_details(
     instruction_digest = selection_digest("SKILL.md")
     acceptance_digest = selection_digest("acceptance.json")
     if menu_instruction_digest is not None and menu_instruction_digest != instruction_digest:
-        engine.record_rejection(
-            pack_id=pack_id, runtime=runtime, reason="stale_menu_instruction"
+        reject("stale_menu_instruction")
+        raise SkillMagnetError(
+            "Skill instructions changed after the selection screen opened; close and reopen Skill Magnet"
         )
-        raise SkillMagnetError("Skill instructions changed after menu installation; reinstall required")
     if menu_acceptance_digest is not None and menu_acceptance_digest != acceptance_digest:
-        engine.record_rejection(
-            pack_id=pack_id, runtime=runtime, reason="stale_menu_acceptance"
+        reject("stale_menu_acceptance")
+        raise SkillMagnetError(
+            "Skill acceptance changed after the selection screen opened; close and reopen Skill Magnet"
         )
-        raise SkillMagnetError("Skill acceptance changed after menu installation; reinstall required")
     return {
         "selection_kind": "skill" if skill_id is not None else "pack",
         "selected_skill_id": skill_id,
@@ -564,7 +1739,8 @@ def context_selection_details(
         "pack_id": pack.pack_id,
         "skill_count": len(selected_skills),
         "skill_ids": selected_skills,
-        "skill_ids_digest": skill_digest,
+        "skill_ids_digest": selected_skills_digest,
+        "pack_membership_digest": pack_membership_digest,
         "instruction_digest": instruction_digest,
         "acceptance_digest": acceptance_digest,
         "runtime": runtime,
@@ -591,16 +1767,19 @@ def confirm_context_selection(
     details: dict[str, object],
     purpose: str,
     confirmed: bool,
+    persist: bool = True,
+    record_rejections: bool = True,
 ) -> LaunchContract | None:
     """Create no state until the user has explicitly accepted the immutable selection."""
     if not confirmed:
         return None
     if not details["verified_runtime"]:
-        engine.record_rejection(
-            pack_id=str(details["pack_id"]),
-            runtime=str(details["runtime"]),
-            reason="unsupported_runtime",
-        )
+        if record_rejections:
+            engine.record_rejection(
+                pack_id=str(details["pack_id"]),
+                runtime=str(details["runtime"]),
+                reason="unsupported_runtime",
+            )
         raise SkillMagnetError(
             f"{str(details['runtime']).title()} has no verified runtime adapter; launch blocked"
         )
@@ -622,20 +1801,26 @@ def confirm_context_selection(
             ),
         )
     except SkillMagnetError:
-        engine.record_rejection(
-            pack_id=str(details["pack_id"]),
-            runtime=str(details["runtime"]),
-            reason="preflight_validation_failed",
-        )
+        if record_rejections:
+            engine.record_rejection(
+                pack_id=str(details["pack_id"]),
+                runtime=str(details["runtime"]),
+                reason="preflight_validation_failed",
+            )
         raise
     if tuple(plan["skill_ids"]) != tuple(details["skill_ids"]):
-        engine.record_rejection(
-            pack_id=str(details["pack_id"]),
-            runtime=str(details["runtime"]),
-            reason="stale_menu_membership",
+        if record_rejections:
+            engine.record_rejection(
+                pack_id=str(details["pack_id"]),
+                runtime=str(details["runtime"]),
+                reason="stale_menu_membership",
+            )
+        raise SkillMagnetError(
+            "Pack membership changed while confirming the selection; close and reopen Skill Magnet"
         )
-        raise SkillMagnetError("Pack membership changed after menu selection; reinstall required")
-    return engine.confirm(plan, confirmed=True)
+    if persist:
+        return engine.confirm(plan, confirmed=True)
+    return engine.prepare_confirmation(plan, confirmed=True)
 
 
 def launch_context_leaf(
@@ -726,16 +1911,17 @@ def show_context_selection(
     menu_skill_digest: str | None = None,
     menu_instruction_digest: str | None = None,
     menu_acceptance_digest: str | None = None,
+    allow_dynamic_selection: bool = False,
     library_manager: Callable[[Path], None] | None = None,
-) -> LaunchContract | None:
+    register_selected: Callable[[Path], None] | None = None,
+    window_ready: Callable[[int], None] | None = None,
+) -> LaunchContract | ContextUiAction | None:
     """Show one pack-first confirmation UI for both OS adapters."""
     import tkinter as tk
     from tkinter import messagebox, ttk
 
     normalized_project = validate_task_workspace(project)
-    root = tk.Tk()
-    root.resizable(True, True)
-    if platform == "windows" and any(
+    if platform == "windows" and not allow_dynamic_selection and any(
         value is None
         for value in (
             pack_id,
@@ -750,12 +1936,13 @@ def show_context_selection(
         )
     if (
         platform == "windows"
+        and not allow_dynamic_selection
         and pack_id is not None
         and engine.config.packs[pack_id].selection_kind == "skill"
         and skill_id is None
     ):
         raise SkillMagnetError("Windows context launch requires an explicit skill")
-    if platform == "windows":
+    if platform == "windows" and not allow_dynamic_selection:
         context_selection_details(
             engine,
             project=project,
@@ -767,22 +1954,17 @@ def show_context_selection(
             menu_instruction_digest=menu_instruction_digest,
             menu_acceptance_digest=menu_acceptance_digest,
         )
-    selection_choices: dict[str, tuple[str, str | None]] = {}
-    for candidate_pack in engine.config.packs.values():
-        if candidate_pack.selection_kind == "package":
-            label = candidate_pack.menu_label
-            if label in selection_choices:
-                label = f"{label} ({candidate_pack.pack_id})"
-            selection_choices[label] = (candidate_pack.pack_id, None)
-            continue
-        for candidate_skill in candidate_pack.skills:
-            label = candidate_pack.skill_display_name(candidate_skill)
-            if label in selection_choices:
-                label = f"{label} ({candidate_pack.menu_label})"
-            selection_choices[label] = (candidate_pack.pack_id, candidate_skill)
-    selected_pack = tk.StringVar(value=pack_id or "")
-    selected_skill = tk.StringVar(value=skill_id or "")
-    selected_skill_label = tk.StringVar()
+    root = tk.Tk()
+    root.resizable(True, True)
+    selection_choices = context_selection_choice_map(engine)
+    initial_pack, initial_skill, default_label = _initial_context_selection(
+        selection_choices,
+        pack_id=pack_id,
+        skill_id=skill_id,
+    )
+    selected_pack = tk.StringVar(value=initial_pack)
+    selected_skill = tk.StringVar(value=initial_skill)
+    selected_skill_label = tk.StringVar(value=default_label)
     selected_runtime = tk.StringVar(value=runtime.title() if runtime else "")
     purpose = tk.StringVar()
     language_choice = tk.StringVar(value="日本語")
@@ -795,16 +1977,25 @@ def show_context_selection(
     verification_label = tk.StringVar()
     details_text = tk.StringVar()
     details_button_text = tk.StringVar()
-    result: dict[str, LaunchContract] = {}
+    processing_status = tk.StringVar(value="待機中")
+    result: dict[str, LaunchContract | ContextUiAction] = {}
     details_visible = False
+    verified_details: dict[str, object] | None = None
+    active_context_worker: threading.Thread | None = None
+    active_context_cancel: threading.Event | None = None
+    surface_identity: UiSurfaceOwnerIdentity | None = None
+    processing_active = False
+    closing = False
 
     def current_language() -> str:
         return "en" if language_choice.get() == "English" else "ja"
 
-    ttk.Label(root, textvariable=project_label).grid(
+    project_text_label = ttk.Label(root, textvariable=project_label)
+    project_text_label.grid(
         row=0, column=0, columnspan=2, padx=12, pady=8, sticky="w"
     )
-    ttk.Label(root, textvariable=language_label).grid(row=0, column=2, padx=6, sticky="e")
+    language_text_label = ttk.Label(root, textvariable=language_label)
+    language_text_label.grid(row=0, column=2, padx=6, sticky="e")
     language_box = ttk.Combobox(
         root,
         textvariable=language_choice,
@@ -814,7 +2005,8 @@ def show_context_selection(
     )
     language_box.grid(row=0, column=3, padx=12, pady=8, sticky="w")
     root.columnconfigure(1, weight=1)
-    ttk.Label(root, textvariable=selection_label).grid(
+    selection_text_label = ttk.Label(root, textvariable=selection_label)
+    selection_text_label.grid(
         row=1, column=0, padx=12, sticky="w"
     )
     if pack_id is not None:
@@ -822,7 +2014,8 @@ def show_context_selection(
         selected_skill_label.set(
             pack.skill_display_name(skill_id) if skill_id is not None else pack.menu_label
         )
-        ttk.Label(root, textvariable=selected_skill_label).grid(
+        selection_widget = ttk.Label(root, textvariable=selected_skill_label)
+        selection_widget.grid(
             row=1, column=1, columnspan=3, padx=12, sticky="w"
         )
     else:
@@ -834,21 +2027,33 @@ def show_context_selection(
             width=42,
         )
         skill_box.grid(row=1, column=1, columnspan=3, padx=12, pady=4, sticky="ew")
+        selection_widget = skill_box
 
         def choose_skill(_: object = None) -> None:
+            nonlocal verified_details, details_visible
             selected = selection_choices.get(selected_skill_label.get())
             if selected is None:
                 return
             selected_pack.set(selected[0])
             selected_skill.set(selected[1] or "")
+            verified_details = None
+            if details_visible:
+                details_visible = False
+                details_frame.grid_remove()
+                details_button_text.set(
+                    context_ui_text(current_language(), "details_show")
+                )
             refresh_selection()
+            publish_surface()
 
         skill_box.bind("<<ComboboxSelected>>", choose_skill)
 
-    ttk.Label(root, textvariable=skill_purpose_label, wraplength=560).grid(
+    purpose_text_label = ttk.Label(root, textvariable=skill_purpose_label, wraplength=560)
+    purpose_text_label.grid(
         row=2, column=0, columnspan=4, padx=12, pady=(4, 8), sticky="w"
     )
-    ttk.Label(root, textvariable=runtime_label).grid(
+    runtime_text_label = ttk.Label(root, textvariable=runtime_label)
+    runtime_text_label.grid(
         row=3, column=0, padx=12, sticky="w"
     )
     runtime_box = ttk.Combobox(
@@ -858,13 +2063,16 @@ def show_context_selection(
         state="readonly",
     )
     runtime_box.grid(row=3, column=1, columnspan=3, padx=12, pady=4, sticky="w")
-    ttk.Label(root, textvariable=request_label).grid(
+    request_text_label = ttk.Label(root, textvariable=request_label)
+    request_text_label.grid(
         row=4, column=0, padx=12, sticky="w"
     )
-    ttk.Entry(root, textvariable=purpose, width=48).grid(
+    request_entry = ttk.Entry(root, textvariable=purpose, width=48)
+    request_entry.grid(
         row=4, column=1, columnspan=3, padx=12, pady=4, sticky="w"
     )
-    ttk.Label(root, textvariable=verification_label, wraplength=560).grid(
+    verification_text_label = ttk.Label(root, textvariable=verification_label, wraplength=560)
+    verification_text_label.grid(
         row=5, column=0, columnspan=4, padx=12, pady=8, sticky="w"
     )
 
@@ -874,24 +2082,167 @@ def show_context_selection(
     )
 
     def toggle_details() -> None:
-        nonlocal details_visible
-        details_visible = not details_visible
-        if details_visible:
-            details_frame.grid(row=7, column=0, columnspan=4, padx=12, pady=4, sticky="ew")
-        else:
-            details_frame.grid_remove()
-        details_button_text.set(
-            context_ui_text(
-                current_language(), "details_hide" if details_visible else "details_show"
+        nonlocal details_visible, verified_details
+        opening = not details_visible
+        if opening:
+            if not selected_pack.get():
+                messagebox.showerror(
+                    context_ui_text(current_language(), "error_title"),
+                    context_ui_text(current_language(), "select_pack"),
+                    parent=root,
+                )
+                return
+            runtime_value = selected_runtime.get().casefold()
+            if runtime_value not in {"codex", "claude"}:
+                runtime_value = "codex"
+            selection = {
+                "pack_id": selected_pack.get(),
+                "skill_id": selected_skill.get() or None,
+                "runtime": runtime_value,
+            }
+
+            def load_details(_: threading.Event) -> dict[str, object]:
+                return context_selection_details(
+                    engine,
+                    project=project,
+                    pack_id=str(selection["pack_id"]),
+                    skill_id=(
+                        str(selection["skill_id"])
+                        if selection["skill_id"] is not None
+                        else None
+                    ),
+                    runtime=str(selection["runtime"]),
+                    menu_commit=menu_commit,
+                    menu_skill_digest=menu_skill_digest,
+                    menu_instruction_digest=menu_instruction_digest,
+                    menu_acceptance_digest=menu_acceptance_digest,
+                    record_rejections=False,
+                )
+
+            def details_loaded(value: Any) -> None:
+                nonlocal details_visible, verified_details
+                if not isinstance(value, dict):
+                    raise SkillMagnetError("検証結果を読み取れません")
+                verified_details = value
+                details_text.set(context_ui_details(current_language(), verified_details))
+                details_visible = True
+                details_frame.grid(
+                    row=7, column=0, columnspan=4, padx=12, pady=4, sticky="ew"
+                )
+                details_button_text.set(
+                    context_ui_text(current_language(), "details_hide")
+                )
+                publish_surface()
+
+            run_context_background(
+                "検証情報を取得しています…",
+                load_details,
+                details_loaded,
+                name="skill-magnet-context-details",
             )
-        )
+        else:
+            details_visible = False
+            details_frame.grid_remove()
+            details_button_text.set(
+                context_ui_text(current_language(), "details_show")
+            )
+            publish_surface()
 
     details_button = ttk.Button(root, textvariable=details_button_text, command=toggle_details)
     details_button.grid(row=6, column=0, columnspan=4, padx=12, pady=4, sticky="w")
 
     confirm_button = ttk.Button(root)
-    cancel_button = ttk.Button(root, command=root.destroy)
+    cancel_button = ttk.Button(root)
     manager_button = ttk.Button(root, text="Library Manager")
+    register_button = ttk.Button(root, text="このフォルダーのスキルを登録")
+
+    controls = [
+        language_box,
+        runtime_box,
+        request_entry,
+        details_button,
+        confirm_button,
+        cancel_button,
+        manager_button,
+        register_button,
+    ]
+    if pack_id is None:
+        controls.append(skill_box)
+
+    def set_processing(label: str | None) -> None:
+        nonlocal processing_active
+        busy = label is not None
+        processing_active = busy
+        processing_status.set(f"処理中：{label}" if busy else "待機中")
+        for control in controls:
+            try:
+                control.configure(
+                    state=(
+                        "normal"
+                        if busy and control is cancel_button
+                        else "disabled"
+                        if busy
+                        else "normal"
+                    )
+                )
+            except tk.TclError:
+                continue
+        if not busy:
+            language_box.configure(state="readonly")
+            runtime_box.configure(state="readonly")
+            if pack_id is None:
+                skill_box.configure(state="readonly")
+        root.update_idletasks()
+        publish_surface()
+
+    def run_context_background(
+        label: str,
+        operation: Callable[[threading.Event], Any],
+        on_success: Callable[[Any], None],
+        *,
+        name: str,
+    ) -> None:
+        """Keep archive validation and contract preparation off Tk's main thread."""
+
+        nonlocal active_context_worker, active_context_cancel
+        if active_context_worker is not None and active_context_worker.is_alive():
+            return
+        cancel_event, worker, outcome = start_context_background_operation(
+            operation, name=name
+        )
+        active_context_cancel = cancel_event
+        active_context_worker = worker
+        set_processing(label)
+
+        def poll() -> None:
+            nonlocal active_context_worker, active_context_cancel
+            if worker.is_alive():
+                if not closing:
+                    root.after(50, poll)
+                return
+            active_context_worker = None
+            active_context_cancel = None
+            if closing:
+                return
+            set_processing(None)
+            error = outcome.get("error")
+            if isinstance(error, BaseException):
+                messagebox.showerror(
+                    context_ui_text(current_language(), "error_title"),
+                    f"{context_ui_text(current_language(), 'operation_failed')}\n\n{error}",
+                    parent=root,
+                )
+                return
+            try:
+                on_success(outcome.get("value"))
+            except Exception as exc:
+                messagebox.showerror(
+                    context_ui_text(current_language(), "error_title"),
+                    f"{context_ui_text(current_language(), 'operation_failed')}\n\n{exc}",
+                    parent=root,
+                )
+
+        root.after(50, poll)
 
     def refresh_selection() -> None:
         if not selected_pack.get():
@@ -908,37 +2259,9 @@ def show_context_selection(
             )
         )
         details_text.set(
-            "\n".join(
-                (
-                    context_ui_text(
-                        current_language(),
-                        "internal_skill_id",
-                        skill_id=", ".join((skill,)) if skill is not None else ", ".join(pack.skills),
-                    ),
-                    context_ui_text(current_language(), "pack_id", pack_id=pack.pack_id),
-                    context_ui_text(
-                        current_language(),
-                        "included_skills",
-                        count=len(pack.skills),
-                        skills=", ".join(pack.skills),
-                    ),
-                    context_ui_text(current_language(), "repository", repository=pack.repo_url),
-                    context_ui_text(current_language(), "version", version=pack.expected_commit),
-                    context_ui_text(
-                        current_language(),
-                        "approved",
-                        approved_by=pack.approved_by,
-                        approved_at=pack.approved_at,
-                    ),
-                    context_ui_text(
-                        current_language(),
-                        "digests",
-                        skill_ids_digest=menu_skill_digest or "-",
-                        instruction_digest=menu_instruction_digest or "-",
-                        acceptance_digest=menu_acceptance_digest or "-",
-                    ),
-                )
-            )
+            context_ui_details(current_language(), verified_details)
+            if verified_details is not None
+            else context_ui_text(current_language(), "details_show")
         )
 
     def apply_language(_: object = None) -> None:
@@ -964,12 +2287,20 @@ def show_context_selection(
             context_ui_text(language, "details_hide" if details_visible else "details_show")
         )
         refresh_selection()
+        publish_surface()
 
     language_box.bind("<<ComboboxSelected>>", apply_language)
 
+    def selection_state_changed(_: object = None) -> None:
+        publish_surface()
+
+    runtime_box.bind("<<ComboboxSelected>>", selection_state_changed)
+    purpose.trace_add("write", lambda *_: publish_surface())
+
     def confirm() -> None:
         language = current_language()
-        request_error = context_ui_request_error(language, purpose.get())
+        request_value = purpose.get()
+        request_error = context_ui_request_error(language, request_value)
         if request_error is not None:
             messagebox.showerror(
                 context_ui_text(language, "error_title"),
@@ -992,60 +2323,346 @@ def show_context_selection(
                 parent=root,
             )
             return
-        try:
-            details = context_selection_details(
+        selection = {
+            "language": language,
+            "request": request_value,
+            "runtime": runtime_value,
+            "pack_id": selected_pack.get(),
+            "skill_id": selected_skill.get() or None,
+        }
+
+        def validate_selection(_: threading.Event) -> dict[str, object]:
+            return context_selection_details(
                 engine,
                 project=project,
-                pack_id=selected_pack.get(),
-                skill_id=selected_skill.get() or None,
-                runtime=runtime_value,
+                pack_id=str(selection["pack_id"]),
+                skill_id=(
+                    str(selection["skill_id"])
+                    if selection["skill_id"] is not None
+                    else None
+                ),
+                runtime=str(selection["runtime"]),
                 menu_commit=menu_commit,
                 menu_skill_digest=menu_skill_digest,
                 menu_instruction_digest=menu_instruction_digest,
                 menu_acceptance_digest=menu_acceptance_digest,
+                record_rejections=False,
             )
-        except Exception as exc:
-            messagebox.showerror(
-                context_ui_text(language, "error_title"),
-                f"{context_ui_text(language, 'operation_failed')}\n\n{exc}",
+
+        def selection_validated(value: Any) -> None:
+            if not isinstance(value, dict):
+                raise SkillMagnetError("選択内容の検証結果を読み取れません")
+            detail = context_ui_confirmation(
+                str(selection["language"]), value, str(selection["request"])
+            )
+            if not messagebox.askyesno(
+                context_ui_text(str(selection["language"]), "confirmation_title"),
+                detail,
                 parent=root,
+            ):
+                return
+
+            def create_contract(_: threading.Event) -> LaunchContract | None:
+                return confirm_context_selection(
+                    engine,
+                    platform=platform,
+                    details=value,
+                    purpose=str(selection["request"]),
+                    confirmed=True,
+                    persist=False,
+                    record_rejections=False,
+                )
+
+            def contract_created(contract: Any) -> None:
+                if not isinstance(contract, LaunchContract):
+                    raise SkillMagnetError("依頼の実行契約を作成できませんでした")
+                # This is the only state-changing commit in the confirmation
+                # flow.  It runs on Tk's main thread, so a close event cannot
+                # interleave between the final cancellation check and write.
+                result["contract"] = engine.persist_confirmation(contract)
+                close_context_window()
+
+            run_context_background(
+                "依頼を安全に準備しています…",
+                create_contract,
+                contract_created,
+                name="skill-magnet-context-contract",
             )
-            return
-        detail = context_ui_confirmation(language, details, purpose.get())
-        if not messagebox.askyesno(
-            context_ui_text(language, "confirmation_title"), detail, parent=root
-        ):
-            return
-        try:
-            contract = confirm_context_selection(
-                engine,
-                platform=platform,
-                details=details,
-                purpose=purpose.get(),
-                confirmed=True,
-            )
-        except Exception as exc:
-            messagebox.showerror(
-                context_ui_text(language, "error_title"),
-                f"{context_ui_text(language, 'operation_failed')}\n\n{exc}",
-                parent=root,
-            )
-            return
-        if contract is not None:
-            result["contract"] = contract
-        root.destroy()
+
+        run_context_background(
+            "選択内容を検証しています…",
+            validate_selection,
+            selection_validated,
+            name="skill-magnet-context-validation",
+        )
 
     confirm_button.configure(command=confirm)
     if library_manager is not None:
         def open_library_manager() -> None:
-            root.destroy()
-            library_manager(project.resolve())
+            set_processing("Library Managerを開いています…")
+            result["action"] = ContextUiAction("library_manager")
+            close_context_window()
 
         manager_button.configure(command=open_library_manager)
-        manager_button.grid(row=8, column=0, columnspan=4, padx=12, pady=(8, 0))
+        manager_button.grid(row=8, column=0, columnspan=2, padx=12, pady=(8, 0))
+    if register_selected is not None:
+        def open_registration() -> None:
+            set_processing("選択フォルダーを確認しています…")
+            result["action"] = ContextUiAction("register_selected")
+            close_context_window()
+
+        register_button.configure(command=open_registration)
+        register_button.grid(row=8, column=2, columnspan=2, padx=12, pady=(8, 0))
     confirm_button.grid(row=9, column=0, columnspan=2, padx=12, pady=12)
     cancel_button.grid(row=9, column=2, columnspan=2, padx=12, pady=12)
+    status_label = ttk.Label(root, textvariable=processing_status, anchor="w")
+    status_label.grid(
+        row=10, column=0, columnspan=4, padx=12, pady=(0, 8), sticky="ew"
+    )
+
+    surface_widgets = (
+        UiWidgetSpec(
+            "project",
+            project_text_label,
+            "label",
+            text=lambda: (
+                project_label.get()
+                if normalized_project is None
+                else context_ui_text(current_language(), "project", project="（選択済み）")
+            ),
+        ),
+        UiWidgetSpec(
+            "language_label",
+            language_text_label,
+            "label",
+            text=lambda: language_label.get(),
+        ),
+        UiWidgetSpec(
+            "selection_label",
+            selection_text_label,
+            "label",
+            text=lambda: selection_label.get(),
+        ),
+        UiWidgetSpec(
+            "skill_purpose",
+            purpose_text_label,
+            "label",
+            text=lambda: skill_purpose_label.get(),
+        ),
+        UiWidgetSpec(
+            "runtime_label",
+            runtime_text_label,
+            "label",
+            text=lambda: runtime_label.get(),
+        ),
+        UiWidgetSpec(
+            "request_label",
+            request_text_label,
+            "label",
+            text=lambda: request_label.get(),
+        ),
+        UiWidgetSpec(
+            "verification",
+            verification_text_label,
+            "label",
+            text=lambda: verification_label.get(),
+        ),
+        UiWidgetSpec(
+            "language_choice",
+            language_box,
+            "combobox",
+            value=lambda: language_choice.get(),
+            values=("日本語", "English"),
+        ),
+        UiWidgetSpec(
+            "selection_choice",
+            selection_widget,
+            "combobox" if pack_id is None else "label",
+            value=lambda: selected_skill_label.get(),
+            values=(lambda: tuple(selection_choices)) if pack_id is None else None,
+        ),
+        UiWidgetSpec(
+            "runtime_choice",
+            runtime_box,
+            "combobox",
+            value=lambda: selected_runtime.get(),
+            values=("Codex", "Claude"),
+        ),
+        # Request text and all metadata derived from it are intentionally absent.
+        UiWidgetSpec("request", request_entry, "entry"),
+        UiWidgetSpec(
+            "details", details_button, "button", text=lambda: details_button_text.get()
+        ),
+        UiWidgetSpec(
+            "library_manager", manager_button, "button", text="Library Manager"
+        ),
+        UiWidgetSpec(
+            "register_selected",
+            register_button,
+            "button",
+            text="このフォルダーのスキルを登録",
+        ),
+        UiWidgetSpec(
+            "confirm",
+            confirm_button,
+            "button",
+            text=lambda: str(confirm_button.cget("text")),
+        ),
+        UiWidgetSpec(
+            "cancel",
+            cancel_button,
+            "button",
+            text=lambda: str(cancel_button.cget("text")),
+        ),
+        UiWidgetSpec(
+            "status", status_label, "status", text=lambda: processing_status.get()
+        ),
+    )
+
+    surface_publication: TkSurfacePublicationRetry | None = None
+    cancel_mapped_surface_publication: Callable[[], None] | None = None
+
+    def publish_surface_now() -> dict[str, Any] | None:
+        if surface_identity is None or closing:
+            return None
+        return publish_tk_ui_surface(
+            surface_identity,
+            root,
+            widgets=surface_widgets,
+            state={
+                "language": current_language(),
+                "selection_mode": "dynamic" if pack_id is None else "fixed",
+                "processing": processing_active,
+                "details_visible": details_visible,
+            },
+        )
+
+    def publish_surface() -> None:
+        if surface_publication is not None:
+            surface_publication.request()
+
+    def close_context_window() -> None:
+        nonlocal closing
+        if closing:
+            return
+        closing = True
+        if active_context_cancel is not None:
+            active_context_cancel.set()
+
+        def finish_close() -> None:
+            # The worker is deliberately daemonized and is forbidden from
+            # touching Tk.  Waiting for it here would let a blocked network or
+            # archive read make the Explorer-launched window impossible for the
+            # user to close.  Signal cancellation, retire the UI receipts, and
+            # leave the event loop immediately; process exit safely abandons a
+            # worker that has not reached its next cancellation checkpoint.
+            if surface_publication is not None:
+                surface_publication.close()
+            if cancel_mapped_surface_publication is not None:
+                cancel_mapped_surface_publication()
+            # Explorer/UIAutomation can deliver WM_CLOSE while it is still
+            # walking Tk child HWNDs.  Destroying that interpreter inside the
+            # same message dispatch has produced a tcl86t breakpoint crash.
+            # Leave the event loop first.  Retire this root after mainloop
+            # returns, before the caller opens another Tk root in this process.
+            try:
+                root.withdraw()
+            finally:
+                root.quit()
+
+        root.after_idle(finish_close)
+
+    def publication_failed(exc: BaseException) -> None:
+        if closing:
+            return
+        if surface_identity is not None:
+            try:
+                current = _read_ui_owner_record(surface_identity.owner_path)
+                if any(
+                    (
+                        current.get("generation") != surface_identity.generation,
+                        current.get("pid") != surface_identity.pid,
+                        current.get("process_instance_id")
+                        != surface_identity.process_instance_id,
+                        current.get("target_sha256")
+                        != surface_identity.target_sha256,
+                        current.get("window_handle") != surface_identity.window_handle,
+                        current.get("phase")
+                        not in UI_SURFACE_PHASE_TABLE["context_selection"],
+                    )
+                ):
+                    return
+            except Exception:
+                pass
+        code = getattr(exc, "winerror", None)
+        cause = (
+            f"Windowsエラー {code}"
+            if code is not None
+            else f"{type(exc).__name__}: {str(exc).strip() or '詳細なし'}"
+        )
+        detail = (
+            "画面の操作証跡を更新できませんでした。\n\n"
+            f"原因: owner receiptの更新が {cause} で阻害されました。\n"
+            "他のSkill Magnet処理や、この画面の状態ファイルを開いているツールを閉じて、"
+            "『再試行』を押してください。再試行できない場合は『キャンセル』で安全に終了し、"
+            "表示内容を診断情報として保存してください。"
+        )
+        if messagebox.askretrycancel("Skill Magnet — 証跡更新エラー", detail, parent=root):
+            if surface_publication is not None:
+                surface_publication.request()
+        else:
+            close_context_window()
+
+    surface_publication = TkSurfacePublicationRetry(
+        root,
+        publish_surface_now,
+        stopped=lambda: closing,
+        terminal=publication_failed,
+        identity=lambda: surface_identity,
+    )
+
+    cancel_button.configure(command=close_context_window)
     apply_language()
-    root.protocol("WM_DELETE_WINDOW", root.destroy)
-    root.mainloop()
-    return result.get("contract")
+    root.protocol("WM_DELETE_WINDOW", close_context_window)
+    root.bind("<Escape>", lambda _: (close_context_window(), "break")[1])
+
+    def invoke_enabled_button(_: object, target: Any) -> str:
+        if str(target.cget("state")) != "disabled":
+            target.invoke()
+        return "break"
+
+    for button in (
+        details_button,
+        manager_button,
+        register_button,
+        confirm_button,
+        cancel_button,
+    ):
+        button.bind(
+            "<Return>",
+            lambda event, target=button: invoke_enabled_button(event, target),
+        )
+    root.after_idle(request_entry.focus_set)
+    if window_ready is not None:
+        try:
+            root.update_idletasks()
+            window_handle = tk_top_level_window_handle(root)
+            window_ready(window_handle)
+            surface_identity = ui_surface_owner_identity(
+                engine.state_dir / "context-launcher.owner.json",
+                phase="context_selection",
+                window_handle=window_handle,
+            )
+            publish_surface()
+            cancel_mapped_surface_publication = _publish_tk_surface_after_mapping(
+                root, publish_surface
+            )
+        except Exception:
+            root.destroy()
+            raise
+    if not closing:
+        root.mainloop()
+    # A withdrawn root still counts toward Tk's mainloop window count and is
+    # tkinter's default root.  Keeping it would outlive the next Manager UI.
+    root.destroy()
+    return result.get("contract") or result.get("action")

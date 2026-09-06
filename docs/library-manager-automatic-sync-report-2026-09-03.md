@@ -2,11 +2,15 @@
 
 日付: 2026-09-03
 
+> 履歴資料: 以下は子メニューを使っていた0.5.8の実績です。現行0.5.9は子のない単一direct-rootであり、pack／skillの内容変更では右クリックメニューを再登録しません。
+
+> 現行境界: 単一rootは統合GUIを開き、その画面の`Library Manager`でGitHub公開とconfig反映を行います。skillをローカルのCodex／Claude skill directoryへインストールしません。OS入口repair時はrollback snapshotを破壊的操作前に検証し、native source manifest、DLL binding、signed MSIX payload、installed runtimeの同一build拘束をrelease gateで確認します。0.5.9実機受入と最終件数は`PENDING`であり、以下の0.5.8件数／PASSを流用しません。
+
 計画: [`library-manager-automatic-sync-plan-2026-09-03.md`](library-manager-automatic-sync-plan-2026-09-03.md)
 
 ## 実装結果
 
-Library Managerの登録・更新・削除から、GitHub公開、PR自動マージ、merge commit検証、本体設定更新、右クリックメニュー再登録までを一つの再開可能transactionへ統合した。
+0.5.8では、Library Managerの登録・更新・削除から、GitHub公開、PR自動マージ、merge commit検証、本体設定更新、右クリックメニュー再登録までを一つの再開可能transactionへ統合した。0.5.9では同じtransactionを本体設定更新までとし、単一rootは次回起動時にその設定を読む。
 
 ## 実装内容
 

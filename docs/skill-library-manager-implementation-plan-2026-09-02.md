@@ -1,6 +1,6 @@
 ---
 artifact: implementation-plan
-version: "1.1"
+version: "1.2"
 created: 2026-09-02
 source: docs/skill-library-management-requirements.md
 status: completed
@@ -20,10 +20,10 @@ status: completed
 ## 追補: 右クリック製品入口
 
 - FR-22をP4の製品入口へ追加する。
-- Windows Explorerのmodern/classic `Skill Magnet`配下へ固定のmanager actionを追加し、選択folderを`library ui --repository`へ一つのargvとして渡す。
+- Windows Explorerにはmodern packageの子を持たない単一`Skill Magnet` rootだけを置き、選択folderを統合GUIへ一つのargvとして渡す。classicは新規生成・登録せず、旧rootの検出、backup、rollback、削除だけを移行・復旧用に保持する。
 - Finderは既存Quick Actionを維持し、共通選択画面内の`Library Manager`ボタンから同じGUIへ遷移する。
 - manager actionはpack/skill leaf countへ混入させず、publish/activateの既存明示確認gateを維持する。
-- manifest parser、registry、特殊文字path、CLI prefill、Windows/macOS共通callbackを回帰試験する。
+- manifest parser、classic登録拒否、旧registry cleanup、特殊文字path、CLI prefill、Windows/macOS共通callbackを回帰試験する。
 
 ## Step 0: Source ledger
 

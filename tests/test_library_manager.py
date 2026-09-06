@@ -17,6 +17,7 @@ from skill_magnet.core import SkillMagnetError
 from skill_magnet.library_manager import (
     CATALOG_FILENAME,
     DEFAULT_REPOSITORY_NAME,
+    LOCAL_MUTATION_FILENAME,
     LibraryTransaction,
     add_skill,
     delete_pack,
@@ -26,6 +27,7 @@ from skill_magnet.library_manager import (
     import_skill_source,
     initialize_library,
     library_inventory,
+    list_transactions,
     recover_interrupted_library,
     render_index,
     update_pack_source,
@@ -34,19 +36,186 @@ from skill_magnet.library_manager import (
 )
 from skill_magnet.library_ui import (
     acquire_library_ui_lease,
+    configuration_repair_notice,
     configured_repository_url,
     import_selected_skill,
     library_action_label,
+    library_failure_message,
     library_wizard_steps,
     managed_repository_path,
+    prepare_managed_repository,
     register_skill_source,
+    remote_restore_available,
     require_registration_source,
+    restore_managed_repository_from_github,
+    show_library_manager,
     source_already_registered,
     skill_registration_metadata,
+)
+from skill_magnet.ui import (
+    UiWidgetSpec,
+    publish_tk_ui_surface,
+    ui_surface_owner_identity,
 )
 
 
 class LibraryManagerTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows WM_CLOSE and actual Tk roots")
+    def test_chooser_to_manager_close_retires_the_previous_root(self) -> None:
+        probe = Path(__file__).resolve().parents[1] / "integration" / "probe_manager_close.py"
+        result = subprocess.run(
+            [sys.executable, str(probe), "transition"],
+            capture_output=True, text=True, timeout=12,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        events = [json.loads(line)["event"] for line in result.stdout.splitlines()]
+        self.assertIn("close_callback_enter", events)
+        self.assertIn("manager_return", events)
+
+    @unittest.skipUnless(os.name == "nt", "actual Windows Tk close lifecycle")
+    def test_library_manager_close_during_startup_exits_cleanly_in_fresh_processes(self) -> None:
+        source_root = Path(__file__).resolve().parents[1]
+        code = "\n".join(
+            (
+                "import ctypes,sys,tempfile,threading,time",
+                "from pathlib import Path",
+                f"sys.path.insert(0, {str(source_root / 'src')!r})",
+                "from skill_magnet.library_ui import acquire_library_ui_lease,show_library_manager",
+                "root=Path(tempfile.mkdtemp(prefix='skill-magnet-manager-close-'))",
+                "delay=float(sys.argv[1])",
+                "def ready(hwnd):",
+                " def close():",
+                "  time.sleep(delay); ctypes.windll.user32.PostMessageW(hwnd,0x0010,0,0)",
+                " threading.Thread(target=close,daemon=True).start()",
+                f"show_library_manager(config_path=Path({str(source_root / 'skill-magnet.json')!r}),state_dir=root/'state',window_ready=ready)",
+                "assert not (root/'state'/'library-manager.owner.json').exists()",
+                "again=acquire_library_ui_lease(root/'state',None)",
+                "assert again.acquired; again.release()",
+            )
+        )
+        for delay in (0.0, 0.01, 0.05, 0.1, 0.25) * 2:
+            completed = subprocess.run(
+                [sys.executable, "-c", code, str(delay)],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            self.assertEqual(
+                completed.returncode,
+                0,
+                f"delay={delay} stdout={completed.stdout} stderr={completed.stderr}",
+            )
+
+    @unittest.skipUnless(os.name == "nt", "actual Windows Tk keyboard lifecycle")
+    def test_library_manager_keyboard_focus_tree_and_escape_close_safely(self) -> None:
+        source_root = Path(__file__).resolve().parents[1]
+        code = "\n".join(
+            (
+                "import sys,tempfile,time,tkinter as tk",
+                "from pathlib import Path",
+                f"sys.path.insert(0, {str(source_root / 'src')!r})",
+                "from tkinter import messagebox,ttk",
+                "import skill_magnet.library_ui as ui",
+                "scratch=tempfile.TemporaryDirectory(prefix='skill-magnet-manager-keyboard-')",
+                "state=Path(scratch.name)",
+                "failures=[]",
+                "messagebox.showerror=messagebox.showinfo=messagebox.showwarning=lambda *_,**__: None",
+                "calls=[]; original_button=ttk.Button",
+                "def tracked_button(*args,**kwargs):",
+                " command=kwargs.get('command'); button=original_button(*args,**kwargs); name=getattr(command,'__name__','')",
+                " if name in {'update_selected','delete_selected_item'}:",
+                "  def observe(name=name): calls.append(name)",
+                "  button.configure(command=observe); button._keyboard_probe_name=name",
+                " return button",
+                "ttk.Button=tracked_button",
+                "class Done:",
+                " def is_alive(self): return False",
+                "def immediate(operation,**kwargs):",
+                " event=kwargs['cancel_event']; outcome={}",
+                " try: outcome['value']=operation(event)",
+                " except BaseException as exc: outcome['error']=exc",
+                " return event,Done(),outcome",
+                "ui.start_library_background_operation=immediate",
+                "def descendants(widget):",
+                " yield from widget.winfo_children()",
+                " for child in widget.winfo_children(): yield from descendants(child)",
+                "def ready(_):",
+                " root=tk._default_root; deadline=time.monotonic()+8",
+                " def exercise():",
+                "  try:",
+                "   widgets=list(descendants(root))",
+                "   focus=root.focus_get()",
+                "   if focus is None or focus.winfo_class() not in {'TEntry','Treeview','TButton'} or str(focus.cget('state'))=='disabled':",
+                "    if time.monotonic()<deadline: root.after(50,exercise); return",
+                "    raise AssertionError(focus)",
+                "   preview=next(w for w in widgets if w.winfo_class()=='Text')",
+                "   assert not root.tk.getboolean(preview.cget('takefocus')), preview.cget('takefocus')",
+                "   tree=next(w for w in widgets if w.winfo_class()=='Treeview')",
+                "   tree.insert('', 'end', iid='pack:keyboard', text='keyboard', open=True)",
+                "   tree.insert('pack:keyboard', 'end', iid='skill:keyboard:sample', text='sample')",
+                "   tree.selection_set('pack:keyboard'); tree.focus('pack:keyboard'); tree.focus_set(); root.update(); tree.event_generate('<Down>'); root.update()",
+                "   assert tree.selection()==('skill:keyboard:sample',), (tree.selection(),tree.focus())",
+                "   update=next(w for w in widgets if getattr(w,'_keyboard_probe_name','')=='update_selected')",
+                "   delete=next(w for w in widgets if getattr(w,'_keyboard_probe_name','')=='delete_selected_item')",
+                "   update.focus_set(); update.event_generate('<Return>'); root.update(); assert calls==['update_selected'], calls",
+                "   update.configure(state='disabled'); update.event_generate('<Return>'); root.update(); assert calls==['update_selected'], calls",
+                "   update.configure(state='normal'); delete.focus_set(); delete.event_generate('<space>'); root.update(); assert calls==['update_selected','delete_selected_item'], calls",
+                "  except Exception as exc: failures.append(repr(exc))",
+                "  root.event_generate('<Escape>')",
+                " root.after(100,exercise)",
+                f"ui.show_library_manager(config_path=Path({str(source_root / 'skill-magnet.json')!r}),state_dir=state/'state',window_ready=ready)",
+                "assert not (state/'state'/'library-manager.owner.json').exists()",
+                "assert not failures, failures",
+                "scratch.cleanup()",
+            )
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, timeout=15
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    @unittest.skipUnless(os.name == "nt", "actual Windows Tk startup lifecycle")
+    def test_register_selected_rejects_missing_skill_before_library_prepare(self) -> None:
+        source_root = Path(__file__).resolve().parents[1]
+        code = "\n".join(
+            (
+                "import ctypes,sys,tempfile,threading,time",
+                "from pathlib import Path",
+                f"sys.path.insert(0, {str(source_root / 'src')!r})",
+                "import tkinter.messagebox as messagebox",
+                "import tkinter.ttk as ttk",
+                "import skill_magnet.library_ui as ui",
+                "root=Path(tempfile.mkdtemp(prefix='skill-magnet-register-invalid-'))",
+                "selected=root/'empty-selected'; selected.mkdir()",
+                "messages=[]",
+                "entries=[]",
+                "def capture_error(title,message,parent=None):",
+                " messages.append((title,message))",
+                " stack=list(parent.winfo_children())",
+                " while stack:",
+                "  widget=stack.pop(); stack.extend(widget.winfo_children())",
+                "  if isinstance(widget,ttk.Entry): entries.append(widget.get())",
+                "messagebox.showerror=capture_error",
+                "def unexpected_prepare(path): raise AssertionError('managed prepare ran before source validation')",
+                "ui.prepare_managed_repository=unexpected_prepare",
+                "ui.configured_repository_reference=lambda path: ('https://example.invalid/verified.git','a'*40)",
+                "def ready(hwnd):",
+                " def close():",
+                "  time.sleep(2); ctypes.windll.user32.PostMessageW(hwnd,0x0010,0,0)",
+                " threading.Thread(target=close,daemon=True).start()",
+                f"ui.show_library_manager(config_path=Path({str(source_root / 'skill-magnet.json')!r}),state_dir=root/'state',initial_repository=selected,register_selected=True,window_ready=ready)",
+                "assert len(messages)==1, messages",
+                "assert 'SKILL.md' in messages[0][1], messages",
+                "assert 'https://example.invalid/verified.git' in entries, entries",
+                "assert not (root/'state'/'library'/'skill-magnet-skills').exists()",
+            )
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, timeout=15
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+
     def make_source_skill(self, parent: Path, skill_id: str, description: str = "Updated purpose") -> Path:
         source = parent / skill_id
         source.mkdir(parents=True)
@@ -126,7 +295,7 @@ class LibraryManagerTests(unittest.TestCase):
         self.assertEqual((repository / "first-skill" / "SKILL.md").read_bytes(), before)
         validate_library(repository)
 
-    def test_delete_rejects_dependency_and_pack_update_changes_members(self) -> None:
+    def test_delete_rejects_dependency_and_pack_update_rejects_implicit_rename(self) -> None:
         repository = self.make_crud_library()
         catalog_path = repository / CATALOG_FILENAME
         catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
@@ -138,16 +307,19 @@ class LibraryManagerTests(unittest.TestCase):
         catalog["packs"][1]["relations"]["depends-on"] = [["second-skill", "first-skill"]]
         catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
         (repository / "INDEX.md").write_text(render_index(catalog), encoding="utf-8")
+        # This direct catalog edit constructs a historical dependency fixture;
+        # it is not a Library Manager operation under test.
+        (repository / LOCAL_MUTATION_FILENAME).unlink(missing_ok=True)
         with self.assertRaisesRegex(SkillMagnetError, "second-skill"):
             delete_skill(repository, "first-skill", confirmed=True)
 
         pack_source = self.root / "sources" / "first-pack"
         self.make_source_skill(pack_source, "replacement-skill")
-        result = update_pack_source(repository, "first-pack", pack_source)
-        self.assertEqual(result["operation"], "update_pack")
+        with self.assertRaisesRegex(SkillMagnetError, "削除・rename"):
+            update_pack_source(repository, "first-pack", pack_source)
         inventory = library_inventory(repository)
         first_pack = next(pack for pack in inventory["packs"] if pack["id"] == "first-pack")
-        self.assertEqual([skill["id"] for skill in first_pack["skills"]], ["replacement-skill"])
+        self.assertEqual([skill["id"] for skill in first_pack["skills"]], ["first-skill"])
         self.assertTrue((repository / "first-skill").is_dir())
 
     def test_create_rejects_same_skill_set_under_another_pack_id(self) -> None:
@@ -171,21 +343,95 @@ class LibraryManagerTests(unittest.TestCase):
         first = acquire_library_ui_lease(state, selected)
         self.assertTrue(first.acquired)
         try:
+            first.publish_window(24680)
             duplicate = acquire_library_ui_lease(state, selected)
             self.assertFalse(duplicate.acquired)
             self.assertTrue(duplicate.same_request)
+            self.assertEqual(duplicate.owner["phase"], "library_manager_starting")
+            self.assertEqual(duplicate.owner["window_handle"], 24680)
+            self.assertNotIn("selected_source", duplicate.owner)
+            self.assertRegex(duplicate.owner["target_sha256"], r"^[0-9a-f]{64}$")
 
             other = self.root / "other-skill"
             other.mkdir()
             competing = acquire_library_ui_lease(state, other)
             self.assertFalse(competing.acquired)
             self.assertFalse(competing.same_request)
+            self.assertEqual(competing.owner["phase"], "library_manager_starting")
+            self.assertEqual(competing.owner["window_handle"], 24680)
         finally:
             first.release()
         recovered = acquire_library_ui_lease(state, other)
         self.assertTrue(recovered.acquired)
         recovered.release()
         self.assertTrue((state / "library-manager.lock").exists())
+
+    def test_direct_library_owner_completes_atomically_and_releases(self) -> None:
+        state = self.root / "direct-library-surface"
+        lease = acquire_library_ui_lease(state)
+
+        class Widget:
+            def winfo_id(self) -> int: return 24680
+            def winfo_rootx(self) -> int: return 10
+            def winfo_rooty(self) -> int: return 20
+            def winfo_width(self) -> int: return 300
+            def winfo_height(self) -> int: return 200
+            def winfo_viewable(self) -> bool: return True
+            def update_idletasks(self) -> None: return None
+            def title(self) -> str: return "Library Manager"
+            def cget(self, key: str) -> str: return "normal"
+            def instate(self, states: tuple[str, ...]) -> bool: return True
+
+        root = Widget()
+        owner_path = state / "library-manager.owner.json"
+        try:
+            lease.publish_window(root.winfo_id())
+            starting = json.loads(owner_path.read_text(encoding="utf-8"))
+            self.assertEqual(starting["phase"], "library_manager_starting")
+            self.assertNotIn("ui_surface", starting)
+            identity = ui_surface_owner_identity(
+                owner_path,
+                phase="library_manager",
+                window_handle=root.winfo_id(),
+            )
+            surface = publish_tk_ui_surface(
+                identity,
+                root,
+                widgets=(UiWidgetSpec("status", root, "status", text="ready"),),
+                state={"processing": False, "register_selected": False},
+            )
+            completed = json.loads(owner_path.read_text(encoding="utf-8"))
+            self.assertEqual(completed["phase"], "library_manager")
+            self.assertEqual(completed["ui_surface"], surface)
+            self.assertEqual(completed["revision"], surface["revision"])
+            self.assertEqual(
+                completed["published_at_utc"], surface["published_at_utc"]
+            )
+            self.assertGreater(completed["revision"], starting["revision"])
+        finally:
+            lease.release()
+        self.assertFalse(owner_path.exists())
+
+    def test_library_ui_lease_rejects_linked_lock_without_touching_target(self) -> None:
+        state = self.root / "linked-library-lease"
+        state.mkdir()
+        outside = self.root / "outside-library-lock.txt"
+        outside.write_text("preserve-me", encoding="utf-8")
+        lock_path = state / "library-manager.lock"
+        try:
+            os.symlink(outside, lock_path)
+        except OSError:
+            lock_path.touch()
+            with mock.patch.dict(
+                acquire_library_ui_lease.__globals__,
+                {"_is_link": lambda path: Path(path).name == "library-manager.lock"},
+            ):
+                with self.assertRaisesRegex(SkillMagnetError, "link or junction"):
+                    acquire_library_ui_lease(state, self.root / "selected")
+        else:
+            with self.assertRaisesRegex(SkillMagnetError, "link or junction"):
+                acquire_library_ui_lease(state, self.root / "selected")
+        self.assertEqual(outside.read_text(encoding="utf-8"), "preserve-me")
 
     def test_library_ui_lease_blocks_other_process_and_recovers_after_exit(self) -> None:
         state = self.root / "process-lease-state"
@@ -216,6 +462,32 @@ class LibraryManagerTests(unittest.TestCase):
         recovered = acquire_library_ui_lease(state, selected)
         self.assertTrue(recovered.acquired)
         recovered.release()
+
+    def test_repeated_same_folder_registration_focuses_existing_manager(self) -> None:
+        lease = SimpleNamespace(
+            acquired=False,
+            same_request=True,
+            owner={"pid": 43210, "selected_source": str(self.root / "selected")},
+        )
+        with (
+            mock.patch(
+                "skill_magnet.library_ui.acquire_library_ui_lease", return_value=lease
+            ),
+            mock.patch(
+                "skill_magnet.library_ui.focus_library_ui", return_value=True
+            ) as focus,
+            mock.patch("tkinter.Tk") as tk_root,
+        ):
+            result = show_library_manager(
+                config_path=self.root / "skill-magnet.json",
+                state_dir=self.root / "state",
+                initial_repository=self.root / "selected",
+                register_selected=True,
+            )
+
+        self.assertEqual(result, {"status": "already_running", "same_request": True})
+        focus.assert_called_once_with(lease.owner)
+        tk_root.assert_not_called()
 
     def test_standard_selected_skill_is_imported_automatically(self) -> None:
         repository = managed_repository_path(self.root)
@@ -467,6 +739,66 @@ class LibraryManagerTests(unittest.TestCase):
         )
         self.assertEqual(configured_repository_url(config), "")
 
+    def test_corrupt_or_missing_config_does_not_block_manager_repair(self) -> None:
+        config = self.root / "broken-config.json"
+        config.write_text("{", encoding="utf-8")
+        self.assertEqual(configured_repository_url(config), "")
+        notice = configuration_repair_notice(config)
+        self.assertIsNotNone(notice)
+        self.assertIn("Library Managerで修復", notice)
+
+        missing = self.root / "missing-config.json"
+        self.assertEqual(configured_repository_url(missing), "")
+        notice = configuration_repair_notice(missing)
+        self.assertIsNotNone(notice)
+        self.assertIn("再作成", notice)
+
+        for value in ([], None, {"packs": "wrong"}, {"packs": ["wrong"]}):
+            with self.subTest(value=value):
+                config.write_text(json.dumps(value), encoding="utf-8")
+                self.assertEqual(configured_repository_url(config), "")
+                self.assertIsNotNone(configuration_repair_notice(config))
+
+    def test_library_failures_keep_the_cause_and_give_a_recovery_action(self) -> None:
+        missing_skill = library_failure_message(
+            SkillMagnetError("選択したフォルダーにSKILL.mdがありません")
+        )
+        self.assertIn("原因\n選択したフォルダーにSKILL.mdがありません", missing_skill)
+        self.assertIn("次の操作", missing_skill)
+        self.assertIn("SKILL.mdを含むフォルダー", missing_skill)
+        self.assertIn("完了扱いにしていません", missing_skill)
+
+        github = library_failure_message(
+            SkillMagnetError("GitHub remoteへのpushに失敗しました")
+        )
+        self.assertIn("ログイン状態", github)
+        self.assertIn("途中状態は破棄していません", github)
+
+    def test_corrupt_config_with_empty_library_offers_remote_restore(self) -> None:
+        repository = self.root / "empty-managed-library"
+        initialize_library(repository)
+        self.assertTrue(
+            remote_restore_available(
+                repository,
+                config_repair="設定ファイルが壊れています",
+                catalog_error=None,
+            )
+        )
+        self.assertFalse(
+            remote_restore_available(
+                repository,
+                config_repair=None,
+                catalog_error=None,
+            )
+        )
+        self.assertTrue(
+            remote_restore_available(
+                repository,
+                config_repair=None,
+                catalog_error="catalog missing",
+            )
+        )
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
@@ -518,6 +850,12 @@ class LibraryManagerTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         return seed, remote
+
+    @staticmethod
+    def require_menu_repair(transaction: LibraryTransaction) -> None:
+        journal = transaction._journal()
+        journal["force_menu_update"] = True
+        transaction._write_journal(journal)
 
     def test_init_uses_generic_repository_name_and_add_round_trips(self) -> None:
         library = self.root / "library"
@@ -680,7 +1018,7 @@ class LibraryManagerTests(unittest.TestCase):
         )
         self.assertEqual(receipt["status"], "active")
         self.assertEqual(receipt["commit"], commit)
-        self.assertEqual(len(menu_calls), 1)
+        self.assertEqual(menu_calls, [])
         activated = json.loads(config_path.read_text(encoding="utf-8"))
         self.assertEqual(activated["packs"][0]["expected_commit"], commit)
         self.assertEqual([pack["id"] for pack in activated["packs"]], ["starter-pack"])
@@ -695,6 +1033,167 @@ class LibraryManagerTests(unittest.TestCase):
             active_status["platforms"]["macos"],
         )
         self.assertEqual(transaction.activate(config_path=config_path, confirmed=True), receipt)
+
+    def test_activation_rebuilds_corrupt_or_missing_config_with_recoverable_backup(self) -> None:
+        for mode in ("corrupt", "missing", "schema-null", "existing-backup"):
+            with self.subTest(mode=mode):
+                case = self.root / mode
+                case.mkdir()
+                seed = case / "seed"
+                initialize_library(seed)
+                add_skill(
+                    seed,
+                    skill_id=f"{mode}-skill",
+                    display_name=f"{mode} skill",
+                    purpose="Prove config repair",
+                    pack_id=f"{mode}-pack",
+                )
+                self.git(seed, "init", "-b", "main")
+                self.git(seed, "add", "--all")
+                self.git(
+                    seed,
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                    "commit",
+                    "-m",
+                    "seed",
+                )
+                remote = case / "remote.git"
+                subprocess.run(
+                    ["git", "clone", "--bare", str(seed), str(remote)],
+                    check=True,
+                    capture_output=True,
+                )
+                draft = case / "draft"
+                subprocess.run(
+                    ["git", "clone", str(seed), str(draft)],
+                    check=True,
+                    capture_output=True,
+                )
+                add_skill(
+                    draft,
+                    skill_id=f"{mode}-second",
+                    display_name=f"{mode} second",
+                    purpose="Force a verified change",
+                    pack_id=f"{mode}-pack",
+                )
+                transaction = LibraryTransaction(case / "state", f"repair-{mode}")
+                transaction.prepare(draft=draft, remote=str(remote), branch="main")
+                transaction.publish(confirmed=True, direct=True, create_pr=False)
+                config_path = case / "skill-magnet.json"
+                invalid_original: bytes | None = None
+                if mode in {"corrupt", "existing-backup"}:
+                    invalid_original = b"{broken"
+                    config_path.write_bytes(invalid_original)
+                elif mode == "schema-null":
+                    invalid_original = json.dumps(
+                        {
+                            "version": 1,
+                            "allowed_github_owners": ["local"],
+                            "state_dir": ".state",
+                            "packs": [
+                                {
+                                    "id": "invalid-pack",
+                                    "repo_url": str(remote),
+                                    "expected_commit": "0" * 40,
+                                    "skills": None,
+                                }
+                            ],
+                        }
+                    ).encode("utf-8")
+                    config_path.write_bytes(invalid_original)
+                if mode == "existing-backup":
+                    backup = config_path.with_name(
+                        f"{config_path.name}.pre-repair-repair-{mode}.bak"
+                    )
+                    backup.write_bytes(b"pre-existing user recovery evidence")
+                    with self.assertRaisesRegex(
+                        SkillMagnetError, "設定復旧バックアップが既に存在"
+                    ):
+                        transaction.activate(
+                            config_path=config_path,
+                            confirmed=True,
+                            menu_update=lambda _: {"updated": True},
+                        )
+                    self.assertEqual(
+                        backup.read_bytes(), b"pre-existing user recovery evidence"
+                    )
+                    self.assertEqual(config_path.read_bytes(), invalid_original)
+                    continue
+                receipt = transaction.activate(
+                    config_path=config_path,
+                    confirmed=True,
+                    menu_update=lambda _: {"updated": True},
+                )
+                self.assertTrue(receipt["config_repaired"])
+                activated = json.loads(config_path.read_text(encoding="utf-8"))
+                self.assertEqual(activated["version"], 1)
+                self.assertEqual(len(activated["packs"]), 1)
+                if invalid_original is not None:
+                    backup = Path(str(receipt["config_repair_backup"]))
+                    self.assertEqual(backup.read_bytes(), invalid_original)
+                else:
+                    self.assertIsNone(receipt["config_repair_backup"])
+
+    def test_corrupt_managed_repository_can_be_restored_from_github_with_backup(self) -> None:
+        _, remote = self.make_remote()
+        repository = self.root / "managed"
+        repository.mkdir()
+        (repository / CATALOG_FILENAME).write_text("{broken", encoding="utf-8")
+        result = restore_managed_repository_from_github(repository, str(remote))
+        self.assertTrue(validate_library(repository).as_dict()["valid"])
+        backup = Path(str(result["backup"]))
+        self.assertEqual((backup / CATALOG_FILENAME).read_text(encoding="utf-8"), "{broken")
+
+    def test_nonempty_managed_repository_without_catalog_opens_recovery_without_overwrite(
+        self,
+    ) -> None:
+        _, remote = self.make_remote()
+        repository = self.root / "managed-missing-catalog"
+        repository.mkdir()
+        original = repository / "unpublished-user-skill.txt"
+        original.write_text("preserve me\n", encoding="utf-8")
+
+        error = prepare_managed_repository(repository)
+
+        self.assertIsNotNone(error)
+        self.assertIn(CATALOG_FILENAME, str(error))
+        self.assertEqual(original.read_text(encoding="utf-8"), "preserve me\n")
+        self.assertFalse((repository / CATALOG_FILENAME).exists())
+
+        result = restore_managed_repository_from_github(repository, str(remote))
+        self.assertTrue(validate_library(repository).as_dict()["valid"])
+        backup = Path(str(result["backup"]))
+        self.assertEqual(
+            (backup / "unpublished-user-skill.txt").read_text(encoding="utf-8"),
+            "preserve me\n",
+        )
+
+    def test_catalog_directory_opens_recovery_without_overwrite(self) -> None:
+        _, remote = self.make_remote()
+        repository = self.root / "managed-catalog-directory"
+        catalog_directory = repository / CATALOG_FILENAME
+        catalog_directory.mkdir(parents=True)
+        marker = catalog_directory / "unpublished-user-data.txt"
+        marker.write_text("preserve directory\n", encoding="utf-8")
+
+        error = prepare_managed_repository(repository)
+
+        self.assertIsNotNone(error)
+        self.assertIn("通常のファイルではありません", str(error))
+        self.assertEqual(marker.read_text(encoding="utf-8"), "preserve directory\n")
+
+        result = restore_managed_repository_from_github(repository, str(remote))
+        self.assertTrue(validate_library(repository).as_dict()["valid"])
+        backup = Path(str(result["backup"]))
+        self.assertEqual(
+            (backup / CATALOG_FILENAME / "unpublished-user-data.txt").read_text(
+                encoding="utf-8"
+            ),
+            "preserve directory\n",
+        )
 
     def test_publish_overlays_library_and_preserves_existing_repository_files(self) -> None:
         seed, remote = self.make_remote()
@@ -723,7 +1222,12 @@ class LibraryManagerTests(unittest.TestCase):
             "add unmanaged files",
         )
         self.git(seed, "push", str(remote), "main")
-        draft = self.make_library("overlay-draft")
+        draft = self.root / "overlay-draft"
+        shutil.copytree(
+            seed,
+            draft,
+            ignore=shutil.ignore_patterns(".git", "README.md", "audit", "legacy-skill"),
+        )
         add_skill(
             draft,
             skill_id="second-skill",
@@ -1112,7 +1616,7 @@ class LibraryManagerTests(unittest.TestCase):
         self.assertEqual(generated["selection_kind"], "skill")
         self.assertEqual(generated["skills"], ["cma-004"])
 
-    def test_activation_updates_menu_when_only_selection_kind_changes(self) -> None:
+    def test_activation_does_not_reinstall_direct_root_menu_for_config_content(self) -> None:
         transaction = LibraryTransaction(self.root / "state", "transaction-menu-shape")
         remote = "https://github.com/example/skills.git"
         commit = "a" * 40
@@ -1178,8 +1682,8 @@ class LibraryManagerTests(unittest.TestCase):
                 confirmed=True,
                 menu_update=menu_updates.append,
             )
-        self.assertTrue(result["menu_changed"])
-        self.assertEqual(menu_updates, [config.resolve()])
+        self.assertFalse(result["menu_changed"])
+        self.assertEqual(menu_updates, [])
         self.assertEqual(
             json.loads(config.read_text(encoding="utf-8"))["packs"][0]["selection_kind"],
             "skill",
@@ -1216,6 +1720,7 @@ class LibraryManagerTests(unittest.TestCase):
         transaction = LibraryTransaction(self.root / "state", "transaction-rollback")
         transaction.prepare(draft=draft, remote=str(remote), branch="main")
         transaction.publish(confirmed=True, direct=True, create_pr=False)
+        self.require_menu_repair(transaction)
         old_commit = self.git(seed, "rev-parse", "HEAD")
         config = self.root / "config.json"
         original = {
@@ -1252,8 +1757,451 @@ class LibraryManagerTests(unittest.TestCase):
         self.assertEqual(config.read_bytes(), original_bytes)
         self.assertEqual(transaction.status(config)["status"], "published_but_inactive")
 
+    def test_activation_interruption_retries_pending_menu_update(self) -> None:
+        seed, remote = self.make_remote()
+        draft = self.root / "interrupt-draft"
+        subprocess.run(
+            ["git", "clone", str(seed), str(draft)],
+            check=True,
+            capture_output=True,
+        )
+        add_skill(
+            draft,
+            skill_id="interrupt-skill",
+            display_name="Interrupt recovery",
+            purpose="Recover a stopped context-menu activation",
+            pack_id="starter-pack",
+        )
+        transaction = LibraryTransaction(
+            self.root / "interrupt-state", "transaction-interrupt-activation"
+        )
+        transaction.prepare(draft=draft, remote=str(remote), branch="main")
+        transaction.publish(confirmed=True, direct=True, create_pr=False)
+        self.require_menu_repair(transaction)
+        config = self.root / "interrupt-config.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "allowed_github_owners": ["local"],
+                    "state_dir": str(self.root / "interrupt-runtime"),
+                    "packs": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        original = config.read_bytes()
+        attempts: list[Path] = []
+
+        def stop_after_config(path: Path) -> None:
+            attempts.append(path)
+            raise KeyboardInterrupt("injected abrupt stop")
+
+        with self.assertRaisesRegex(KeyboardInterrupt, "injected abrupt stop"):
+            transaction.activate(
+                config_path=config,
+                confirmed=True,
+                menu_update=stop_after_config,
+            )
+
+        self.assertNotEqual(config.read_bytes(), original)
+        self.assertEqual(transaction._journal()["status"], "menu_pending")
+        self.assertEqual(transaction.status(config)["status"], "interrupted")
+        self.assertEqual(transaction.status(config)["resume_stage"], "activate")
+        self.assertFalse(transaction.receipt_path.exists())
+
+        receipt = transaction.complete_automatically(
+            draft=draft,
+            remote=str(remote),
+            config_path=config,
+            confirmed=True,
+            menu_update=lambda path: attempts.append(path) or {"updated": True},
+        )
+        self.assertEqual(receipt["status"], "active")
+        self.assertEqual(attempts, [config.resolve(), config.resolve()])
+        self.assertFalse((transaction.root / "activation-candidate.json").exists())
+        self.assertFalse((transaction.root / "activation-previous.bin").exists())
+
+    def test_activation_recovers_after_forced_process_exit(self) -> None:
+        seed, remote = self.make_remote()
+        draft = self.root / "forced-exit-draft"
+        subprocess.run(
+            ["git", "clone", str(seed), str(draft)],
+            check=True,
+            capture_output=True,
+        )
+        add_skill(
+            draft,
+            skill_id="forced-exit-skill",
+            display_name="Forced exit recovery",
+            purpose="Resume when no Python exception handler can run",
+            pack_id="starter-pack",
+        )
+        state = self.root / "forced-exit-state"
+        transaction_id = "transaction-forced-exit"
+        transaction = LibraryTransaction(state, transaction_id)
+        transaction.prepare(draft=draft, remote=str(remote), branch="main")
+        transaction.publish(confirmed=True, direct=True, create_pr=False)
+        self.require_menu_repair(transaction)
+        config = self.root / "forced-exit.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "allowed_github_owners": ["local"],
+                    "state_dir": str(self.root / "forced-exit-runtime"),
+                    "packs": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        child = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import os; from pathlib import Path; "
+                    "from skill_magnet.library_manager import LibraryTransaction; "
+                    f"transaction=LibraryTransaction(Path({str(state)!r}), {transaction_id!r}); "
+                    f"transaction.activate(config_path=Path({str(config)!r}), confirmed=True, "
+                    "menu_update=lambda _: os._exit(73))"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(child.returncode, 73, child.stderr)
+        self.assertEqual(transaction._journal()["status"], "menu_pending")
+        self.assertTrue((transaction.root / "activation-candidate.json").is_file())
+        self.assertTrue((transaction.root / "activation-previous.bin").is_file())
+
+        menu_calls: list[Path] = []
+        receipt = transaction.complete_automatically(
+            draft=draft,
+            remote=str(remote),
+            config_path=config,
+            confirmed=True,
+            menu_update=lambda path: menu_calls.append(path) or {"updated": True},
+        )
+        self.assertEqual(receipt["status"], "active")
+        self.assertEqual(menu_calls, [config.resolve()])
+
+    def test_activation_resumes_when_stopped_between_config_and_journal(self) -> None:
+        seed, remote = self.make_remote()
+        draft = self.root / "journal-boundary-draft"
+        subprocess.run(
+            ["git", "clone", str(seed), str(draft)],
+            check=True,
+            capture_output=True,
+        )
+        add_skill(
+            draft,
+            skill_id="journal-boundary-skill",
+            display_name="Journal boundary",
+            purpose="Resume after config replacement but before its journal checkpoint",
+            pack_id="starter-pack",
+        )
+        transaction = LibraryTransaction(
+            self.root / "journal-boundary-state", "transaction-journal-boundary"
+        )
+        transaction.prepare(draft=draft, remote=str(remote), branch="main")
+        transaction.publish(confirmed=True, direct=True, create_pr=False)
+        self.require_menu_repair(transaction)
+        config = self.root / "journal-boundary.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "allowed_github_owners": ["local"],
+                    "state_dir": str(self.root / "journal-boundary-runtime"),
+                    "packs": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        original_write_journal = transaction._write_journal
+
+        def stop_before_menu_pending_checkpoint(journal: dict[str, object]) -> None:
+            if journal.get("status") == "menu_pending":
+                raise SystemExit("injected stop before menu-pending journal")
+            original_write_journal(journal)
+
+        with (
+            mock.patch.object(
+                transaction,
+                "_write_journal",
+                stop_before_menu_pending_checkpoint,
+            ),
+            self.assertRaisesRegex(SystemExit, "menu-pending journal"),
+        ):
+            transaction.activate(
+                config_path=config,
+                confirmed=True,
+                menu_update=lambda _: {"updated": True},
+            )
+
+        self.assertEqual(transaction._journal()["status"], "activating")
+        candidate = transaction.root / "activation-candidate.json"
+        self.assertEqual(config.read_bytes(), candidate.read_bytes())
+        menu_calls: list[Path] = []
+        receipt = transaction.complete_automatically(
+            draft=draft,
+            remote=str(remote),
+            config_path=config,
+            confirmed=True,
+            menu_update=lambda path: menu_calls.append(path) or {"updated": True},
+        )
+        self.assertEqual(receipt["status"], "active")
+        self.assertEqual(menu_calls, [config.resolve()])
+
+    def test_activation_resume_preserves_external_config_change_and_stops(self) -> None:
+        seed, remote = self.make_remote()
+        draft = self.root / "config-drift-draft"
+        subprocess.run(
+            ["git", "clone", str(seed), str(draft)],
+            check=True,
+            capture_output=True,
+        )
+        add_skill(
+            draft,
+            skill_id="config-drift-skill",
+            display_name="Config drift recovery",
+            purpose="Preserve a configuration changed during interrupted activation",
+            pack_id="starter-pack",
+        )
+        transaction = LibraryTransaction(
+            self.root / "config-drift-state", "transaction-config-drift"
+        )
+        transaction.prepare(draft=draft, remote=str(remote), branch="main")
+        transaction.publish(confirmed=True, direct=True, create_pr=False)
+        self.require_menu_repair(transaction)
+        config = self.root / "config-drift.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "allowed_github_owners": ["local"],
+                    "state_dir": str(self.root / "config-drift-runtime"),
+                    "packs": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        original = config.read_bytes()
+
+        with self.assertRaises(KeyboardInterrupt):
+            transaction.activate(
+                config_path=config,
+                confirmed=True,
+                menu_update=lambda _: (_ for _ in ()).throw(KeyboardInterrupt()),
+            )
+        external_config = json.loads(config.read_text(encoding="utf-8"))
+        external_config["allowed_github_owners"].append("external-change")
+        externally_changed = (json.dumps(external_config, sort_keys=True) + "\n").encode()
+        config.write_bytes(externally_changed)
+        menu_calls: list[Path] = []
+
+        with self.assertRaisesRegex(
+            SkillMagnetError, "changed after activation was interrupted"
+        ):
+            transaction.complete_automatically(
+                draft=draft,
+                remote=str(remote),
+                config_path=config,
+                confirmed=True,
+                menu_update=menu_calls.append,
+            )
+
+        self.assertEqual(config.read_bytes(), externally_changed)
+        self.assertEqual(menu_calls, [])
+        journal = transaction._journal()
+        conflict_backup = Path(journal["conflict_backup"])
+        previous_backup = Path(journal["previous_backup"])
+        self.assertEqual(journal["status"], "verified")
+        self.assertEqual(journal["failed_stage"], "activation_config_conflict")
+        self.assertEqual(conflict_backup.read_bytes(), externally_changed)
+        self.assertEqual(previous_backup.read_bytes(), original)
+        self.assertFalse((transaction.root / "activation-candidate.json").exists())
+        self.assertFalse((transaction.root / "activation-previous.bin").exists())
+
+        receipt = transaction.complete_automatically(
+            draft=draft,
+            remote=str(remote),
+            config_path=config,
+            confirmed=True,
+            menu_update=lambda path: menu_calls.append(path) or {"updated": True},
+        )
+        self.assertEqual(receipt["status"], "active")
+        self.assertEqual(menu_calls, [config.resolve()])
+        self.assertIn(
+            "external-change",
+            json.loads(config.read_text(encoding="utf-8"))["allowed_github_owners"],
+        )
+
+    def test_interrupted_activation_remains_visible_when_config_is_corrupt(self) -> None:
+        seed, remote = self.make_remote()
+        draft = self.root / "corrupt-resume-draft"
+        subprocess.run(
+            ["git", "clone", str(seed), str(draft)],
+            check=True,
+            capture_output=True,
+        )
+        add_skill(
+            draft,
+            skill_id="corrupt-resume-skill",
+            display_name="Corrupt resume",
+            purpose="Keep an interrupted transaction visible through config damage",
+            pack_id="starter-pack",
+        )
+        state = self.root / "corrupt-resume-state"
+        transaction = LibraryTransaction(state, "transaction-corrupt-resume")
+        transaction.prepare(draft=draft, remote=str(remote), branch="main")
+        transaction.publish(confirmed=True, direct=True, create_pr=False)
+        self.require_menu_repair(transaction)
+        config = self.root / "corrupt-resume.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "allowed_github_owners": ["local"],
+                    "state_dir": str(self.root / "corrupt-resume-runtime"),
+                    "packs": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaises(KeyboardInterrupt):
+            transaction.activate(
+                config_path=config,
+                confirmed=True,
+                menu_update=lambda _: (_ for _ in ()).throw(KeyboardInterrupt()),
+            )
+        config.write_text("{broken", encoding="utf-8")
+
+        listed = list_transactions(state, config)["transactions"]
+
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]["status"], "interrupted")
+        self.assertEqual(listed[0]["resume_stage"], "activate")
+        self.assertIn("Cannot read JSON", listed[0]["config_error"])
+
+    def test_activation_rollback_failure_names_real_recovery_evidence(self) -> None:
+        seed, remote = self.make_remote()
+        draft = self.root / "rollback-evidence-draft"
+        subprocess.run(
+            ["git", "clone", str(seed), str(draft)],
+            check=True,
+            capture_output=True,
+        )
+        add_skill(
+            draft,
+            skill_id="rollback-evidence-skill",
+            display_name="Rollback evidence",
+            purpose="Name durable evidence when automatic rollback fails",
+            pack_id="starter-pack",
+        )
+        transaction = LibraryTransaction(
+            self.root / "rollback-evidence-state", "transaction-rollback-evidence"
+        )
+        transaction.prepare(draft=draft, remote=str(remote), branch="main")
+        transaction.publish(confirmed=True, direct=True, create_pr=False)
+        self.require_menu_repair(transaction)
+        config = self.root / "rollback-evidence.json"
+        catalog = json.loads((seed / CATALOG_FILENAME).read_text(encoding="utf-8"))
+        old_pack = LibraryTransaction._config_pack(
+            catalog["packs"][0], str(remote), self.git(seed, "rev-parse", "HEAD")
+        )
+        config.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "allowed_github_owners": ["local"],
+                    "state_dir": str(self.root / "rollback-evidence-runtime"),
+                    "packs": [old_pack],
+                }
+            ),
+            encoding="utf-8",
+        )
+        original_atomic_bytes = manager_module._atomic_bytes
+        config_writes = 0
+
+        def fail_config_rollback(path: Path, value: bytes) -> None:
+            nonlocal config_writes
+            if path.resolve() == config.resolve():
+                config_writes += 1
+                if config_writes == 2:
+                    raise PermissionError("injected rollback write failure")
+            original_atomic_bytes(path, value)
+
+        with (
+            mock.patch.object(manager_module, "_atomic_bytes", fail_config_rollback),
+            self.assertRaisesRegex(SkillMagnetError, "Recovery evidence is preserved"),
+        ):
+            transaction.activate(
+                config_path=config,
+                confirmed=True,
+                menu_update=lambda _: (_ for _ in ()).throw(
+                    RuntimeError("injected menu failure")
+                ),
+            )
+
+        journal = transaction._journal()
+        recovery_backup = Path(journal["recovery_backup"])
+        self.assertEqual(journal["status"], "activating")
+        self.assertEqual(journal["failed_stage"], "activation_rollback")
+        self.assertEqual(recovery_backup, transaction.root / "activation-previous.bin")
+        self.assertTrue(recovery_backup.is_file())
+
+        receipt = transaction.complete_automatically(
+            draft=draft,
+            remote=str(remote),
+            config_path=config,
+            confirmed=True,
+            menu_update=lambda _: {"updated": True},
+        )
+        self.assertEqual(receipt["status"], "active")
+
+    def test_normal_crud_and_commit_activation_does_not_require_menu_updater(self) -> None:
+        seed, remote = self.make_remote()
+        draft = self.root / "no-updater-draft"
+        subprocess.run(
+            ["git", "clone", str(seed), str(draft)],
+            check=True,
+            capture_output=True,
+        )
+        add_skill(
+            draft,
+            skill_id="menu-required-skill",
+            display_name="Menu required",
+            purpose="Require a context-menu updater",
+            pack_id="starter-pack",
+        )
+        transaction = LibraryTransaction(
+            self.root / "no-updater-state", "transaction-no-updater"
+        )
+        transaction.prepare(draft=draft, remote=str(remote), branch="main")
+        transaction.publish(confirmed=True, direct=True, create_pr=False)
+        config = self.root / "no-updater-config.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "allowed_github_owners": ["local"],
+                    "state_dir": str(self.root / "no-updater-runtime"),
+                    "packs": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        receipt = transaction.activate(config_path=config, confirmed=True)
+
+        self.assertEqual(receipt["status"], "active")
+        self.assertFalse(receipt["menu_changed"])
+        self.assertEqual(transaction._journal()["status"], "active")
+        self.assertTrue(json.loads(config.read_text(encoding="utf-8"))["packs"])
+
     def test_cli_exposes_guided_library_flow(self) -> None:
-        self.assertEqual(library_wizard_steps(), ("Skill Library Manager",))
+        self.assertEqual(library_wizard_steps(), ("Library Manager",))
         self.assertEqual(
             library_action_label("sync"), "GitHubへ反映"
         )
@@ -1329,6 +2277,40 @@ class LibraryManagerTests(unittest.TestCase):
             )
         self.assertEqual(show.call_args.kwargs["initial_repository"], selected)
         self.assertTrue(show.call_args.kwargs["register_selected"])
+
+    def test_library_ui_unexpected_startup_failure_is_actionable(self) -> None:
+        config = self.root / "broken config" / "skill-magnet.json"
+        state = self.root / "broken state"
+        for failure in (
+            OSError("state directory is unavailable"),
+            SkillMagnetError("Tk is required for the Skill Library Manager UI"),
+        ):
+            with (
+                self.subTest(failure=type(failure).__name__),
+                mock.patch(
+                    "skill_magnet.cli.show_library_manager", side_effect=failure
+                ),
+                mock.patch("skill_magnet.cli.show_context_error") as error_ui,
+            ):
+                exit_code = cli_main(
+                    [
+                        "--config",
+                        str(config),
+                        "--state-dir",
+                        str(state),
+                        "library",
+                        "ui",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 2)
+            error_ui.assert_called_once()
+            message = error_ui.call_args.args[0]
+            self.assertIn(str(failure), message)
+            self.assertIn("原因", message)
+            self.assertIn("次の操作", message)
+            self.assertIn(str(config.resolve()), message)
+            self.assertIn(str(state.resolve()), message)
 
 
 if __name__ == "__main__":

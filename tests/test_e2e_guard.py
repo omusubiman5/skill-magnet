@@ -19,7 +19,7 @@ class E2EResidualGuardTest(unittest.TestCase):
             target_root.mkdir()
             for terminal_path, process_name in (
                 ("success", "codex.exe"),
-                ("rejected", "pythonw.exe"),
+                ("rejected", "python.exe"),
                 ("failure", "cmd.exe"),
                 ("interruption", "codex.exe"),
             ):
@@ -59,10 +59,9 @@ class E2EResidualGuardTest(unittest.TestCase):
             codex_probe = root / "codex.exe"
             shutil.copy2(sys.executable, codex_probe)
             shutil.copy2(Path(sys.base_prefix) / "python312.dll", root / "python312.dll")
-            pythonw = Path(sys.executable).with_name("pythonw.exe")
             commands = {
                 "success": [str(codex_probe), str(sleeper), "success-marker"],
-                "rejected": [str(pythonw), str(sleeper), "rejected-marker"],
+                "rejected": [sys.executable, str(sleeper), "rejected-marker"],
                 "failure": ["cmd.exe", "/d", "/s", "/c", "ping -n 30 127.0.0.1 >nul & rem failure-marker"],
                 "interruption": [str(codex_probe), str(sleeper), "interruption-marker"],
             }

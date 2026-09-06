@@ -1,6 +1,9 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <bcrypt.h>
+#include <ocidl.h>
+#include <servprov.h>
+#include <shellapi.h>
 #include <shobjidl.h>
 
 #include <atomic>
@@ -8,6 +11,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "RecoveryMessages.h"
 
 // {13E2A9DD-4378-4F9D-A385-973C61B19E63}
 static const CLSID CLSID_SkillMagnetCommand = {
@@ -67,26 +72,50 @@ static std::wstring Sha256Digest(const std::wstring& value) {
     return result.empty() ? L"unavailable" : result;
 }
 
-static void LogInvokeEvent(const wchar_t* event, const std::wstring& command_digest,
-                           DWORD detail = 0) noexcept {
+static std::wstring NewInvocationId() noexcept {
+    GUID value{};
+    if (FAILED(CoCreateGuid(&value))) return L"unavailable";
+    wchar_t token[33]{};
+    const int length = swprintf_s(
+        token, L"%08x%04x%04x%02x%02x%02x%02x%02x%02x%02x%02x",
+        value.Data1, value.Data2, value.Data3, value.Data4[0], value.Data4[1],
+        value.Data4[2], value.Data4[3], value.Data4[4], value.Data4[5],
+        value.Data4[6], value.Data4[7]);
+    return length == 32 ? std::wstring(token, 32) : L"unavailable";
+}
+
+static DWORD LogInvokeEvent(const wchar_t* event, const std::wstring& command_digest,
+                           DWORD detail = 0, const wchar_t* selection_source = L"none",
+                           const wchar_t* project_digest = L"none",
+                           const wchar_t* invocation_id = L"none") noexcept {
     const std::wstring path = InvokeLogPath();
-    if (path.empty()) return;
+    if (path.empty()) return ERROR_PATH_NOT_FOUND;
     SYSTEMTIME timestamp{};
     GetSystemTime(&timestamp);
     wchar_t line[512]{};
     const int length = swprintf_s(
-        line, L"%04u-%02u-%02uT%02u:%02u:%02u.%03uZ\tevent=%ls\tcommand_sha256=%ls\tdetail=%lu\r\n",
+        line, L"%04u-%02u-%02uT%02u:%02u:%02u.%03uZ\tevent=%ls\tcommand_sha256=%ls"
+              L"\tdetail=%lu\tselection_source=%ls\tproject_sha256=%ls"
+              L"\tinvocation_id=%ls\r\n",
         timestamp.wYear, timestamp.wMonth, timestamp.wDay, timestamp.wHour,
         timestamp.wMinute, timestamp.wSecond, timestamp.wMilliseconds, event,
-        command_digest.c_str(), static_cast<unsigned long>(detail));
-    if (length <= 0) return;
+        command_digest.c_str(), static_cast<unsigned long>(detail), selection_source,
+        project_digest, invocation_id);
+    if (length <= 0) return ERROR_INVALID_DATA;
     HANDLE file = CreateFileW(path.c_str(), FILE_APPEND_DATA,
                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                               nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) return;
+    if (file == INVALID_HANDLE_VALUE) return GetLastError();
     DWORD written = 0;
-    WriteFile(file, line, static_cast<DWORD>(length * sizeof(wchar_t)), &written, nullptr);
+    const DWORD expected = static_cast<DWORD>(length * sizeof(wchar_t));
+    const BOOL write_ok = WriteFile(file, line, expected, &written, nullptr);
+    const DWORD write_error = !write_ok
+        ? GetLastError()
+        : (written == expected ? ERROR_SUCCESS : ERROR_WRITE_FAULT);
+    const BOOL flush_ok = write_error == ERROR_SUCCESS && FlushFileBuffers(file);
+    const DWORD flush_error = flush_ok ? ERROR_SUCCESS : GetLastError();
     CloseHandle(file);
+    return write_error != ERROR_SUCCESS ? write_error : flush_error;
 }
 
 static HRESULT CopyString(const std::wstring& value, PWSTR* output) noexcept {
@@ -186,66 +215,129 @@ static std::wstring WindowsErrorDetail(DWORD error) {
     return L"Windows error " + std::to_wstring(error) + L": " + detail;
 }
 
-static HRESULT SelectedPath(IShellItemArray* items, std::wstring* path) {
-    if (!items || !path) return E_INVALIDARG;
-    DWORD count = 0;
-    if (FAILED(items->GetCount(&count)) || count != 1) return E_INVALIDARG;
-    IShellItem* item = nullptr;
-    HRESULT result = items->GetItemAt(0, &item);
-    if (FAILED(result)) return result;
+static std::wstring ConfigPathFromCommand(const std::wstring& command) {
+    int argument_count = 0;
+    LPWSTR* arguments = CommandLineToArgvW(command.c_str(), &argument_count);
+    if (!arguments) return {};
+    std::wstring config;
+    for (int index = 1; index + 1 < argument_count; ++index) {
+        if (wcscmp(arguments[index], L"--config") == 0) {
+            config = arguments[index + 1];
+            break;
+        }
+    }
+    LocalFree(arguments);
+    return config;
+}
+
+static void ShowRecoverableError(const std::wstring& message) noexcept {
+    wchar_t contract_test[2]{};
+    if (GetEnvironmentVariableW(
+            L"SKILL_MAGNET_NATIVE_CONTRACT_TEST", contract_test,
+            static_cast<DWORD>(2)) > 0) {
+        return;
+    }
+    MessageBoxW(nullptr, message.c_str(), L"Skill Magnet", MB_OK | MB_ICONERROR);
+}
+
+static HRESULT ShellItemPath(IShellItem* item, std::wstring* path) {
+    if (!item || !path) return E_INVALIDARG;
     PWSTR raw = nullptr;
-    result = item->GetDisplayName(SIGDN_FILESYSPATH, &raw);
-    item->Release();
+    const HRESULT result = item->GetDisplayName(SIGDN_FILESYSPATH, &raw);
     if (SUCCEEDED(result) && raw) *path = raw;
     CoTaskMemFree(raw);
     return result;
 }
 
-class MenuNode;
+static HRESULT SiteItem(IUnknown* site, IShellItem** item) {
+    if (!site || !item) return E_INVALIDARG;
+    *item = nullptr;
+    IServiceProvider* services = nullptr;
+    HRESULT result = site->QueryInterface(IID_PPV_ARGS(&services));
+    if (FAILED(result)) return result;
+    IFolderView* view = nullptr;
+    result = services->QueryService(SID_SFolderView, IID_PPV_ARGS(&view));
+    services->Release();
+    if (FAILED(result)) return result;
+    IPersistFolder2* folder = nullptr;
+    result = view->GetFolder(IID_PPV_ARGS(&folder));
+    view->Release();
+    if (FAILED(result)) return result;
+    PIDLIST_ABSOLUTE folder_id = nullptr;
+    result = folder->GetCurFolder(&folder_id);
+    folder->Release();
+    if (FAILED(result)) return result;
+    result = SHCreateItemFromIDList(folder_id, IID_PPV_ARGS(item));
+    CoTaskMemFree(folder_id);
+    return result;
+}
 
-class MenuEnumerator final : public IEnumExplorerCommand {
-public:
-    explicit MenuEnumerator(std::vector<MenuNode*> commands, ULONG index = 0) noexcept;
-    ~MenuEnumerator();
-    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** value) override;
-    ULONG STDMETHODCALLTYPE AddRef() override { return ++references_; }
-    ULONG STDMETHODCALLTYPE Release() override;
-    HRESULT STDMETHODCALLTYPE Next(ULONG count, IExplorerCommand** commands, ULONG* fetched) override;
-    HRESULT STDMETHODCALLTYPE Skip(ULONG count) override;
-    HRESULT STDMETHODCALLTYPE Reset() override { index_ = 0; return S_OK; }
-    HRESULT STDMETHODCALLTYPE Clone(IEnumExplorerCommand** result) override;
-private:
-    std::atomic<ULONG> references_{1};
-    std::vector<MenuNode*> commands_;
-    ULONG index_{};
-};
+static HRESULT SitePath(IUnknown* site, std::wstring* path) {
+    if (!path) return E_POINTER;
+    IShellItem* folder_item = nullptr;
+    const HRESULT result = SiteItem(site, &folder_item);
+    if (FAILED(result)) return result;
+    const HRESULT path_result = ShellItemPath(folder_item, path);
+    folder_item->Release();
+    return path_result;
+}
 
-class MenuNode final : public IExplorerCommand {
+static HRESULT SelectedPath(IShellItemArray* items, IUnknown* site,
+                            std::wstring* path, bool* background) {
+    if (!path || !background) return E_POINTER;
+    *background = false;
+    DWORD item_count = 0;
+    const HRESULT count_result = items ? items->GetCount(&item_count) : S_OK;
+    if (FAILED(count_result)) return count_result;
+    if (!items || item_count == 0) {
+        const HRESULT result = SitePath(site, path);
+        if (SUCCEEDED(result)) *background = true;
+        return result;
+    }
+    if (item_count != 1) return E_INVALIDARG;
+    IShellItem* item = nullptr;
+    HRESULT result = items->GetItemAt(0, &item);
+    if (FAILED(result)) return result;
+    result = ShellItemPath(item, path);
+    if (FAILED(result)) {
+        item->Release();
+        return result;
+    }
+    IShellItem* site_item = nullptr;
+    if (SUCCEEDED(SiteItem(site, &site_item))) {
+        int comparison = 1;
+        const HRESULT comparison_result = item->Compare(
+            site_item, SICHINT_CANONICAL, &comparison);
+        site_item->Release();
+        if (SUCCEEDED(comparison_result) && comparison == 0) {
+            const HRESULT site_result = SitePath(site, path);
+            if (SUCCEEDED(site_result)) *background = true;
+        }
+    }
+    item->Release();
+    return result;
+}
+
+class MenuNode final : public IExplorerCommand, public IObjectWithSite {
 public:
     MenuNode(std::wstring title, std::wstring command = {}, bool root = false)
         : title_(std::move(title)), command_(std::move(command)), root_(root) { ++g_object_count; }
     ~MenuNode() {
-        for (auto* child : children_) child->Release();
+        if (site_) site_->Release();
         --g_object_count;
     }
-    MenuNode* FindOrAdd(const std::wstring& title) {
-        for (auto* child : children_) if (child->title_ == title) return child;
-        auto* child = new (std::nothrow) MenuNode(title);
-        if (child) children_.push_back(child);
-        return child;
-    }
-    bool AddLeaf(const std::wstring& title, const std::wstring& command) {
-        auto* child = new (std::nothrow) MenuNode(title, command);
-        if (!child) return false;
-        children_.push_back(child);
-        return true;
-    }
     void SetTitle(std::wstring title) { title_ = std::move(title); }
+    void SetCommand(std::wstring command) { command_ = std::move(command); }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** value) override {
         if (!value) return E_POINTER;
         *value = nullptr;
         if (iid == IID_IUnknown || iid == __uuidof(IExplorerCommand)) {
             *value = static_cast<IExplorerCommand*>(this);
+            AddRef();
+            return S_OK;
+        }
+        if (iid == IID_IObjectWithSite) {
+            *value = static_cast<IObjectWithSite*>(this);
             AddRef();
             return S_OK;
         }
@@ -280,32 +372,91 @@ public:
     }
     HRESULT STDMETHODCALLTYPE GetState(IShellItemArray*, BOOL, EXPCMDSTATE* state) override {
         if (!state) return E_POINTER;
-        *state = (!children_.empty() || !command_.empty()) ? ECS_ENABLED : ECS_DISABLED;
+        *state = command_.empty() ? ECS_DISABLED : ECS_ENABLED;
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE Invoke(IShellItemArray* items, IBindCtx*) override {
-        if (command_.empty()) return E_NOTIMPL;
         const std::wstring template_digest = Sha256Digest(command_);
-        LogInvokeEvent(L"invoke_enter", template_digest);
+        const std::wstring invocation_id = NewInvocationId();
+        // Target resolution calls Explorer COM APIs. Record receipt before
+        // touching them so a hung or failing provider cannot make a user
+        // invocation disappear from the diagnostic log.
+        const DWORD enter_log_error = LogInvokeEvent(
+            L"invoke_enter", template_digest, 0, L"unresolved",
+            L"unavailable", invocation_id.c_str());
+        if (enter_log_error != ERROR_SUCCESS) {
+            ShowRecoverableError(
+                L"右クリックの診断記録を開始できないため、安全に実行を中止しました。\n\n"
+                L"原因:\n診断ログを開くか書き込む処理がWindowsエラー " +
+                std::to_wstring(enter_log_error) +
+                L" で失敗しました。\n\n復旧手順:\n"
+                L"1. invoke.logを開いているアプリと他のSkill Magnet処理を閉じます。\n"
+                L"2. 元のフォルダーをもう一度右クリックします。\n\n"
+                L"診断ログ: %LOCALAPPDATA%\\SkillMagnet\\ContextMenu\\invoke.log");
+            return HRESULT_FROM_WIN32(enter_log_error);
+        }
         std::wstring project;
-        HRESULT result = SelectedPath(items, &project);
+        bool background = false;
+        const HRESULT result = SelectedPath(items, site_, &project, &background);
+        // Explorer may represent Directory\Background as null, an empty array,
+        // or a one-item array containing the current folder itself.
+        const wchar_t* selection_source =
+            background ? L"background_site" : L"selected_item";
+        if (command_.empty()) {
+            LogInvokeEvent(L"command_empty", template_digest, 0, selection_source,
+                           L"unavailable", invocation_id.c_str());
+            ShowRecoverableError(
+                L"右クリックメニューの実行commandが空のため、実行を開始できませんでした。\n\n"
+                L"復旧手順:\n1. Skill Magnetの右クリックメニューを再登録します。\n"
+                L"2. usable_installed_state=trueを確認してから再実行します。\n\n"
+                L"診断ログ: %LOCALAPPDATA%\\SkillMagnet\\ContextMenu\\invoke.log");
+            return E_INVALIDARG;
+        }
+        std::wstring project_digest = L"unavailable";
         if (FAILED(result)) {
             LogInvokeEvent(L"selection_failed", template_digest,
-                           static_cast<DWORD>(result));
+                           static_cast<DWORD>(result), selection_source, L"unavailable",
+                           invocation_id.c_str());
         } else {
-            LogInvokeEvent(L"selection_succeeded", template_digest);
+            project_digest = Sha256Digest(project);
+            LogInvokeEvent(L"selection_succeeded", template_digest, 0,
+                           selection_source, project_digest.c_str(), invocation_id.c_str());
         }
         const size_t marker = command_.find(kProjectMarker);
-        if (FAILED(result) || marker == std::wstring::npos) {
-            if (marker == std::wstring::npos) {
-                LogInvokeEvent(L"marker_missing", template_digest);
-            }
-            MessageBoxW(nullptr, L"Skill Magnet could not resolve the selected folder.",
-                        L"Skill Magnet", MB_OK | MB_ICONERROR);
-            return FAILED(result) ? result : E_INVALIDARG;
+        if (FAILED(result)) {
+            ShowRecoverableError(
+                L"右クリックしたフォルダーを特定できませんでした。\n\n"
+                L"原因:\n複数項目の選択、またはExplorerからフォルダー情報を取得できない状態です。\n\n"
+                L"復旧手順:\n"
+                L"1. 対象フォルダーをFile Explorerで開きます。\n"
+                L"2. フォルダー1件だけ、または開いたフォルダー内の余白を右クリックします。\n"
+                L"3. 「Skill Magnet」をもう一度押します。\n\n"
+                L"診断ログ: %LOCALAPPDATA%\\SkillMagnet\\ContextMenu\\invoke.log\n"
+                L"このfileをメモ帳で開き、event=selection_failedを探してください。");
+            return result;
+        }
+        if (marker == std::wstring::npos) {
+            LogInvokeEvent(L"marker_missing", template_digest, 0, selection_source,
+                           project_digest.c_str(), invocation_id.c_str());
+            const std::wstring config_path = ConfigPathFromCommand(command_);
+            const std::wstring repair_command =
+                SkillMagnetRecovery::InstalledPythonRepairCommand(config_path);
+            ShowRecoverableError(
+                L"登録済みのSkill Magnetメニューが壊れているため、実行を開始できませんでした。\n\n"
+                L"原因:\n右クリックしたフォルダーを安全に渡すmarkerがmenu commandにありません。\n\n"
+                L"復旧手順:\n1. この画面を開いたままCtrl+Cを押して内容をコピーします。\n"
+                L"2. Windows TerminalのPowerShellタブへ、次の正確な修復・再登録commandを"
+                L"貼り付けて実行します:\n" + repair_command +
+                L"\n3. usable_installed_state=trueを確認してから、元の操作を一度再実行します。\n\n"
+                L"診断ログ: %LOCALAPPDATA%\\SkillMagnet\\ContextMenu\\invoke.log\n"
+                L"このfileをメモ帳で開き、event=marker_missingを探してください。");
+            return E_INVALIDARG;
         }
         std::wstring launch = command_;
         launch.replace(marker, wcslen(kProjectMarker), QuoteArgument(project));
+        const std::wstring config_path = ConfigPathFromCommand(command_);
+        const std::wstring repair_command =
+            SkillMagnetRecovery::InstalledPythonRepairCommand(config_path);
         const std::wstring launch_digest = Sha256Digest(launch);
         std::vector<wchar_t> mutable_command(launch.begin(), launch.end());
         mutable_command.push_back(L'\0');
@@ -316,86 +467,91 @@ public:
                             nullptr,
                             &startup, &process)) {
             const DWORD error = GetLastError();
-            LogInvokeEvent(L"create_process_failed", launch_digest, error);
-            const std::wstring message =
-                L"Skill Magnet could not start the selected action.\n\n" +
-                WindowsErrorDetail(error);
-            MessageBoxW(nullptr, message.c_str(), L"Skill Magnet", MB_OK | MB_ICONERROR);
+            LogInvokeEvent(L"create_process_failed", launch_digest, error, selection_source,
+                           project_digest.c_str(), invocation_id.c_str());
+            const std::wstring message = SkillMagnetRecovery::CreateProcessFailureMessage(
+                error, WindowsErrorDetail(error), repair_command);
+            ShowRecoverableError(message);
             return HRESULT_FROM_WIN32(error);
         }
-        LogInvokeEvent(L"create_process_succeeded", launch_digest, process.dwProcessId);
+        LogInvokeEvent(L"create_process_succeeded", launch_digest, process.dwProcessId,
+                       selection_source, project_digest.c_str(), invocation_id.c_str());
         CloseHandle(process.hThread);
+        constexpr DWORD kImmediateExitWindowMilliseconds = 1200;
+        const DWORD wait = WaitForSingleObject(
+            process.hProcess, kImmediateExitWindowMilliseconds);
+        if (wait == WAIT_FAILED) {
+            const DWORD error = GetLastError();
+            LogInvokeEvent(L"child_wait_failed", launch_digest, error, selection_source,
+                           project_digest.c_str(), invocation_id.c_str());
+            CloseHandle(process.hProcess);
+            const std::wstring message = SkillMagnetRecovery::WaitFailureMessage(
+                WindowsErrorDetail(error), repair_command);
+            ShowRecoverableError(message);
+            return HRESULT_FROM_WIN32(error);
+        }
+        if (wait == WAIT_OBJECT_0) {
+            DWORD exit_code = 0;
+            if (!GetExitCodeProcess(process.hProcess, &exit_code)) {
+                const DWORD error = GetLastError();
+                LogInvokeEvent(L"child_exit_read_failed", launch_digest, error,
+                               selection_source, project_digest.c_str(),
+                               invocation_id.c_str());
+                CloseHandle(process.hProcess);
+                const std::wstring message = SkillMagnetRecovery::WaitFailureMessage(
+                    WindowsErrorDetail(error), repair_command);
+                ShowRecoverableError(message);
+                return HRESULT_FROM_WIN32(error);
+            }
+            LogInvokeEvent(L"child_exited", launch_digest, exit_code, selection_source,
+                           project_digest.c_str(), invocation_id.c_str());
+            CloseHandle(process.hProcess);
+            if (exit_code != 0) {
+                const std::wstring message =
+                    SkillMagnetRecovery::ImmediateExitFailureMessage(
+                        exit_code, repair_command);
+                LogInvokeEvent(L"child_process_failed", launch_digest, exit_code,
+                               selection_source, project_digest.c_str(),
+                               invocation_id.c_str());
+                ShowRecoverableError(message);
+                return HRESULT_FROM_WIN32(exit_code);
+            }
+            return S_OK;
+        }
+        LogInvokeEvent(L"child_running", launch_digest, process.dwProcessId,
+                       selection_source, project_digest.c_str(), invocation_id.c_str());
         CloseHandle(process.hProcess);
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE GetFlags(EXPCMDFLAGS* flags) override {
         if (!flags) return E_POINTER;
-        *flags = children_.empty() ? ECF_DEFAULT : ECF_HASSUBCOMMANDS;
+        *flags = ECF_DEFAULT;
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE EnumSubCommands(IEnumExplorerCommand** commands) override {
         if (!commands) return E_POINTER;
         *commands = nullptr;
-        if (children_.empty()) return E_NOTIMPL;
-        auto* enumerator = new (std::nothrow) MenuEnumerator(children_);
-        if (!enumerator) return E_OUTOFMEMORY;
-        *commands = enumerator;
+        return E_NOTIMPL;
+    }
+    HRESULT STDMETHODCALLTYPE SetSite(IUnknown* site) override {
+        if (site) site->AddRef();
+        IUnknown* previous = site_;
+        site_ = site;
+        if (previous) previous->Release();
         return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetSite(REFIID iid, void** value) override {
+        if (!value) return E_POINTER;
+        *value = nullptr;
+        return site_ ? site_->QueryInterface(iid, value) : E_FAIL;
     }
 private:
     std::atomic<ULONG> references_{1};
     std::wstring title_;
     std::wstring command_;
-    std::vector<MenuNode*> children_;
+    IUnknown* site_{};
     bool root_{};
 };
-
-MenuEnumerator::MenuEnumerator(std::vector<MenuNode*> commands, ULONG index) noexcept
-    : commands_(std::move(commands)), index_(index) {
-    ++g_object_count;
-    for (auto* command : commands_) command->AddRef();
-}
-MenuEnumerator::~MenuEnumerator() {
-    for (auto* command : commands_) command->Release();
-    --g_object_count;
-}
-HRESULT MenuEnumerator::QueryInterface(REFIID iid, void** value) {
-    if (!value) return E_POINTER;
-    *value = nullptr;
-    if (iid == IID_IUnknown || iid == __uuidof(IEnumExplorerCommand)) {
-        *value = static_cast<IEnumExplorerCommand*>(this);
-        AddRef();
-        return S_OK;
-    }
-    return E_NOINTERFACE;
-}
-ULONG MenuEnumerator::Release() {
-    const ULONG count = --references_;
-    if (!count) delete this;
-    return count;
-}
-HRESULT MenuEnumerator::Next(ULONG count, IExplorerCommand** commands, ULONG* fetched) {
-    if (!commands || (count != 1 && !fetched)) return E_POINTER;
-    ULONG copied = 0;
-    while (copied < count && index_ < commands_.size()) {
-        commands[copied] = commands_[index_++];
-        commands[copied]->AddRef();
-        ++copied;
-    }
-    if (fetched) *fetched = copied;
-    return copied == count ? S_OK : S_FALSE;
-}
-HRESULT MenuEnumerator::Skip(ULONG count) {
-    const size_t remaining = commands_.size() - index_;
-    const ULONG skipped = static_cast<ULONG>(remaining < count ? remaining : count);
-    index_ += skipped;
-    return skipped == count ? S_OK : S_FALSE;
-}
-HRESULT MenuEnumerator::Clone(IEnumExplorerCommand** result) {
-    if (!result) return E_POINTER;
-    *result = new (std::nothrow) MenuEnumerator(commands_, index_);
-    return *result ? S_OK : E_OUTOFMEMORY;
-}
 
 static MenuNode* LoadRoot() {
     auto* root = new (std::nothrow) MenuNode(L"Skill Magnet", L"", true);
@@ -403,6 +559,9 @@ static MenuNode* LoadRoot() {
     const std::string data = ReadMenuManifest();
     size_t start = 0;
     bool header_seen = false;
+    bool contract_valid = true;
+    bool launcher_seen = false;
+    size_t record_count = 0;
     while (start < data.size()) {
         size_t end = data.find('\n', start);
         if (end == std::string::npos) end = data.size();
@@ -411,24 +570,38 @@ static MenuNode* LoadRoot() {
         start = end + 1;
         if (!header_seen) {
             header_seen = line == "skill-magnet-menu-v4";
-            if (!header_seen) break;
+            if (!header_seen) {
+                contract_valid = false;
+                break;
+            }
             continue;
         }
         if (line.empty()) continue;
+        ++record_count;
         const auto fields = SplitFields(line);
         if (fields.size() != 7 || fields[0].empty() || fields[1] != L"Skill Magnet" ||
-            (fields[2] != L"package" && fields[2] != L"skill" &&
-            fields[2] != L"manager" && fields[2] != L"register") ||
-            fields[3].empty() || fields[4].empty() ||
-            fields[5].empty() || fields[6].find(kProjectMarker) == std::wstring::npos) continue;
-        // Windows 11's compact Explorer surface renders only the extension
-        // root's immediate IExplorerCommand flyout reliably. Preserve the full
-        // explicit skill selection in each leaf label instead of producing
-        // blank recursive flyouts. The AI is selected in the confirmation UI.
-        if (!root->AddLeaf(fields[4], fields[6])) {
-            root->Release();
-            return nullptr;
+            fields[0] != L"__launcher__" || fields[2] != L"launcher" ||
+            fields[3] != L"root" || fields[4] != L"Skill Magnet" ||
+            fields[5].empty()) {
+            contract_valid = false;
+            break;
         }
+        const size_t marker = fields[6].find(kProjectMarker);
+        if (marker == std::wstring::npos ||
+            fields[6].find(kProjectMarker, marker + wcslen(kProjectMarker)) !=
+                std::wstring::npos) {
+            contract_valid = false;
+            break;
+        }
+        if (launcher_seen) {
+            contract_valid = false;
+            break;
+        }
+        root->SetCommand(fields[6]);
+        launcher_seen = true;
+    }
+    if (!header_seen || !contract_valid || !launcher_seen || record_count != 1) {
+        root->SetCommand({});
     }
     return root;
 }
@@ -478,6 +651,13 @@ STDAPI DllGetClassObject(REFCLSID clsid, REFIID iid, void** value) {
     return result;
 }
 STDAPI DllCanUnloadNow() { return g_object_count == 0 ? S_OK : S_FALSE; }
+static constexpr wchar_t kNativeSourceBinding[] =
+    L"skill-magnet-native-source-v1:" SKILL_MAGNET_NATIVE_SOURCE_SHA256;
+extern "C" __declspec(dllexport) const wchar_t* WINAPI
+SkillMagnetNativeSourceSha256() noexcept {
+    return kNativeSourceBinding +
+        (_countof(L"skill-magnet-native-source-v1:") - 1);
+}
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         g_module = module;

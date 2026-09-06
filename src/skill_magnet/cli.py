@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import json
 import os
 import sys
 from pathlib import Path
 
-from .activation import ActivationEngine
+from .activation import ActivationEngine, validate_product_state_directory
 from .core import Config, Engine, SkillMagnetError
 from .library_manager import (
     DEFAULT_REPOSITORY_NAME,
@@ -33,13 +34,18 @@ from .platforms import (
     uninstall_context_menu,
     uninstall_windows_modern_context_menu,
     uninstall_windows_context_menus,
+    validate_isolated_menu_runtime,
     rollback_windows_context_menus,
     windows_modern_context_menu_status,
 )
 from .ui import (
+    ContextUiAction,
+    ContextUiLease,
+    acquire_context_ui_lease,
     context_failure_message,
     deliver_prepared_codex_handoff,
     deliver_prepared_claude_handoff,
+    focus_context_ui,
     show_context_error,
     show_context_result,
     show_context_selection,
@@ -119,6 +125,10 @@ def _parser() -> argparse.ArgumentParser:
     context.add_argument("--menu-skill-digest")
     context.add_argument("--menu-instruction-digest")
     context.add_argument("--menu-acceptance-digest")
+    context.add_argument("--launcher", action="store_true", help=argparse.SUPPRESS)
+    context.add_argument(
+        "--finder-selection-count", type=int, help=argparse.SUPPRESS
+    )
     context.add_argument("--release-probe", type=Path, help=argparse.SUPPRESS)
     context.add_argument(
         "--release-probe-runtime",
@@ -139,7 +149,7 @@ def _parser() -> argparse.ArgumentParser:
     install.add_argument(
         "--modern",
         action="store_true",
-        help="Deprecated compatibility flag; Windows prefers modern and uses classic only as fallback.",
+        help="Deprecated compatibility flag; Windows always installs the supported modern package.",
     )
     remove = commands.add_parser("uninstall-context-menu")
     remove.add_argument("--platform", required=True, choices=("windows", "macos"))
@@ -155,7 +165,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     library_commands = library.add_subparsers(dest="library_command", required=True)
     library_ui = library_commands.add_parser(
-        "ui", help="Open the compact Skill Library Manager."
+        "ui", help="Open Library Manager."
     )
     library_ui.add_argument(
         "--repository",
@@ -227,7 +237,9 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _library_state_dir(args: argparse.Namespace) -> Path:
-    return (args.state_dir or Path.home() / ".skill-magnet").resolve()
+    return validate_product_state_directory(
+        args.state_dir or Path.home() / ".skill-magnet"
+    )
 
 
 def _show_library_manager_ui(
@@ -235,11 +247,13 @@ def _show_library_manager_ui(
     initial_repository: Path | None = None,
     *,
     register_selected: bool = False,
+    context_lease: ContextUiLease | None = None,
 ) -> dict[str, object]:
     def update_menu(config_path: Path, platform: str) -> object:
+        validate_isolated_menu_runtime()
         if platform == "windows":
             return install_windows_context_menus(config_path)
-        return install_context_menu("macos", config_path)
+        return install_context_menu("macos", config_path, replace_existing=True)
 
     return show_library_manager(
         config_path=args.config,
@@ -247,6 +261,15 @@ def _show_library_manager_ui(
         initial_repository=initial_repository,
         register_selected=register_selected,
         menu_update=update_menu,
+        window_ready=(
+            (
+                lambda window_handle: context_lease.publish_window(
+                    phase="library_manager", window_handle=window_handle
+                )
+            )
+            if context_lease is not None
+            else None
+        ),
     )
 
 
@@ -304,9 +327,10 @@ def _run_library_command(args: argparse.Namespace) -> dict[str, object]:
         return transaction.abandon(confirmed=args.confirm)
     if command == "activate":
         def update_menu(config_path: Path) -> object:
+            validate_isolated_menu_runtime()
             if args.platform == "windows":
                 return install_windows_context_menus(config_path)
-            return install_context_menu("macos", config_path)
+            return install_context_menu("macos", config_path, replace_existing=True)
 
         return transaction.activate(
             config_path=args.config,
@@ -319,11 +343,61 @@ def _run_library_command(args: argparse.Namespace) -> dict[str, object]:
 def main(argv: list[str] | None = None) -> int:
     _configure_console_streams()
     args = _parser().parse_args(argv)
+    context_lease: ContextUiLease | None = None
     try:
         if args.command == "library":
             result = _run_library_command(args)
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0
+        if args.command == "context" and args.finder_selection_count is not None:
+            if args.platform != "macos":
+                raise SkillMagnetError(
+                    "Finder selection count is valid only for the macOS adapter"
+                )
+            if args.finder_selection_count != 1:
+                raise SkillMagnetError(
+                    "Finderではフォルダーを1つだけ選択してください。"
+                    "選択を解除し、登録または作業対象のフォルダー1つを選んで、"
+                    "クイックアクションのSkill Magnetをもう一度実行してください。"
+                    f"現在の選択数: {args.finder_selection_count}"
+                )
+        if args.command == "context" and args.launcher:
+            context_lease = acquire_context_ui_lease(
+                _library_state_dir(args), args.project
+            )
+            if not context_lease.acquired:
+                owner_pid = context_lease.owner.get("pid", "不明")
+                owner_project = context_lease.owner.get("project", "不明")
+                if context_lease.owner.get("same_request"):
+                    if focus_context_ui(context_lease.owner):
+                        return 0
+                    recovery = (
+                        "復旧方法: 開いているSkill Magnet画面をDockから前面に戻し、"
+                        "処理を完了またはキャンセルしてください。画面がない場合は"
+                        "アクティビティモニタでこのPIDのPythonを終了し、同じフォルダーから"
+                        "一度だけ再実行してください。"
+                        if args.platform == "macos"
+                        else "復旧方法: まず30秒待って既存処理の完了を確認してください。"
+                        "完了せず画面もない場合だけ、タスク マネージャーでこのPIDの"
+                        "Pythonを終了し、同じフォルダーから再実行してください。"
+                    )
+                    show_context_error(
+                        "同じフォルダーのSkill Magnetはすでに処理中です。"
+                        "重複する処理は開始していません。\n\n"
+                        f"実行中PID: {owner_pid}\n"
+                        + recovery
+                    )
+                    return 0
+                focus_context_ui(context_lease.owner)
+                show_context_error(
+                    "別のフォルダーでSkill Magnetを処理中のため、今回のフォルダーは"
+                    "まだ受け付けていません。\n\n"
+                    f"処理中フォルダー: {owner_project}\n"
+                    f"今回のフォルダー: {args.project.resolve()}\n"
+                    "復旧方法: 開いているSkill Magnetを完了またはキャンセルしてから、"
+                    "今回のフォルダーをもう一度右クリックしてください。"
+                )
+                return 0
         config = Config.load(args.config)
         engine = Engine(config, args.state_dir)
         # Every CLI command is a public product entry. Recover abandoned
@@ -468,7 +542,9 @@ def main(argv: list[str] | None = None) -> int:
                     raise SkillMagnetError("macOS release probe already exists") from exc
                 return 0
             activation = ActivationEngine(config, args.state_dir)
-            if args.platform == "windows":
+            if args.launcher and args.platform not in {"windows", "macos"}:
+                raise SkillMagnetError("Unsupported unified context launcher platform")
+            if args.platform == "windows" and not args.launcher:
                 required = (
                     args.pack,
                     args.menu_commit,
@@ -480,80 +556,92 @@ def main(argv: list[str] | None = None) -> int:
                     raise SkillMagnetError(
                         "Windows context leaf requires pack, commit and digests"
                     )
-                try:
-                    contract = show_context_selection(
-                        activation,
-                        platform=args.platform,
-                        project=args.project,
-                        pack_id=args.pack,
-                        skill_id=args.skill,
-                        runtime=args.runtime,
-                        menu_commit=args.menu_commit,
-                        menu_skill_digest=args.menu_skill_digest,
-                        menu_instruction_digest=args.menu_instruction_digest,
-                        menu_acceptance_digest=args.menu_acceptance_digest,
+            if args.launcher and any(
+                value is not None
+                for value in (
+                    args.pack,
+                    args.skill,
+                    args.menu_commit,
+                    args.menu_skill_digest,
+                    args.menu_instruction_digest,
+                    args.menu_acceptance_digest,
+                )
+            ):
+                raise SkillMagnetError(
+                    "The unified launcher cannot be combined with a fixed menu leaf"
+                )
+            contract = show_context_selection(
+                activation,
+                platform=args.platform,
+                project=args.project,
+                pack_id=args.pack,
+                skill_id=args.skill,
+                runtime=args.runtime,
+                menu_commit=args.menu_commit,
+                menu_skill_digest=args.menu_skill_digest,
+                menu_instruction_digest=args.menu_instruction_digest,
+                menu_acceptance_digest=args.menu_acceptance_digest,
+                allow_dynamic_selection=args.launcher,
+                library_manager=lambda selected: _show_library_manager_ui(
+                    args, selected
+                ),
+                register_selected=lambda selected: _show_library_manager_ui(
+                    args, selected, register_selected=True
+                ),
+                window_ready=(
+                    (
+                        lambda window_handle: context_lease.publish_window(
+                            phase="context_selection", window_handle=window_handle
+                        )
                     )
-                except SkillMagnetError as exc:
-                    show_context_error(context_failure_message(exc))
-                    raise
-                if contract is None:
-                    return 0
+                    if context_lease is not None
+                    else None
+                ),
+            )
+            if contract is None:
+                return 0
+            if isinstance(contract, ContextUiAction):
                 try:
-                    if contract.runtime == "codex":
-                        result = deliver_prepared_codex_handoff(
-                            activation, contract.contract_id
+                    # The destroyed selector can retain Tk Variable cycles.  Reclaim
+                    # them on Tk's creating thread before the Manager worker starts.
+                    gc.collect()
+                    if contract.name == "library_manager":
+                        _show_library_manager_ui(
+                            args,
+                            args.project.resolve(),
+                            context_lease=context_lease,
+                        )
+                    elif contract.name == "register_selected":
+                        _show_library_manager_ui(
+                            args,
+                            args.project.resolve(),
+                            register_selected=True,
+                            context_lease=context_lease,
                         )
                     else:
-                        result = deliver_prepared_claude_handoff(
-                            activation, contract.contract_id
+                        raise SkillMagnetError(
+                            f"Unknown context UI action: {contract.name}"
                         )
-                except SkillMagnetError as exc:
-                    show_context_error(context_failure_message(exc))
+                except SkillMagnetError:
                     raise
-                if result.get("status") == "verified_completed":
-                    show_context_result(result)
-                    return 0
-                if result.get("status") == "desktop_handoff_ready":
-                    return 0
+                except Exception as exc:
+                    raise SkillMagnetError(
+                        f"Library Manager could not start: {exc}"
+                    ) from exc
+                return 0
+            if contract.runtime == "codex":
+                result = deliver_prepared_codex_handoff(
+                    activation, contract.contract_id
+                )
             else:
-                try:
-                    contract = show_context_selection(
-                        activation,
-                        platform=args.platform,
-                        project=args.project,
-                        pack_id=args.pack,
-                        skill_id=args.skill,
-                        runtime=args.runtime,
-                        menu_commit=args.menu_commit,
-                        menu_skill_digest=args.menu_skill_digest,
-                        menu_instruction_digest=args.menu_instruction_digest,
-                        menu_acceptance_digest=args.menu_acceptance_digest,
-                        library_manager=lambda selected: _show_library_manager_ui(
-                            args, selected
-                        ),
-                    )
-                except SkillMagnetError as exc:
-                    show_context_error(context_failure_message(exc))
-                    raise
-                if contract is None:
-                    return 0
-                try:
-                    if contract.runtime == "codex":
-                        result = deliver_prepared_codex_handoff(
-                            activation, contract.contract_id
-                        )
-                    else:
-                        result = deliver_prepared_claude_handoff(
-                            activation, contract.contract_id
-                        )
-                except SkillMagnetError as exc:
-                    show_context_error(context_failure_message(exc))
-                    raise
-                if result.get("status") == "verified_completed":
-                    show_context_result(result)
-                    return 0
-                if result.get("status") == "desktop_handoff_ready":
-                    return 0
+                result = deliver_prepared_claude_handoff(
+                    activation, contract.contract_id
+                )
+            if result.get("status") == "verified_completed":
+                show_context_result(result)
+                return 0
+            if result.get("status") == "desktop_handoff_ready":
+                return 0
         elif args.command == "context-menu-spec":
             result = context_menu_spec(args.platform, args.config).as_dict()
         elif args.command == "render-context-menu":
@@ -562,6 +650,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "install-context-menu":
             if not args.confirm:
                 raise SkillMagnetError("Context-menu installation requires --confirm")
+            validate_isolated_menu_runtime()
             if args.platform == "windows":
                 result = install_windows_context_menus(args.config)
             else:
@@ -578,7 +667,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.platform == "windows":
                 result = windows_modern_context_menu_status(config=args.config)
             else:
-                result = finder_context_menu_status()
+                result = finder_context_menu_status(config=args.config)
         else:
             if not args.confirm:
                 raise SkillMagnetError("Context-menu rollback requires --confirm")
@@ -587,11 +676,68 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except SkillMagnetError as exc:
         if args.command == "context":
-            # The OS context leaf already displayed the one permitted result UI.
-            # Do not expose runtime diagnostics or structured JSON on stderr.
+            # Every Explorer failure, including config loading and interrupted
+            # attempt recovery, must produce one actionable UI surface.
+            show_context_error(
+                context_failure_message(
+                    exc,
+                    config_path=args.config,
+                    state_dir=args.state_dir,
+                    platform=getattr(
+                        args, "platform", "windows" if os.name == "nt" else "macos"
+                    ),
+                )
+            )
+            return 2
+        if args.command == "library" and args.library_command == "ui":
+            show_context_error(
+                context_failure_message(
+                    exc,
+                    config_path=args.config,
+                    state_dir=args.state_dir,
+                    platform=getattr(
+                        args, "platform", "windows" if os.name == "nt" else "macos"
+                    ),
+                )
+            )
             return 2
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    except Exception as exc:
+        if args.command == "context":
+            wrapped = SkillMagnetError(
+                f"Unexpected context startup failure ({exc.__class__.__name__}): {exc}"
+            )
+            show_context_error(
+                context_failure_message(
+                    wrapped,
+                    config_path=args.config,
+                    state_dir=args.state_dir,
+                    platform=getattr(
+                        args, "platform", "windows" if os.name == "nt" else "macos"
+                    ),
+                )
+            )
+            return 2
+        if args.command == "library" and args.library_command == "ui":
+            wrapped = SkillMagnetError(
+                f"Library Manager could not start ({exc.__class__.__name__}): {exc}"
+            )
+            show_context_error(
+                context_failure_message(
+                    wrapped,
+                    config_path=args.config,
+                    state_dir=args.state_dir,
+                    platform=getattr(
+                        args, "platform", "windows" if os.name == "nt" else "macos"
+                    ),
+                )
+            )
+            return 2
+        raise
+    finally:
+        if context_lease is not None:
+            context_lease.release()
 
 
 if __name__ == "__main__":

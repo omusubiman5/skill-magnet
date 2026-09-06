@@ -73,4 +73,61 @@ if (Test-SkillMagnetOwnedLegacyTrustedCertificate `
     -OwnedThumbprints @($activeCertificate.Thumbprint)) {
     throw "active certificate was classified as legacy"
 }
+
+$validProduct = $validLegacy.PSObject.Copy()
+$validProduct | Add-Member -NotePropertyName HasPrivateKey -NotePropertyValue $true
+$validProduct | Add-Member `
+    -NotePropertyName FriendlyName `
+    -NotePropertyValue "Skill Magnet local package signing"
+$validState = [pscustomobject]@{
+    thumbprint = $validProduct.Thumbprint
+    created_my = $true
+    created_trusted_people = $true
+    created_machine_trusted_people = $true
+    owned_certificate_thumbprints = @($validProduct.Thumbprint)
+}
+Assert-SkillMagnetCertificateDeletionOwnership `
+    -State $validState `
+    -CurrentUserMyCertificate $validProduct | Out-Null
+
+$unrelatedProduct = $validProduct.PSObject.Copy()
+$unrelatedProduct.Subject = "CN=Unrelated"
+$unrelatedRefused = $false
+try {
+    Assert-SkillMagnetCertificateDeletionOwnership `
+        -State $validState `
+        -CurrentUserMyCertificate $unrelatedProduct | Out-Null
+}
+catch {
+    $unrelatedRefused = $_.Exception.Message -match "preserved"
+}
+if (-not $unrelatedRefused) {
+    throw "tampered state targeting an unrelated certificate was not refused"
+}
+
+$malformedState = $validState.PSObject.Copy()
+$malformedState.thumbprint = "Cert:\CurrentUser\My\unrelated"
+$malformedRefused = $false
+try {
+    Assert-SkillMagnetCertificateState -State $malformedState | Out-Null
+}
+catch {
+    $malformedRefused = $_.Exception.Message -match "thumbprint is invalid"
+}
+if (-not $malformedRefused) {
+    throw "malformed certificate state was not refused"
+}
+
+$stringFlagState = $validState.PSObject.Copy()
+$stringFlagState.created_my = "false"
+$stringFlagRefused = $false
+try {
+    Assert-SkillMagnetCertificateState -State $stringFlagState | Out-Null
+}
+catch {
+    $stringFlagRefused = $_.Exception.Message -match "flag 'created_my' is invalid"
+}
+if (-not $stringFlagRefused) {
+    throw "string certificate ownership flag was not refused"
+}
 Write-Output "certificate-state-tests: OK"
