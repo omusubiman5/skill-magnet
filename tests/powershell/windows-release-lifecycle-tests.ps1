@@ -79,7 +79,9 @@ try {
                 -CertStoreLocation Cert:\CurrentUser\TrustedPeople | Out-Null
             Import-Certificate -FilePath $legacyCer `
                 -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null
-            Remove-Item -LiteralPath ("Cert:\CurrentUser\My\" + $legacy.Thumbprint) -Force
+            if ($index -eq 1) {
+                Remove-Item -LiteralPath ("Cert:\CurrentUser\My\" + $legacy.Thumbprint) -Force
+            }
         }
         New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
         [ordered]@{
