@@ -6,6 +6,12 @@
 
 ## 最終方針
 
+### 2026-09-06 終了処理の最小修正
+
+chooserの`mainloop()`復帰後、Manager生成前に旧Tk rootを破棄する。WM_CLOSE callback内での破棄を避ける既存構造は維持する。Manager単独とchooser→Managerを隔離stateで比較し、後者だけが残存rootにより終了しないことを確認してから、この1行の有無で結果を比較した。
+
+根拠のないManager終了動作の変更は取り消し、元の保存・整理処理を復元した。回帰試験`test_chooser_to_manager_close_retires_the_previous_root`は実際のchooserのManagerボタンを呼び、ManagerへWM_CLOSEを送り、callback到達、関数復帰、旧デフォルトroot不在、owner解放を確認する。これはExplorer全体の合格や公開完了を意味しない。
+
 0.5.9のWindows Explorer入口は、**子項目を一件も持たない単一の`Skill Magnet` root**とする。`Skill Magnet`を押すと統合GUIを直接開く。
 
 次の操作はExplorerの子メニューから撤去し、統合GUIの中へ移す。
@@ -146,6 +152,18 @@ Python module自体を読み込めない場合は、registryやAppxを手作業�
 - アプリを誤って閉じた場合は、OS lock解放後に同じfolderから再起動できる。lock fileが残っているだけで永久拒否しない。
 
 ## 自動検証契約
+
+### 2026-09-06 追加した限定回帰
+
+| 対象 | 変更／検証 | 範囲外 |
+|---|---|---|
+| native入口 | `invoke_enter`を対象解決前に記録し、native contractでnull・空配列・現在folder一件配列・別folder一件配列を検証 | 実Explorerが渡す配列の実測 |
+| chooser終了 | chooser→Manager遷移で旧rootを破棄する回帰と、非協調worker中CloseでのUI復帰・保存なし・lease再取得を実Tkで検証 | Explorerからの起動、任意worker全経路 |
+| click fixture | 入力直前のカーソル・前景・HWND・UIA前提を記録し、不一致ならクリック前に失敗させる | Explorer rootとglyph providerの関係の実機証明 |
+
+これらは正式field、導入済みruntime一致、公開の代替証拠ではない。全体unittestは出力上限で終了コードを回収できておらず、成功件数として記録しない。
+
+その後、出力量を抑えて実行した全体unittestは **413件中3失敗・skip 1** で終了した。Tkのidle予約とrecovery fallbackの2件は限定修正後の再実行で合格した。残る`test_canonical_results_are_consistent`は、ledgerの`187`と現ソースの`413`、および旧field証跡の不一致を拒否している。ledgerを書き換えて解消してはならず、同一候補の導入と正式Explorer fieldが完了するまでreleaseは不合格とする。
 
 最終release候補は以下をすべて検証する。個々の実行結果と件数は本書へ固定せず、正本ledgerへ記録する。
 

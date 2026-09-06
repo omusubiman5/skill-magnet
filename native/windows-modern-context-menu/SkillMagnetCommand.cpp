@@ -249,39 +249,71 @@ static HRESULT ShellItemPath(IShellItem* item, std::wstring* path) {
     return result;
 }
 
-static HRESULT SelectedPath(IShellItemArray* items, IUnknown* site, std::wstring* path) {
+static HRESULT SiteItem(IUnknown* site, IShellItem** item) {
+    if (!site || !item) return E_INVALIDARG;
+    *item = nullptr;
+    IServiceProvider* services = nullptr;
+    HRESULT result = site->QueryInterface(IID_PPV_ARGS(&services));
+    if (FAILED(result)) return result;
+    IFolderView* view = nullptr;
+    result = services->QueryService(SID_SFolderView, IID_PPV_ARGS(&view));
+    services->Release();
+    if (FAILED(result)) return result;
+    IPersistFolder2* folder = nullptr;
+    result = view->GetFolder(IID_PPV_ARGS(&folder));
+    view->Release();
+    if (FAILED(result)) return result;
+    PIDLIST_ABSOLUTE folder_id = nullptr;
+    result = folder->GetCurFolder(&folder_id);
+    folder->Release();
+    if (FAILED(result)) return result;
+    result = SHCreateItemFromIDList(folder_id, IID_PPV_ARGS(item));
+    CoTaskMemFree(folder_id);
+    return result;
+}
+
+static HRESULT SitePath(IUnknown* site, std::wstring* path) {
     if (!path) return E_POINTER;
-    if (!items) {
-        if (!site) return E_INVALIDARG;
-        IServiceProvider* services = nullptr;
-        HRESULT result = site->QueryInterface(IID_PPV_ARGS(&services));
-        if (FAILED(result)) return result;
-        IFolderView* view = nullptr;
-        result = services->QueryService(SID_SFolderView, IID_PPV_ARGS(&view));
-        services->Release();
-        if (FAILED(result)) return result;
-        IPersistFolder2* folder = nullptr;
-        result = view->GetFolder(IID_PPV_ARGS(&folder));
-        view->Release();
-        if (FAILED(result)) return result;
-        PIDLIST_ABSOLUTE folder_id = nullptr;
-        result = folder->GetCurFolder(&folder_id);
-        folder->Release();
-        if (FAILED(result)) return result;
-        IShellItem* folder_item = nullptr;
-        result = SHCreateItemFromIDList(folder_id, IID_PPV_ARGS(&folder_item));
-        CoTaskMemFree(folder_id);
-        if (FAILED(result)) return result;
-        result = ShellItemPath(folder_item, path);
-        folder_item->Release();
+    IShellItem* folder_item = nullptr;
+    const HRESULT result = SiteItem(site, &folder_item);
+    if (FAILED(result)) return result;
+    const HRESULT path_result = ShellItemPath(folder_item, path);
+    folder_item->Release();
+    return path_result;
+}
+
+static HRESULT SelectedPath(IShellItemArray* items, IUnknown* site,
+                            std::wstring* path, bool* background) {
+    if (!path || !background) return E_POINTER;
+    *background = false;
+    DWORD item_count = 0;
+    const HRESULT count_result = items ? items->GetCount(&item_count) : S_OK;
+    if (FAILED(count_result)) return count_result;
+    if (!items || item_count == 0) {
+        const HRESULT result = SitePath(site, path);
+        if (SUCCEEDED(result)) *background = true;
         return result;
     }
-    DWORD count = 0;
-    if (FAILED(items->GetCount(&count)) || count != 1) return E_INVALIDARG;
+    if (item_count != 1) return E_INVALIDARG;
     IShellItem* item = nullptr;
     HRESULT result = items->GetItemAt(0, &item);
     if (FAILED(result)) return result;
     result = ShellItemPath(item, path);
+    if (FAILED(result)) {
+        item->Release();
+        return result;
+    }
+    IShellItem* site_item = nullptr;
+    if (SUCCEEDED(SiteItem(site, &site_item))) {
+        int comparison = 1;
+        const HRESULT comparison_result = item->Compare(
+            site_item, SICHINT_CANONICAL, &comparison);
+        site_item->Release();
+        if (SUCCEEDED(comparison_result) && comparison == 0) {
+            const HRESULT site_result = SitePath(site, path);
+            if (SUCCEEDED(site_result)) *background = true;
+        }
+    }
     item->Release();
     return result;
 }
@@ -345,10 +377,12 @@ public:
     }
     HRESULT STDMETHODCALLTYPE Invoke(IShellItemArray* items, IBindCtx*) override {
         const std::wstring template_digest = Sha256Digest(command_);
-        const wchar_t* selection_source = items ? L"selected_item" : L"background_site";
         const std::wstring invocation_id = NewInvocationId();
+        // Target resolution calls Explorer COM APIs. Record receipt before
+        // touching them so a hung or failing provider cannot make a user
+        // invocation disappear from the diagnostic log.
         const DWORD enter_log_error = LogInvokeEvent(
-            L"invoke_enter", template_digest, 0, selection_source,
+            L"invoke_enter", template_digest, 0, L"unresolved",
             L"unavailable", invocation_id.c_str());
         if (enter_log_error != ERROR_SUCCESS) {
             ShowRecoverableError(
@@ -361,6 +395,13 @@ public:
                 L"診断ログ: %LOCALAPPDATA%\\SkillMagnet\\ContextMenu\\invoke.log");
             return HRESULT_FROM_WIN32(enter_log_error);
         }
+        std::wstring project;
+        bool background = false;
+        const HRESULT result = SelectedPath(items, site_, &project, &background);
+        // Explorer may represent Directory\Background as null, an empty array,
+        // or a one-item array containing the current folder itself.
+        const wchar_t* selection_source =
+            background ? L"background_site" : L"selected_item";
         if (command_.empty()) {
             LogInvokeEvent(L"command_empty", template_digest, 0, selection_source,
                            L"unavailable", invocation_id.c_str());
@@ -371,9 +412,7 @@ public:
                 L"診断ログ: %LOCALAPPDATA%\\SkillMagnet\\ContextMenu\\invoke.log");
             return E_INVALIDARG;
         }
-        std::wstring project;
         std::wstring project_digest = L"unavailable";
-        HRESULT result = SelectedPath(items, site_, &project);
         if (FAILED(result)) {
             LogInvokeEvent(L"selection_failed", template_digest,
                            static_cast<DWORD>(result), selection_source, L"unavailable",

@@ -611,6 +611,7 @@ class TkSurfacePublicationRetry:
         self.expired_token = 0
         self.watchdog_timer: threading.Timer | None = None
         self.closed = False
+        self.after_ids: set[str] = set()
 
     def _record(
         self, event: str, *, revision: int | None = None, winerror: int | None = None
@@ -633,7 +634,16 @@ class TkSurfacePublicationRetry:
 
     def _schedule(self, milliseconds: int, callback: Callable[[], None]) -> bool:
         try:
-            self.root.after(milliseconds, callback)
+            after_id: str | None = None
+
+            def run() -> None:
+                if after_id is not None:
+                    self.after_ids.discard(after_id)
+                if not self.closed:
+                    callback()
+
+            after_id = self.root.after(milliseconds, run)
+            self.after_ids.add(after_id)
             return True
         except Exception as exc:
             if self.stopped():
@@ -696,6 +706,12 @@ class TkSurfacePublicationRetry:
         self.pending = False
         self.token += 1
         self._cancel_watchdog()
+        for after_id in tuple(self.after_ids):
+            try:
+                self.root.after_cancel(after_id)
+            except Exception:
+                pass
+        self.after_ids.clear()
         try:
             identity = self.identity() if self.identity is not None else None
         except Exception:
@@ -765,14 +781,38 @@ class TkSurfacePublicationRetry:
             self.succeeded()
 
 
-def _publish_tk_surface_after_mapping(root: Any, publish: Callable[[], None]) -> None:
+def _publish_tk_surface_after_mapping(
+    root: Any, publish: Callable[[], None]
+) -> Callable[[], None]:
     """Republish the same lease after Tk has mapped its widgets."""
+
+    closed = False
+    after_ids: set[str] = set()
+
+    def schedule(milliseconds: int, callback: Callable[[], None]) -> None:
+        after_id: str | None = None
+
+        def run() -> None:
+            if after_id is not None:
+                after_ids.discard(after_id)
+            if not closed:
+                callback()
+
+        try:
+            after_id = (
+                root.after_idle(run)
+                if milliseconds == 0
+                else root.after(milliseconds, run)
+            )
+            after_ids.add(after_id)
+        except Exception:
+            return
 
     def publish_when_viewable() -> None:
         try:
             root.update_idletasks()
             if not bool(root.winfo_viewable()):
-                root.after(10, publish_when_viewable)
+                schedule(10, publish_when_viewable)
                 return
             publish()
         except RuntimeError:
@@ -783,7 +823,19 @@ def _publish_tk_surface_after_mapping(root: Any, publish: Callable[[], None]) ->
                 return
             raise
 
-    root.after_idle(publish_when_viewable)
+    schedule(0, publish_when_viewable)
+
+    def cancel() -> None:
+        nonlocal closed
+        closed = True
+        for after_id in tuple(after_ids):
+            try:
+                root.after_cancel(after_id)
+            except Exception:
+                pass
+        after_ids.clear()
+
+    return cancel
 
 
 def _try_lock_context_ui_file(handle: Any) -> bool:
@@ -2468,6 +2520,7 @@ def show_context_selection(
     )
 
     surface_publication: TkSurfacePublicationRetry | None = None
+    cancel_mapped_surface_publication: Callable[[], None] | None = None
 
     def publish_surface_now() -> dict[str, Any] | None:
         if surface_identity is None or closing:
@@ -2497,12 +2550,25 @@ def show_context_selection(
             active_context_cancel.set()
 
         def finish_close() -> None:
-            if active_context_worker is not None and active_context_worker.is_alive():
-                root.after(25, finish_close)
-                return
+            # The worker is deliberately daemonized and is forbidden from
+            # touching Tk.  Waiting for it here would let a blocked network or
+            # archive read make the Explorer-launched window impossible for the
+            # user to close.  Signal cancellation, retire the UI receipts, and
+            # leave the event loop immediately; process exit safely abandons a
+            # worker that has not reached its next cancellation checkpoint.
             if surface_publication is not None:
                 surface_publication.close()
-            root.destroy()
+            if cancel_mapped_surface_publication is not None:
+                cancel_mapped_surface_publication()
+            # Explorer/UIAutomation can deliver WM_CLOSE while it is still
+            # walking Tk child HWNDs.  Destroying that interpreter inside the
+            # same message dispatch has produced a tcl86t breakpoint crash.
+            # Leave the event loop first.  Retire this root after mainloop
+            # returns, before the caller opens another Tk root in this process.
+            try:
+                root.withdraw()
+            finally:
+                root.quit()
 
         root.after_idle(finish_close)
 
@@ -2569,9 +2635,14 @@ def show_context_selection(
                 window_handle=window_handle,
             )
             publish_surface()
-            _publish_tk_surface_after_mapping(root, publish_surface)
+            cancel_mapped_surface_publication = _publish_tk_surface_after_mapping(
+                root, publish_surface
+            )
         except Exception:
             root.destroy()
             raise
     root.mainloop()
+    # A withdrawn root still counts toward Tk's mainloop window count and is
+    # tkinter's default root.  Keeping it would outlive the next Manager UI.
+    root.destroy()
     return result.get("contract") or result.get("action")

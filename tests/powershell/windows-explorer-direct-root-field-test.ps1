@@ -460,6 +460,8 @@ public static class SkillMagnetFieldInput {
     [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
     [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern bool PostMessage(
+        IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT point);
     [DllImport("user32.dll")] public static extern void mouse_event(
         uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
@@ -610,7 +612,18 @@ public static class SkillMagnetFieldInput {
         }
         catch { return false; }
     }
+    private static void SendMouse(uint down, uint up) {
+        mouse_event(down, 0, 0, 0, UIntPtr.Zero);
+        mouse_event(up, 0, 0, 0, UIntPtr.Zero);
+    }
     public static Action TestAfterInitialValidation;
+    public static string LastInitialBoundaryFailure;
+    public static string LastFinalBoundaryFailure;
+    public static string LastClickException;
+    private static bool InitialFailure(string phase) {
+        LastInitialBoundaryFailure = phase;
+        return false;
+    }
     public static bool CheckedClickCurrentWithForeground(
         int x, int y, IntPtr widget, IntPtr root, IntPtr expectedForeground,
         uint expectedProcessId,
@@ -631,30 +644,33 @@ public static class SkillMagnetFieldInput {
         FileStream initialReceipt = null;
         FileStream finalReceipt = null;
         try {
+        LastInitialBoundaryFailure = null;
+        LastFinalBoundaryFailure = null;
+        LastClickException = null;
         if (!FixedToken(expectedUiaNameSha256, 64) ||
             (requireImmutableChild &&
                 (String.IsNullOrEmpty(expectedChildRuntimeKey) ||
-                 expectedChildClassName == null))) return false;
+                 expectedChildClassName == null))) return InitialFailure("arguments");
         byte[] initialReceiptBytes = ReadPinnedReceipt(receiptPath, out initialReceipt);
         POINT cursor;
-        if (!GetCursorPos(out cursor) || cursor.X != x || cursor.Y != y) return false;
-        if (GetForegroundWindow() != expectedForeground) return false;
+        if (!GetCursorPos(out cursor) || cursor.X != x || cursor.Y != y) return InitialFailure("cursor");
+        if (GetForegroundWindow() != expectedForeground) return InitialFailure("foreground");
         POINT point = new POINT { X = x, Y = y };
         IntPtr hit = WindowFromPoint(point);
-        if (hit != widget || GetAncestor(hit, 2) != root) return false;
+        if (hit != widget || GetAncestor(hit, 2) != root) return InitialFailure("hit_or_root");
         uint processId;
         GetWindowThreadProcessId(hit, out processId);
-        if (processId != expectedProcessId) return false;
+        if (processId != expectedProcessId) return InitialFailure("process_id");
         if (!ProcessMatches(expectedProcessId, expectedExecutablePath,
-            expectedStartTimeUtcTicks)) return false;
+            expectedStartTimeUtcTicks)) return InitialFailure("process_identity");
         AutomationElement initialUia;
         try { initialUia = AutomationElement.FromPoint(new System.Windows.Point(x, y)); }
-        catch { return false; }
+        catch (Exception error) { LastClickException = "initial_uia:" + error.GetType().Name; return InitialFailure("uia_exception"); }
         if (initialUia == null || initialUia.Current.ProcessId != (int)expectedProcessId ||
             !initialUia.Current.IsEnabled || initialUia.Current.IsOffscreen ||
             (requireUiaHandle && initialUia.Current.NativeWindowHandle != widget.ToInt32()) ||
             !String.Equals(Sha256(initialUia.Current.Name), expectedUiaNameSha256,
-                StringComparison.Ordinal)) return false;
+                StringComparison.Ordinal)) return InitialFailure("uia_identity");
         string initialUiaRuntimeKey = RuntimeKey(initialUia);
         int initialUiaControlType = initialUia.Current.ControlType.Id;
         string initialUiaClassName = initialUia.Current.ClassName;
@@ -670,15 +686,15 @@ public static class SkillMagnetFieldInput {
             !SameRectangle(initialUiaRectangle, new System.Windows.Rect(
                 expectedChildX, expectedChildY, expectedChildWidth, expectedChildHeight)) ||
             initialUiaEnabled != expectedChildEnabled ||
-            initialUiaOffscreen != expectedChildOffscreen)) return false;
+            initialUiaOffscreen != expectedChildOffscreen)) return InitialFailure("immutable_child");
         if (String.IsNullOrEmpty(initialUiaRuntimeKey) || !RowMatches(
             initialUia, root, expectedProcessId, expectedRowRuntimeKey,
             expectedRowControlType, expectedRowNameSha256, expectedRowX, expectedRowY,
-            expectedRowWidth, expectedRowHeight)) return false;
+            expectedRowWidth, expectedRowHeight)) return InitialFailure("row");
         if (!String.IsNullOrEmpty(receiptPath) && !ReceiptMatches(
             initialReceiptBytes, expectedReceiptSha256, expectedProcessInstanceId,
             expectedGeneration, expectedRevision, expectedSemanticId,
-            expectedSemanticNameSha256)) return false;
+            expectedSemanticNameSha256)) return InitialFailure("receipt");
         if (initialReceipt != null) { initialReceipt.Dispose(); initialReceipt = null; }
         Action fault = TestAfterInitialValidation;
         if (fault != null) fault();
@@ -687,7 +703,7 @@ public static class SkillMagnetFieldInput {
         byte[] finalReceiptBytes = ReadPinnedReceipt(receiptPath, out finalReceipt);
         AutomationElement finalUia;
         try { finalUia = AutomationElement.FromPoint(new System.Windows.Point(x, y)); }
-        catch { return false; }
+        catch (Exception error) { LastClickException = "final_uia:" + error.GetType().Name; return false; }
         POINT finalCursor;
         IntPtr finalForeground = GetForegroundWindow();
         IntPtr finalHit = WindowFromPoint(point);
@@ -696,46 +712,31 @@ public static class SkillMagnetFieldInput {
         // This is the final fail-closed boundary.  The next statements are the
         // mouse send itself; no sleep, callback, UIA lookup, receipt read, or
         // HWND lookup may occur between this complete identity check and send.
-        if (!GetCursorPos(out finalCursor) || finalCursor.X != x || finalCursor.Y != y ||
-            finalForeground != expectedForeground || finalHit != widget ||
-            GetAncestor(finalHit, 2) != root || finalProcessId != expectedProcessId ||
-            !ProcessMatches(expectedProcessId, expectedExecutablePath,
-                expectedStartTimeUtcTicks) || finalUia == null ||
-            finalUia.Current.ProcessId != (int)expectedProcessId ||
-            !finalUia.Current.IsEnabled || finalUia.Current.IsOffscreen ||
-            !String.Equals(RuntimeKey(finalUia), initialUiaRuntimeKey,
-                StringComparison.Ordinal) ||
-            finalUia.Current.ControlType.Id != initialUiaControlType ||
-            !String.Equals(finalUia.Current.ClassName, initialUiaClassName,
-                StringComparison.Ordinal) ||
-            !SameRectangle(finalUia.Current.BoundingRectangle, initialUiaRectangle) ||
-            finalUia.Current.IsEnabled != initialUiaEnabled ||
-            finalUia.Current.IsOffscreen != initialUiaOffscreen ||
-            (requireImmutableChild && (
-                !String.Equals(RuntimeKey(finalUia), expectedChildRuntimeKey,
-                    StringComparison.Ordinal) ||
-                finalUia.Current.ControlType.Id != expectedChildControlType ||
-                !String.Equals(finalUia.Current.ClassName, expectedChildClassName,
-                    StringComparison.Ordinal) ||
-                !SameRectangle(finalUia.Current.BoundingRectangle, new System.Windows.Rect(
-                    expectedChildX, expectedChildY, expectedChildWidth, expectedChildHeight)) ||
-                finalUia.Current.IsEnabled != expectedChildEnabled ||
-                finalUia.Current.IsOffscreen != expectedChildOffscreen)) ||
-            !RowMatches(finalUia, root, expectedProcessId, expectedRowRuntimeKey,
-                expectedRowControlType, expectedRowNameSha256, expectedRowX, expectedRowY,
-                expectedRowWidth, expectedRowHeight) ||
-            (requireUiaHandle && finalUia.Current.NativeWindowHandle != widget.ToInt32()) ||
-            !String.Equals(Sha256(finalUia.Current.Name), expectedUiaNameSha256,
-                StringComparison.Ordinal) ||
-            (!String.IsNullOrEmpty(receiptPath) && !ReceiptMatches(
-                finalReceiptBytes, expectedReceiptSha256, expectedProcessInstanceId,
-                expectedGeneration, expectedRevision, expectedSemanticId,
-                expectedSemanticNameSha256))) return false;
-        mouse_event(down, 0, 0, 0, UIntPtr.Zero);
-        mouse_event(up, 0, 0, 0, UIntPtr.Zero);
+        string finalFailure = null;
+        if (!GetCursorPos(out finalCursor) || finalCursor.X != x || finalCursor.Y != y) finalFailure = "cursor";
+        else if (finalForeground != expectedForeground) finalFailure = "foreground";
+        else if (finalHit != widget) finalFailure = "hit";
+        else if (GetAncestor(finalHit, 2) != root) finalFailure = "root";
+        else if (finalProcessId != expectedProcessId) finalFailure = "process_id";
+        else if (!ProcessMatches(expectedProcessId, expectedExecutablePath, expectedStartTimeUtcTicks)) finalFailure = "process_identity";
+        else if (finalUia == null) finalFailure = "uia_missing";
+        else if (finalUia.Current.ProcessId != (int)expectedProcessId) finalFailure = "uia_process_id";
+        else if (!finalUia.Current.IsEnabled || finalUia.Current.IsOffscreen) finalFailure = "uia_state";
+        else if (!String.Equals(RuntimeKey(finalUia), initialUiaRuntimeKey, StringComparison.Ordinal)) finalFailure = "uia_runtime";
+        else if (finalUia.Current.ControlType.Id != initialUiaControlType) finalFailure = "uia_control_type";
+        else if (!String.Equals(finalUia.Current.ClassName, initialUiaClassName, StringComparison.Ordinal)) finalFailure = "uia_class";
+        else if (!SameRectangle(finalUia.Current.BoundingRectangle, initialUiaRectangle)) finalFailure = "uia_rectangle";
+        else if (finalUia.Current.IsEnabled != initialUiaEnabled || finalUia.Current.IsOffscreen != initialUiaOffscreen) finalFailure = "uia_state_changed";
+        else if (requireImmutableChild && (!String.Equals(RuntimeKey(finalUia), expectedChildRuntimeKey, StringComparison.Ordinal) || finalUia.Current.ControlType.Id != expectedChildControlType || !String.Equals(finalUia.Current.ClassName, expectedChildClassName, StringComparison.Ordinal) || !SameRectangle(finalUia.Current.BoundingRectangle, new System.Windows.Rect(expectedChildX, expectedChildY, expectedChildWidth, expectedChildHeight)) || finalUia.Current.IsEnabled != expectedChildEnabled || finalUia.Current.IsOffscreen != expectedChildOffscreen)) finalFailure = "immutable_child";
+        else if (!RowMatches(finalUia, root, expectedProcessId, expectedRowRuntimeKey, expectedRowControlType, expectedRowNameSha256, expectedRowX, expectedRowY, expectedRowWidth, expectedRowHeight)) finalFailure = "row";
+        else if (requireUiaHandle && finalUia.Current.NativeWindowHandle != widget.ToInt32()) finalFailure = "uia_handle";
+        else if (!String.Equals(Sha256(finalUia.Current.Name), expectedUiaNameSha256, StringComparison.Ordinal)) finalFailure = "uia_name";
+        else if (!String.IsNullOrEmpty(receiptPath) && !ReceiptMatches(finalReceiptBytes, expectedReceiptSha256, expectedProcessInstanceId, expectedGeneration, expectedRevision, expectedSemanticId, expectedSemanticNameSha256)) finalFailure = "receipt";
+        if (finalFailure != null) { LastFinalBoundaryFailure = finalFailure; return false; }
+        SendMouse(down, up);
         return true;
         }
-        catch { return false; }
+        catch (Exception error) { LastClickException = error.GetType().Name; return false; }
         finally {
             if (initialReceipt != null) initialReceipt.Dispose();
             if (finalReceipt != null) finalReceipt.Dispose();
@@ -768,6 +769,78 @@ public static class SkillMagnetFieldInput {
             expectedChildEnabled, expectedChildOffscreen, expectedRowRuntimeKey,
             expectedRowControlType, expectedRowNameSha256, expectedRowX, expectedRowY,
             expectedRowWidth, expectedRowHeight, rightClick);
+    }
+    public static bool CheckedClickUiaTargetWithForeground(
+        int x, int y, IntPtr root, IntPtr expectedForeground,
+        uint expectedProcessId, string expectedExecutablePath,
+        long expectedStartTimeUtcTicks, string expectedRuntimeKey,
+        int expectedControlType, string expectedClassName,
+        double expectedX, double expectedY, double expectedWidth,
+        double expectedHeight, bool expectedEnabled, bool expectedOffscreen,
+        string expectedNameSha256, bool rightClick) {
+        try {
+        LastInitialBoundaryFailure = null;
+        LastFinalBoundaryFailure = null;
+        LastClickException = null;
+        if (root == IntPtr.Zero || expectedForeground == IntPtr.Zero ||
+            String.IsNullOrEmpty(expectedRuntimeKey) || expectedClassName == null ||
+            !FixedToken(expectedNameSha256, 64)) return InitialFailure("arguments");
+        POINT cursor;
+        if (!GetCursorPos(out cursor) || cursor.X != x || cursor.Y != y) return InitialFailure("cursor");
+        if (GetForegroundWindow() != expectedForeground) return InitialFailure("foreground");
+        POINT point = new POINT { X = x, Y = y };
+        IntPtr hit = WindowFromPoint(point);
+        if (hit == IntPtr.Zero || GetAncestor(hit, 2) != root) return InitialFailure("hit_or_root");
+        uint processId;
+        GetWindowThreadProcessId(hit, out processId);
+        if (processId != expectedProcessId) return InitialFailure("process_id");
+        if (!ProcessMatches(expectedProcessId, expectedExecutablePath,
+            expectedStartTimeUtcTicks)) return InitialFailure("process_identity");
+        AutomationElement initialUia;
+        try { initialUia = AutomationElement.FromPoint(new System.Windows.Point(x, y)); }
+        catch (Exception error) { LastClickException = "initial_uia:" + error.GetType().Name; return InitialFailure("uia_exception"); }
+        if (initialUia == null || initialUia.Current.ProcessId != (int)expectedProcessId ||
+            !String.Equals(RuntimeKey(initialUia), expectedRuntimeKey, StringComparison.Ordinal) ||
+            initialUia.Current.ControlType.Id != expectedControlType ||
+            !String.Equals(initialUia.Current.ClassName, expectedClassName, StringComparison.Ordinal) ||
+            !SameRectangle(initialUia.Current.BoundingRectangle, new System.Windows.Rect(
+                expectedX, expectedY, expectedWidth, expectedHeight)) ||
+            initialUia.Current.IsEnabled != expectedEnabled ||
+            initialUia.Current.IsOffscreen != expectedOffscreen ||
+            !String.Equals(Sha256(initialUia.Current.Name), expectedNameSha256,
+                StringComparison.Ordinal)) return InitialFailure("uia_identity");
+        Action fault = TestAfterInitialValidation;
+        if (fault != null) fault();
+        uint down = rightClick ? 0x0008u : 0x0002u;
+        uint up = rightClick ? 0x0010u : 0x0004u;
+        AutomationElement finalUia;
+        try { finalUia = AutomationElement.FromPoint(new System.Windows.Point(x, y)); }
+        catch (Exception error) { LastClickException = "final_uia:" + error.GetType().Name; return false; }
+        POINT finalCursor;
+        IntPtr finalForeground = GetForegroundWindow();
+        IntPtr finalHit = WindowFromPoint(point);
+        uint finalProcessId;
+        GetWindowThreadProcessId(finalHit, out finalProcessId);
+        // This is the final fail-closed boundary for receipt-less native dialogs.
+        string finalFailure = null;
+        if (!GetCursorPos(out finalCursor) || finalCursor.X != x || finalCursor.Y != y) finalFailure = "cursor";
+        else if (finalForeground != expectedForeground) finalFailure = "foreground";
+        else if (finalHit == IntPtr.Zero || GetAncestor(finalHit, 2) != root) finalFailure = "hit_or_root";
+        else if (finalProcessId != expectedProcessId) finalFailure = "process_id";
+        else if (!ProcessMatches(expectedProcessId, expectedExecutablePath, expectedStartTimeUtcTicks)) finalFailure = "process_identity";
+        else if (finalUia == null) finalFailure = "uia_missing";
+        else if (finalUia.Current.ProcessId != (int)expectedProcessId) finalFailure = "uia_process_id";
+        else if (!String.Equals(RuntimeKey(finalUia), expectedRuntimeKey, StringComparison.Ordinal)) finalFailure = "uia_runtime";
+        else if (finalUia.Current.ControlType.Id != expectedControlType) finalFailure = "uia_control_type";
+        else if (!String.Equals(finalUia.Current.ClassName, expectedClassName, StringComparison.Ordinal)) finalFailure = "uia_class";
+        else if (!SameRectangle(finalUia.Current.BoundingRectangle, new System.Windows.Rect(expectedX, expectedY, expectedWidth, expectedHeight))) finalFailure = "uia_rectangle";
+        else if (finalUia.Current.IsEnabled != expectedEnabled || finalUia.Current.IsOffscreen != expectedOffscreen) finalFailure = "uia_state";
+        else if (!String.Equals(Sha256(finalUia.Current.Name), expectedNameSha256, StringComparison.Ordinal)) finalFailure = "uia_name";
+        if (finalFailure != null) { LastFinalBoundaryFailure = finalFailure; return false; }
+        SendMouse(down, up);
+        return true;
+        }
+        catch (Exception error) { LastClickException = error.GetType().Name; return false; }
     }
 }
 public sealed class SkillMagnetLogSnapshot {
@@ -1364,23 +1437,21 @@ function Invoke-CheckedExplorerPhysicalClick(
     ) "Explorer click point is not bound to the expected HWND/PID/root."
     if ($null -ne $ExpectedRowSnapshot) {
         $firstRectangle = $firstUia.Current.BoundingRectangle
+        $rowChecks = [ordered]@{
+            hwnd = ($firstHwnd -eq [IntPtr]([int64]$ExpectedRowSnapshot.child_hwnd))
+            child_runtime = ((Get-UiaRuntimeKey $firstUia) -ceq [string]$ExpectedRowSnapshot.child_runtime_key)
+            child_control_type = ([int]$firstUia.Current.ControlType.Id -eq [int]$ExpectedRowSnapshot.child_control_type)
+            child_class = ([string]$firstUia.Current.ClassName -ceq [string]$ExpectedRowSnapshot.child_class_name)
+            child_name = ((Get-Utf8Sha256 ([string]$firstUia.Current.Name)) -ceq [string]$ExpectedRowSnapshot.child_name_sha256)
+            child_rectangle = ([double]$firstRectangle.X -eq [double]$ExpectedRowSnapshot.child_x -and [double]$firstRectangle.Y -eq [double]$ExpectedRowSnapshot.child_y -and [double]$firstRectangle.Width -eq [double]$ExpectedRowSnapshot.child_width -and [double]$firstRectangle.Height -eq [double]$ExpectedRowSnapshot.child_height)
+            child_state = ([bool]$firstUia.Current.IsEnabled -eq [bool]$ExpectedRowSnapshot.child_enabled -and [bool]$firstUia.Current.IsOffscreen -eq [bool]$ExpectedRowSnapshot.child_offscreen)
+            row_ancestry = (Test-UiaSelfOrDescendantOfSnapshot $firstUia $ExpectedRowSnapshot)
+        }
+        $failedRowChecks = @($rowChecks.GetEnumerator() | Where-Object { -not $_.Value } | ForEach-Object Key) -join ', '
         Assert-Field (
-            $firstHwnd -eq [IntPtr]([int64]$ExpectedRowSnapshot.child_hwnd) -and
-            (Get-UiaRuntimeKey $firstUia) -ceq [string]$ExpectedRowSnapshot.child_runtime_key -and
-            [int]$firstUia.Current.ControlType.Id -eq [int]$ExpectedRowSnapshot.child_control_type -and
-            [string]$firstUia.Current.ClassName -ceq
-                [string]$ExpectedRowSnapshot.child_class_name -and
-            (Get-Utf8Sha256 ([string]$firstUia.Current.Name)) -ceq
-                [string]$ExpectedRowSnapshot.child_name_sha256 -and
-            [double]$firstRectangle.X -eq [double]$ExpectedRowSnapshot.child_x -and
-            [double]$firstRectangle.Y -eq [double]$ExpectedRowSnapshot.child_y -and
-            [double]$firstRectangle.Width -eq [double]$ExpectedRowSnapshot.child_width -and
-            [double]$firstRectangle.Height -eq [double]$ExpectedRowSnapshot.child_height -and
-            [bool]$firstUia.Current.IsEnabled -eq [bool]$ExpectedRowSnapshot.child_enabled -and
-            [bool]$firstUia.Current.IsOffscreen -eq [bool]$ExpectedRowSnapshot.child_offscreen -and
-            (Test-UiaSelfOrDescendantOfSnapshot $firstUia $ExpectedRowSnapshot)
+            $failedRowChecks.Length -eq 0
         ) `
-            "Explorer click point is not inside the immutable expected UIAutomation row."
+            "Explorer click point is not inside the immutable expected UIAutomation row: $failedRowChecks"
     }
     $runtimeKey = Get-UiaRuntimeKey $firstUia
     $firstControlType = [int]$firstUia.Current.ControlType.Id
@@ -1458,6 +1529,39 @@ function Invoke-CheckedExplorerPhysicalClick(
     )) "Explorer target changed at the final input boundary; no mouse input was sent."
 }
 
+function Test-ExplorerBackgroundPoint($Window, [int]$X, [int]$Y) {
+    $rootHandle = [IntPtr]([int64]$Window.HWND)
+    $rootPid = [uint32]0
+    $null = [SkillMagnetFieldInput]::GetWindowThreadProcessId($rootHandle, [ref]$rootPid)
+    $nativePoint = [SkillMagnetFieldInput+POINT]::new()
+    $nativePoint.X = $X
+    $nativePoint.Y = $Y
+    $hitHwnd = [SkillMagnetFieldInput]::WindowFromPoint($nativePoint)
+    if ($hitHwnd -eq [IntPtr]::Zero -or
+        [SkillMagnetFieldInput]::GetAncestor($hitHwnd, 2) -ne $rootHandle) {
+        return $false
+    }
+    $point = [System.Windows.Point]::new([double]$X, [double]$Y)
+    $element = [System.Windows.Automation.AutomationElement]::FromPoint($point)
+    if ($null -eq $element -or [int]$element.Current.ProcessId -ne [int]$rootPid) {
+        return $false
+    }
+    $rowTypes = @(
+        [System.Windows.Automation.ControlType]::ListItem.Id,
+        [System.Windows.Automation.ControlType]::DataItem.Id,
+        [System.Windows.Automation.ControlType]::TreeItem.Id
+    )
+    $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
+    for ($depth = 0; $depth -lt 32 -and $null -ne $element; $depth += 1) {
+        try {
+            if ($rowTypes -contains [int]$element.Current.ControlType.Id) { return $false }
+            $element = $walker.GetParent($element)
+        }
+        catch { return $false }
+    }
+    return $true
+}
+
 function Open-ExplorerContextMenu($Window, [string]$SelectedName = "") {
     $explorer = Get-ExplorerElement $Window
     $preExistingRootKeys = @{}
@@ -1487,14 +1591,60 @@ function Open-ExplorerContextMenu($Window, [string]$SelectedName = "") {
         $x = [int]($rectangle.Left + ($rectangle.Width / 2))
         $y = [int]($rectangle.Top + ($rectangle.Height / 2))
         $selectedRowSnapshot = New-ExplorerRowSnapshot $candidates[0] $x $y
-        Invoke-CheckedExplorerPhysicalClick $Window $x $y $false $selectedRowSnapshot
-        Start-Sleep -Milliseconds 100
+        # Explorer selects the pointed folder as part of its normal right-click
+        # dispatch.  A preparatory left-click adds a second mutable selection
+        # transition without improving the binding of the actual menu action.
         Invoke-CheckedExplorerPhysicalClick $Window $x $y $true $selectedRowSnapshot
     }
     else {
         $rectangle = $explorer.Current.BoundingRectangle
-        $x = [int]($rectangle.Left + ($rectangle.Width * 0.76))
-        $y = [int]($rectangle.Top + ($rectangle.Height * 0.72))
+        $occupied = @($explorer.FindAll(
+            [System.Windows.Automation.TreeScope]::Descendants,
+            [System.Windows.Automation.Condition]::TrueCondition
+        ) | Where-Object {
+            try {
+                $kind = $_.Current.ControlType
+                $bounds = $_.Current.BoundingRectangle
+                -not $_.Current.IsOffscreen -and
+                ($kind -eq [System.Windows.Automation.ControlType]::ListItem -or
+                 $kind -eq [System.Windows.Automation.ControlType]::DataItem -or
+                 $kind -eq [System.Windows.Automation.ControlType]::TreeItem) -and
+                $bounds.Width -gt 0 -and $bounds.Height -gt 0
+            } catch { $false }
+        })
+        $backgroundPoint = $null
+        foreach ($xFraction in @(0.95, 0.82, 0.68, 0.52)) {
+            foreach ($yFraction in @(0.88, 0.76, 0.64, 0.52)) {
+                $candidateX = [int]($rectangle.Left + ($rectangle.Width * $xFraction))
+                $candidateY = [int]($rectangle.Top + ($rectangle.Height * $yFraction))
+                $insideItem = @($occupied | Where-Object {
+                    $bounds = $_.Current.BoundingRectangle
+                    $candidateX -ge $bounds.Left -and $candidateX -lt ($bounds.Left + $bounds.Width) -and
+                    $candidateY -ge $bounds.Top -and $candidateY -lt ($bounds.Top + $bounds.Height)
+                }).Count -gt 0
+                # The direct point/ancestor check covers virtualized Explorer
+                # rows that are absent from a descendants enumeration.
+                if (-not $insideItem -and
+                    (Test-ExplorerBackgroundPoint $Window $candidateX $candidateY)) {
+                    $backgroundPoint = @($candidateX, $candidateY)
+                    break
+                }
+            }
+            if ($null -ne $backgroundPoint) { break }
+        }
+        Assert-Field ($null -ne $backgroundPoint) `
+            "Explorer has no verified blank area for the background context-menu test."
+        $x = [int]$backgroundPoint[0]
+        $y = [int]$backgroundPoint[1]
+        # Explorer exposes the selected-item command whenever an old selection
+        # remains active, even if the context-menu point is blank.  A physical
+        # click on the already verified blank area clears that selection; the
+        # following physical right-click is then the genuine folder-background
+        # route.  Both inputs use the same fail-closed boundary.
+        Invoke-CheckedExplorerPhysicalClick $Window $x $y $false $null
+        Start-Sleep -Milliseconds 150
+        Assert-Field (Test-ExplorerBackgroundPoint $Window $x $y) `
+            "Explorer background point became a row before the context-menu click."
         Invoke-CheckedExplorerPhysicalClick $Window $x $y $true $null
     }
     Start-Sleep -Milliseconds 300
@@ -1512,14 +1662,39 @@ function Invoke-CheckedContextMenuRootPhysicalClick($Window, $RootElement) {
     $uiaPoint = [System.Windows.Point]::new([double]$x, [double]$y)
     $initial = [System.Windows.Automation.AutomationElement]::FromPoint($uiaPoint)
     $snapshot = New-UiaPointSnapshot $initial
+    $rootSnapshot = New-UiaPointSnapshot $RootElement
+    $pointInsideRoot = (
+        $x -ge [int][Math]::Floor([double]$rootSnapshot.x) -and
+        $x -lt [int][Math]::Ceiling([double]($rootSnapshot.x + $rootSnapshot.width)) -and
+        $y -ge [int][Math]::Floor([double]$rootSnapshot.y) -and
+        $y -lt [int][Math]::Ceiling([double]($rootSnapshot.y + $rootSnapshot.height))
+    )
+    $sameRootProvider = Test-UiaSelfOrDescendantOfSnapshot $initial $rootSnapshot
+    # Field observation 2026-09-06: the modern-menu MenuItem provider has no
+    # HWND (50011), while FromPoint at its visible caption returns the
+    # Explorer-owned glyph provider (50033) with a real HWND.  This is the
+    # only non-ancestry mapping accepted, not an arbitrary same-PID overlay.
+    $verifiedExplorerGlyphProvider = (
+        $pointInsideRoot -and
+        [int]$snapshot.process_id -eq [int]$rootSnapshot.process_id -and
+        [int]$rootSnapshot.control_type -eq 50011 -and
+        [int]$snapshot.control_type -eq 50033 -and
+        [int64]$rootSnapshot.hwnd -eq 0 -and
+        [int64]$snapshot.hwnd -ne 0 -and
+        [bool]$rootSnapshot.enabled -and -not [bool]$rootSnapshot.offscreen
+    )
     Assert-Field (
-        (Get-UiaRuntimeKey $RootElement) -ceq [string]$snapshot.runtime_key -and
-        [int]$RootElement.Current.ControlType.Id -eq [int]$snapshot.control_type -and
-        [string]$RootElement.Current.ClassName -ceq [string]$snapshot.class_name -and
-        (Get-Utf8Sha256 ([string]$RootElement.Current.Name)) -ceq
-            [string]$snapshot.name_sha256 -and
-        [bool]$snapshot.enabled -and -not [bool]$snapshot.offscreen
-    ) "Context-menu root center is not its immutable UIAutomation element."
+        [bool]$rootSnapshot.enabled -and -not [bool]$rootSnapshot.offscreen -and
+        [bool]$snapshot.enabled -and -not [bool]$snapshot.offscreen -and
+        ($sameRootProvider -or $verifiedExplorerGlyphProvider)
+    ) (
+        "Context-menu root center is not inside its immutable UIAutomation element; " +
+        "same_provider=$sameRootProvider; explorer_glyph=$verifiedExplorerGlyphProvider; " +
+        "inside=$pointInsideRoot; root_hwnd=$($rootSnapshot.hwnd); " +
+        "hit_hwnd=$($snapshot.hwnd); same_name=" +
+        "($([string]$snapshot.name_sha256 -ceq [string]$rootSnapshot.name_sha256)); " +
+        "root_type=$($rootSnapshot.control_type); hit_type=$($snapshot.control_type)"
+    )
     $point = [SkillMagnetFieldInput+POINT]::new()
     $point.X = $x
     $point.Y = $y
@@ -1705,6 +1880,89 @@ function Get-ButtonCount($Gui, [string]$Name) {
     @($Gui.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)).Count
 }
 
+function Get-ActionableButtonCount($Gui) {
+    @($Gui.FindAll(
+        [System.Windows.Automation.TreeScope]::Descendants,
+        [System.Windows.Automation.Condition]::TrueCondition
+    ) | Where-Object {
+        try {
+            $bounds = $_.Current.BoundingRectangle
+            $_.Current.Name -ceq "OK" -and
+            $_.Current.IsEnabled -and -not $_.Current.IsOffscreen -and
+            $bounds.Width -gt 20 -and $bounds.Height -gt 10 -and
+            ($_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -or
+             $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Pane)
+        }
+        catch { $false }
+    }).Count
+}
+
+function Invoke-RecoveryDialogOk(
+    $Dialog,
+    [int]$ExpectedProcessId,
+    [bool]$ExpectProcessExit = $false
+) {
+    $title = [string]$Dialog.Current.Name
+    Assert-Field (
+        [int]$Dialog.Current.ProcessId -eq $ExpectedProcessId -and
+        -not [bool]$Dialog.Current.IsOffscreen
+    ) "Recovery dialog is not the expected visible process-owned window."
+    $buttons = @($Dialog.FindAll(
+        [System.Windows.Automation.TreeScope]::Descendants,
+        [System.Windows.Automation.Condition]::TrueCondition
+    ) | Where-Object {
+        try {
+            $bounds = $_.Current.BoundingRectangle
+            $_.Current.Name -ceq "OK" -and
+            $_.Current.IsEnabled -and -not $_.Current.IsOffscreen -and
+            $bounds.Width -gt 20 -and $bounds.Height -gt 10 -and
+            ($_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -or
+             $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Pane)
+        }
+        catch { $false }
+    })
+    Assert-Field ($buttons.Count -eq 1) `
+        "Recovery dialog must expose exactly one visible and enabled OK action."
+    $button = $buttons[0]
+    Assert-Field ([int]$button.Current.ProcessId -eq $ExpectedProcessId) `
+        "Recovery OK action belongs to another process."
+    $invoke = Get-Pattern $button ([System.Windows.Automation.InvokePattern]::Pattern)
+    if ($null -ne $invoke) {
+        $invoke.Invoke()
+    }
+    else {
+        # The native MessageBox OK control is sometimes exposed as Pane and
+        # has no InvokePattern.  Use the same checked, physical left-click a
+        # person would use; WindowPattern.Close would bypass the recovery
+        # callback and is deliberately not a fallback here.
+        $bounds = $button.Current.BoundingRectangle
+        $x = [int]($bounds.Left + ($bounds.Width / 2))
+        $y = [int]($bounds.Top + ($bounds.Height / 2))
+        $runtimeKey = Get-UiaRuntimeKey $button
+        $dialogHandle = [IntPtr]([int64]$Dialog.Current.NativeWindowHandle)
+        Assert-Field ($dialogHandle -ne [IntPtr]::Zero) `
+            "Recovery dialog has no native window handle for the physical-input boundary."
+        $process = Get-Process -Id $ExpectedProcessId
+        Assert-Field ([SkillMagnetFieldInput]::SetCursorPos($x, $y)) `
+            "Could not move the cursor to the visible recovery OK action."
+        $nativeClicked = [SkillMagnetFieldInput]::CheckedClickUiaTargetWithForeground(
+            $x, $y, $dialogHandle, $dialogHandle, [uint32]$ExpectedProcessId,
+            [IO.Path]::GetFullPath($process.MainModule.FileName),
+            [long]$process.StartTime.ToUniversalTime().Ticks,
+            $runtimeKey, [int]$button.Current.ControlType.Id,
+            [string]$button.Current.ClassName,
+            [double]$bounds.X, [double]$bounds.Y,
+            [double]$bounds.Width, [double]$bounds.Height,
+            [bool]$button.Current.IsEnabled, [bool]$button.Current.IsOffscreen,
+            (Get-Utf8Sha256 ([string]$button.Current.Name)), $false
+        )
+        Assert-Field $nativeClicked `
+            "Recovery OK action changed at the final physical-input boundary."
+    }
+    Wait-VisibleWindowClosed $ExpectedProcessId $title
+    if ($ExpectProcessExit) { Wait-ProcessExited $ExpectedProcessId }
+}
+
 function Inspect-UnifiedGui(
     [string]$ProjectPath,
     [object[]]$ExpectedChoices,
@@ -1783,9 +2041,11 @@ function Inspect-UnifiedGui(
 }
 
 function Close-UiaWindow($Element) {
-    $window = Get-Pattern $Element ([System.Windows.Automation.WindowPattern]::Pattern)
-    Assert-Field ($null -ne $window) "Visible Skill Magnet window has no WindowPattern."
-    $window.Close()
+    $handle = [IntPtr]([int64]$Element.Current.NativeWindowHandle)
+    Assert-Field ($handle -ne [IntPtr]::Zero) "Visible Skill Magnet window has no native HWND."
+    Assert-Field ([SkillMagnetFieldInput]::PostMessage(
+        $handle, [uint32]0x0010, [IntPtr]::Zero, [IntPtr]::Zero
+    )) "Could not send the user-visible close request to Skill Magnet."
     Start-Sleep -Milliseconds 300
 }
 
@@ -1840,6 +2100,32 @@ function Wait-ProcessExited([int]$ProcessId, [int]$Seconds = 30) {
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
     throw "Explorer-launched process remained alive after its UI was closed: $ProcessId"
+}
+
+function Close-LibraryManagerRecoverably($Element, [int]$ExpectedProcessId) {
+    Close-UiaWindow $Element
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    do {
+        $cleanupDialogs = @(Get-VisibleWindowsByPrefix `
+            "終了後に復旧できます" $ExpectedProcessId)
+        Assert-Field ($cleanupDialogs.Count -le 1) `
+            "Library Manager exposed multiple cleanup-recovery dialogs while closing."
+        if ($cleanupDialogs.Count -eq 1) {
+            $detail = Get-VisibleDescendantText $cleanupDialogs[0]
+            Assert-Field (
+                $detail -like "*次回Library Manager*" -and
+                ($detail -like "*自動復旧*" -or $detail -like "*確認*")
+            ) "Library Manager cleanup warning has no concrete reopen/recovery action."
+            Invoke-RecoveryDialogOk $cleanupDialogs[0] $ExpectedProcessId $false
+        }
+        $visible = @(Get-VisibleWindowsByPrefix "Library Manager" $ExpectedProcessId)
+        if ($visible.Count -eq 0) { return }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    $remaining = @(Get-VisibleWindowsByPrefix "" $ExpectedProcessId | ForEach-Object {
+        try { [string]$_.Current.Name } catch { "<unavailable>" }
+    }) -join ", "
+    throw "Library Manager remained visible after user-recoverable close; windows=$remaining"
 }
 
 function Get-FieldProcessIdentity([int]$TargetProcessId) {
@@ -2532,7 +2818,7 @@ function Invoke-FieldUiSurfaceWidget(
             [bool]$uiaSnapshot.enabled, [bool]$uiaSnapshot.offscreen,
             "", 0, "", [double]0, [double]0,
             [double]0, [double]0, $false
-        )) "Receipt-bound '$Id' cursor/hit identity changed; no mouse input was sent."
+        )) "Receipt-bound '$Id' final boundary failed ($([SkillMagnetFieldInput]::LastFinalBoundaryFailure)); no mouse input was sent."
         if ($ExpectedNextPhase -and $ExpectedNextTitlePrefix) {
             $nextWindow = Wait-VisibleWindowByPrefix `
                 $ExpectedNextTitlePrefix $ExpectedProcessId 30
@@ -2943,8 +3229,8 @@ function Wait-MissingSkillRecoveryDialog([int]$ExpectedProcessId, [int]$Seconds 
                 )
                 Assert-Field $specific "Missing-SKILL.md dialog does not state the selected-folder cause."
                 Assert-Field $actionable "Missing-SKILL.md dialog has no concrete recovery action."
-                Assert-Field ((Get-ButtonCount $window "OK") -eq 1) `
-                    "Missing-SKILL.md dialog must expose one OK button."
+                Assert-Field ((Get-ActionableButtonCount $window) -eq 1) `
+                    "Missing-SKILL.md dialog must expose one actionable close button."
                 return [ordered]@{
                     element = $window
                     element_snapshot = Get-UiaElementSnapshot $window
@@ -3072,14 +3358,19 @@ function Wait-NativeSequence(
         }
         if ($enterRecords.Count -eq 1) {
             $enter = $enterRecords[0]
-            Assert-Field ([string]$enter.selection_source -eq $Source) `
-                ("Native invocation source mismatch: expected=$Source; " +
+            Assert-Field ([string]$enter.selection_source -eq "unresolved") `
+                ("Native invocation entry must be unresolved before target resolution; " +
                  "observed=$($enter.selection_source); invocation_id=$($enter.invocation_id)")
             $id = [string]$enter.invocation_id
             Assert-Field ($id -match '^[0-9a-f]{32}$') `
                 "Native invocation has an invalid invocation_id: $id"
             $group = @($newRecords | Where-Object { [string]$_.invocation_id -eq $id })
             $events = @($group | ForEach-Object { [string]$_.event })
+            $resolvedRecords = @($group | Where-Object { $_.event -ne "invoke_enter" })
+            Assert-Field (@($resolvedRecords | Where-Object {
+                [string]$_.selection_source -ne $Source
+            }).Count -eq 0) `
+                ("Native resolved source mismatch: expected=$Source; invocation_id=$id")
             $lastObserved = $events -join ","
             $failure = @($group | Where-Object { $failureEvents -contains $_.event } |
                 Select-Object -First 1)
@@ -3161,15 +3452,28 @@ function Assert-BusyMessageAndClose([int]$ExpectedProcessId) {
     }
     Assert-Field $containsBusy "Different-folder invocation did not show its recovery message."
     Assert-Field $actionable "Different-folder busy message has no concrete retry action."
-    $ok = Get-ButtonCount $dialog "OK"
-    Assert-Field ($ok -eq 1) "Busy recovery dialog does not expose one OK button."
+    $ok = Get-ActionableButtonCount $dialog
+    $controlDiagnostic = @($dialog.FindAll(
+        [System.Windows.Automation.TreeScope]::Descendants,
+        [System.Windows.Automation.Condition]::TrueCondition
+    ) | Select-Object -First 30 | ForEach-Object {
+        try {
+            $bounds = $_.Current.BoundingRectangle
+            "name=$($_.Current.Name);type=$($_.Current.ControlType.ProgrammaticName);" +
+                "enabled=$($_.Current.IsEnabled);offscreen=$($_.Current.IsOffscreen);" +
+                "size=$([int]$bounds.Width)x$([int]$bounds.Height)"
+        }
+        catch { "unavailable" }
+    }) -join ' | '
+    Assert-Field ($ok -eq 1) `
+        "Busy recovery dialog does not expose one actionable close button: $controlDiagnostic"
     $observation = @{
         element = Get-UiaElementSnapshot $dialog
         busy_text_visible = $containsBusy
         actionable_recovery_visible = $actionable
         ok_button_count = $ok
     }
-    Close-UiaWindow $dialog
+    Invoke-RecoveryDialogOk $dialog $ExpectedProcessId $true
     $observation
 }
 
@@ -3735,8 +4039,7 @@ try {
         [int]$managerBusyObservation.element.process_id -eq $managerDifferentSequence.process_id
     ) "Manager-busy dialog does not belong to the duplicate launcher process."
 
-    Close-UiaWindow $managerGui.element
-    Wait-VisibleWindowClosed $selectedSequence.process_id "Library Manager"
+    Close-LibraryManagerRecoverably $managerGui.element $selectedSequence.process_id
     Wait-ProcessExited $selectedSequence.process_id
     $managerStateAfter = Get-PersistentMutationSnapshot $configPath $stateRoot
     $managerNoMutation = Test-SnapshotEqual $managerStateBefore $managerStateAfter
@@ -3918,9 +4221,10 @@ try {
     Assert-Field ($selectedPathMatches -eq 1) `
         "Registration Manager did not carry the Explorer-selected-folder digest exactly once."
     $missingSkillDialog = Wait-MissingSkillRecoveryDialog $registrationSequence.process_id
-    Close-UiaWindow $missingSkillDialog.element
-    Close-UiaWindow $registrationManager.element
-    Wait-VisibleWindowClosed $registrationSequence.process_id "Library Manager"
+    Invoke-RecoveryDialogOk `
+        $missingSkillDialog.element $registrationSequence.process_id $false
+    Close-LibraryManagerRecoverably `
+        $registrationManager.element $registrationSequence.process_id
     Wait-ProcessExited $registrationSequence.process_id
     $registrationStateAfter = Get-PersistentMutationSnapshot $configPath $stateRoot
     $registrationNoMutation = Test-SnapshotEqual `

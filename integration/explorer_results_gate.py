@@ -945,7 +945,7 @@ def _parse_field_evidence(
         r"\tevent=(?P<event>[a-z_]+)"
         r"\tcommand_sha256=(?P<command>[0-9a-f]{64})"
         r"\tdetail=(?P<detail>0|[1-9]\d*)"
-        r"\tselection_source=(?P<source>selected_item|background_site)"
+        r"\tselection_source=(?P<source>unresolved|selected_item|background_site)"
         r"\tproject_sha256=(?P<project>[0-9a-f]{64}|unavailable)"
         r"\tinvocation_id=(?P<invocation>[0-9a-f]{32})"
     )
@@ -977,7 +977,10 @@ def _parse_field_evidence(
     ):
         start = sequence_index * len(_NATIVE_EVENTS)
         group = records[start : start + len(_NATIVE_EVENTS)]
-        if [record["source"] for record in group] != [source] * len(_NATIVE_EVENTS):
+        if (
+            group[0]["source"] != "unresolved"
+            or [record["source"] for record in group[1:]] != [source] * (len(_NATIVE_EVENTS) - 1)
+        ):
             errors.append(f"field evidence {role} records are missing or not contiguous")
             continue
         events = [str(record["event"]) for record in group]

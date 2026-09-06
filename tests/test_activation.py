@@ -4005,6 +4005,70 @@ class ActivationEndToEndTest(unittest.TestCase):
                 f"delay={delay} stdout={completed.stdout} stderr={completed.stderr}",
             )
 
+    @unittest.skipUnless(os.name == "nt", "actual Windows Tk close lifecycle")
+    def test_context_window_close_returns_before_noncooperative_contract_worker(self) -> None:
+        source_root = Path(__file__).resolve().parents[1]
+        code = "\n".join(
+            (
+                "import ctypes,sys,tempfile,threading,tkinter as tk",
+                "from pathlib import Path",
+                f"sys.path.insert(0, {str(source_root / 'src')!r})",
+                "from skill_magnet.activation import ActivationEngine",
+                "from skill_magnet.core import Config",
+                "from skill_magnet import ui",
+                "from skill_magnet.ui import acquire_context_ui_lease",
+                f"config=Config.load(Path({str(source_root / 'skill-magnet.json')!r}))",
+                "scratch=tempfile.TemporaryDirectory(prefix='skill-magnet-close-worker-')",
+                "root=Path(scratch.name); project=root/'project'; project.mkdir()",
+                "engine=ActivationEngine(config,root/'state')",
+                "lease=acquire_context_ui_lease(engine.state_dir,project)",
+                "worker_started=threading.Event(); worker_release=threading.Event(); workers=[]; persisted=[]",
+                "original_start=ui.start_context_background_operation",
+                "def tracked_start(operation,**kwargs):",
+                " event,worker,outcome=original_start(operation,**kwargs); workers.append((event,worker,outcome)); return event,worker,outcome",
+                "def blocked_contract(*args,**kwargs):",
+                " worker_started.set(); worker_release.wait(8); return object()",
+                "ui.start_context_background_operation=tracked_start",
+                "ui.context_selection_details=lambda *args,**kwargs:{}",
+                "ui.context_ui_confirmation=lambda *args,**kwargs:'confirm'",
+                "ui.confirm_context_selection=blocked_contract",
+                "import tkinter.messagebox as messagebox; messagebox.askyesno=lambda *args,**kwargs:True",
+                "engine.persist_confirmation=lambda contract:persisted.append(contract)",
+                "def ready(hwnd):",
+                " root_tk=tk._default_root",
+                " def trigger_confirm():",
+                "  entries=[widget for widget in root_tk.winfo_children() if widget.winfo_class()=='TEntry']",
+                "  assert len(entries)==1; entries[0].insert(0,'close regression')",
+                "  buttons=[widget for widget in root_tk.winfo_children() if widget.winfo_class()=='TButton' and str(widget.cget('text'))=='依頼を実行']",
+                "  assert len(buttons)==1; buttons[0].invoke()",
+                " def close_when_started():",
+                "  if worker_started.is_set(): ctypes.windll.user32.PostMessageW(hwnd,0x0010,0,0)",
+                "  else: root_tk.after(10,close_when_started)",
+                " root_tk.after(0,trigger_confirm); root_tk.after(10,close_when_started)",
+                "result=ui.show_context_selection(engine,platform='windows',project=project,pack_id='codex-cli',runtime='codex',allow_dynamic_selection=True,window_ready=lambda hwnd:(lease.publish_window(window_handle=hwnd,phase='context_selection'),ready(hwnd)))",
+                "assert worker_started.is_set(); assert result is None; assert len(workers)>=2",
+                "cancel,worker,outcome=workers[-1]; assert cancel.is_set(); assert worker.is_alive(); assert not persisted; assert not engine.contract_dir.exists()",
+                "print('show_context_selection_returned_before_worker_release',flush=True)",
+                "worker_release.set(); worker.join(2); assert not worker.is_alive(); assert 'value' not in outcome; assert not persisted",
+                "lease.release(); assert not (engine.state_dir/'context-launcher.owner.json').exists()",
+                "again=acquire_context_ui_lease(engine.state_dir,project); assert again.acquired; again.release()",
+                "scratch.cleanup()",
+            )
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=12,
+        )
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"stdout={completed.stdout} stderr={completed.stderr}",
+        )
+        self.assertIn("show_context_selection_returned_before_worker_release", completed.stdout)
+
+
     def test_ui_surface_republishes_same_generation_after_tk_is_mapped(self) -> None:
         selected = self.root / "mapped-selected"
         selected.mkdir()

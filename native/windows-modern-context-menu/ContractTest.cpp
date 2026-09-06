@@ -85,6 +85,48 @@ private:
     PIDLIST_ABSOLUTE folder_{};
 };
 
+class EmptyShellItemArray final : public IShellItemArray {
+public:
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** value) override {
+        if (!value) return E_POINTER;
+        *value = nullptr;
+        if (iid != IID_IUnknown && iid != __uuidof(IShellItemArray)) {
+            return E_NOINTERFACE;
+        }
+        *value = static_cast<IShellItemArray*>(this);
+        AddRef();
+        return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++references_; }
+    ULONG STDMETHODCALLTYPE Release() override {
+        const ULONG count = --references_;
+        if (!count) delete this;
+        return count;
+    }
+    HRESULT STDMETHODCALLTYPE BindToHandler(
+        IBindCtx*, REFGUID, REFIID, void**) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetPropertyStore(
+        GETPROPERTYSTOREFLAGS, REFIID, void**) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetPropertyDescriptionList(
+        REFPROPERTYKEY, REFIID, void**) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetAttributes(
+        SIATTRIBFLAGS, SFGAOF, SFGAOF*) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetCount(DWORD* count) override {
+        if (!count) return E_POINTER;
+        *count = 0;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetItemAt(DWORD, IShellItem**) override {
+        return E_BOUNDS;
+    }
+    HRESULT STDMETHODCALLTYPE EnumItems(IEnumShellItems**) override {
+        return E_NOTIMPL;
+    }
+
+private:
+    std::atomic<ULONG> references_{1};
+};
+
 static std::wstring ReadWideText(const std::wstring& path) {
     HANDLE file = CreateFileW(path.c_str(), GENERIC_READ,
                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -351,6 +393,91 @@ static bool FindSelectionDigest(const std::wstring& log, const wchar_t* source,
     return false;
 }
 
+static size_t CountSelectionDigest(const std::wstring& log, const wchar_t* source,
+                                   const std::wstring& digest) {
+    const std::wstring source_field = L"selection_source=" + std::wstring(source);
+    const std::wstring digest_field = L"project_sha256=" + digest;
+    size_t count = 0;
+    size_t content_start = 0;
+    while (content_start < log.size()) {
+        const size_t line_end = log.find(L'\n', content_start);
+        const std::wstring line = log.substr(
+            content_start,
+            (line_end == std::wstring::npos ? log.size() : line_end) - content_start);
+        if (line.find(L"event=selection_succeeded") != std::wstring::npos &&
+            line.find(source_field) != std::wstring::npos &&
+            line.find(digest_field) != std::wstring::npos) {
+            ++count;
+        }
+        if (line_end == std::wstring::npos) break;
+        content_start = line_end + 1;
+    }
+    return count;
+}
+
+static size_t CountEventSource(const std::wstring& log, const wchar_t* event,
+                               const wchar_t* source) {
+    const std::wstring event_field = L"event=" + std::wstring(event);
+    const std::wstring source_field = L"selection_source=" + std::wstring(source);
+    size_t count = 0;
+    size_t content_start = 0;
+    while (content_start < log.size()) {
+        const size_t line_end = log.find(L'\n', content_start);
+        const std::wstring line = log.substr(
+            content_start,
+            (line_end == std::wstring::npos ? log.size() : line_end) - content_start);
+        if (line.find(event_field) != std::wstring::npos &&
+            line.find(source_field) != std::wstring::npos) {
+            ++count;
+        }
+        if (line_end == std::wstring::npos) break;
+        content_start = line_end + 1;
+    }
+    return count;
+}
+
+static std::wstring EventFieldValue(const std::wstring& line, const wchar_t* field) {
+    const std::wstring prefix = std::wstring(field) + L"=";
+    const size_t start = line.find(prefix);
+    if (start == std::wstring::npos) return {};
+    const size_t value_start = start + prefix.size();
+    const size_t value_end = line.find_first_of(L"\t\r\n", value_start);
+    return line.substr(value_start, value_end == std::wstring::npos
+        ? std::wstring::npos : value_end - value_start);
+}
+
+static bool SelectionOutcomesFollowUnresolvedEnter(const std::wstring& log) {
+    std::vector<std::wstring> entered_invocations;
+    size_t outcome_count = 0;
+    size_t content_start = 0;
+    while (content_start < log.size()) {
+        const size_t line_end = log.find(L'\n', content_start);
+        const std::wstring line = log.substr(
+            content_start,
+            (line_end == std::wstring::npos ? log.size() : line_end) - content_start);
+        const std::wstring event = EventFieldValue(line, L"event");
+        const std::wstring invocation_id = EventFieldValue(line, L"invocation_id");
+        if (event == L"invoke_enter" &&
+            EventFieldValue(line, L"selection_source") == L"unresolved" &&
+            !invocation_id.empty()) {
+            entered_invocations.push_back(invocation_id);
+        } else if (event == L"selection_succeeded") {
+            ++outcome_count;
+            bool entered = false;
+            for (const std::wstring& prior_invocation : entered_invocations) {
+                if (prior_invocation == invocation_id) {
+                    entered = true;
+                    break;
+                }
+            }
+            if (!entered) return false;
+        }
+        if (line_end == std::wstring::npos) break;
+        content_start = line_end + 1;
+    }
+    return outcome_count > 0;
+}
+
 static std::wstring ExpectedProjectDigest(const std::wstring& value) {
     BCRYPT_ALG_HANDLE algorithm = nullptr;
     BCRYPT_HASH_HANDLE hash = nullptr;
@@ -474,6 +601,7 @@ int wmain(int argc, wchar_t** argv) {
 
     IShellItem* selected_item = nullptr;
     IShellItemArray* selected_items = nullptr;
+    IShellItemArray* empty_items = new EmptyShellItemArray();
     if (FAILED(SHCreateItemFromParsingName(
             selected_folder.c_str(), nullptr, IID_PPV_ARGS(&selected_item))) ||
         FAILED(SHCreateShellItemArrayFromShellItem(
@@ -518,8 +646,27 @@ int wmain(int argc, wchar_t** argv) {
     const bool site_set = site_supported &&
         SUCCEEDED(site_aware->SetSite(static_cast<IServiceProvider*>(test_site)));
     test_site->Release();
-    const bool root_background_invoke = site_set &&
+    IShellItem* background_item = nullptr;
+    IShellItemArray* background_items = nullptr;
+    const bool background_array_created = SUCCEEDED(SHCreateItemFromParsingName(
+            background_folder.c_str(), nullptr, IID_PPV_ARGS(&background_item))) &&
+        SUCCEEDED(SHCreateShellItemArrayFromShellItem(
+            background_item, IID_PPV_ARGS(&background_items))) && background_items;
+    const bool site_selected_invoke = site_set &&
+        SUCCEEDED(background_probe_command->Invoke(selected_items, nullptr));
+    const bool site_selected_argument_exact =
+        ReadWideText(background_probe_output) == selected_folder;
+    const bool null_background_invoke = site_set &&
         SUCCEEDED(background_probe_command->Invoke(nullptr, nullptr));
+    const bool null_background_argument_exact =
+        ReadWideText(background_probe_output) == background_folder;
+    const bool empty_background_invoke = site_set &&
+        SUCCEEDED(background_probe_command->Invoke(empty_items, nullptr));
+    const bool empty_background_argument_exact =
+        ReadWideText(background_probe_output) == background_folder;
+    const bool root_background_invoke = site_set &&
+        background_array_created &&
+        SUCCEEDED(background_probe_command->Invoke(background_items, nullptr));
     const bool background_argument_exact =
         ReadWideText(background_probe_output) == background_folder;
     if (site_aware) {
@@ -527,6 +674,9 @@ int wmain(int argc, wchar_t** argv) {
         site_aware->Release();
     }
     if (background_probe_command) background_probe_command->Release();
+    if (background_items) background_items->Release();
+    if (background_item) background_item->Release();
+    empty_items->Release();
     const bool probe_manifest_restored = WriteBytes(manifest_path, original_manifest);
     const bool multiple_selection_rejected = multiple_array_created &&
         FAILED(command->Invoke(multiple_items, nullptr));
@@ -596,6 +746,19 @@ int wmain(int argc, wchar_t** argv) {
     const bool project_digests_exact =
         selected_digest == ExpectedProjectDigest(selected_folder) &&
         background_digest == ExpectedProjectDigest(background_folder);
+    const bool all_background_shapes_classified =
+        CountSelectionDigest(log, L"background_site",
+                             ExpectedProjectDigest(background_folder)) == 3;
+    const bool site_selected_item_preserved =
+        CountSelectionDigest(log, L"selected_item",
+                             ExpectedProjectDigest(selected_folder)) >= 2;
+    const size_t invoke_entries = CountEventSource(log, L"invoke_enter", L"unresolved");
+    const bool all_invoke_entries_unresolved =
+        invoke_entries > 0 &&
+        CountEventSource(log, L"invoke_enter", L"selected_item") == 0 &&
+        CountEventSource(log, L"invoke_enter", L"background_site") == 0;
+    const bool selection_outcomes_follow_unresolved_enter =
+        SelectionOutcomesFollowUnresolvedEnter(log);
     const bool path_is_private =
         log.find(selected_folder) == std::wstring::npos &&
         log.find(background_folder) == std::wstring::npos &&
@@ -621,15 +784,20 @@ int wmain(int argc, wchar_t** argv) {
     CoUninitialize();
     if (!valid || !no_subcommands || !enumeration_is_silent || !site_supported || !site_set ||
         !selected_probe_loaded || !background_probe_loaded ||
-        !root_selected_invoke || !root_background_invoke ||
-        !selected_argument_exact || !background_argument_exact ||
-        !probe_manifest_restored || !multiple_array_created ||
+        !root_selected_invoke || !site_selected_invoke ||
+        !null_background_invoke || !empty_background_invoke ||
+        !root_background_invoke || !selected_argument_exact ||
+        !site_selected_argument_exact || !null_background_argument_exact ||
+        !empty_background_argument_exact || !background_argument_exact ||
+        !probe_manifest_restored || !multiple_array_created || !background_array_created ||
         !multiple_selection_rejected || !failure_manifest_written ||
         !failure_command_loaded || !manifest_restored || !immediate_failure_detected ||
         !invalid_extra_rejected || !duplicate_launcher_rejected || !unknown_kind_rejected ||
         !bom_header_rejected ||
         !selected_evidence || !background_evidence || selected_digest == background_digest ||
-        !project_digests_exact ||
+        !project_digests_exact || !all_background_shapes_classified ||
+        !site_selected_item_preserved || !all_invoke_entries_unresolved ||
+        !selection_outcomes_follow_unresolved_enter ||
         !path_is_private || !launch_evidence || !recovery_messages_actionable ||
         !native_source_bound || !unloadable) {
         return 7;

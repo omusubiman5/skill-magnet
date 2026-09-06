@@ -180,7 +180,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
         return [
             f"2026-09-05T00:00:{second:02d}.{millis}Z\tevent={event}"
             f"\tcommand_sha256={command}\tdetail={detail}"
-            f"\tselection_source={source}\tproject_sha256={project_value}"
+            f"\tselection_source={'unresolved' if event == 'invoke_enter' else source}\tproject_sha256={project_value}"
             f"\tinvocation_id={invocation}"
             for millis, event, command, detail, project_value in rows
         ]
@@ -1417,7 +1417,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
                 )
                 return "".join(
                     f"{prefix}{millis}Z\tevent={event}\tcommand_sha256={command}"
-                    f"\tdetail={detail}\tselection_source={source}"
+                    f"\tdetail={detail}\tselection_source={'unresolved' if event == 'invoke_enter' else source}"
                     f"\tproject_sha256={project_value}\tinvocation_id={invocation}\r\n"
                     for millis, event, command, detail, project_value in rows
                 )
@@ -1873,6 +1873,60 @@ if (@($uiReceipts | Where-Object { $_.project_sha256 -ceq $_.target_sha256 }).Co
         self.assertIn("if (-not (Test-FieldProcessIdentity $identity)) { continue }", cleanup)
         self.assertIn("-ErrorAction SilentlyContinue", cleanup)
 
+    def test_field_collector_closes_recovery_dialogs_through_their_ok_action(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        recovery_action = collector[
+            collector.index("function Invoke-RecoveryDialogOk") :
+            collector.index("function Inspect-UnifiedGui")
+        ]
+        busy = collector[
+            collector.index("function Assert-BusyMessageAndClose") :
+            collector.index("$configPath =")
+        ]
+        registration = collector[
+            collector.index("$missingSkillDialog = Wait-MissingSkillRecoveryDialog") :
+            collector.index("$registrationStateAfter =")
+        ]
+        manager_close = collector[
+            collector.index("function Close-LibraryManagerRecoverably") :
+            collector.index("function Get-FieldProcessIdentity")
+        ]
+        self.assertIn("[System.Windows.Automation.InvokePattern]::Pattern", recovery_action)
+        self.assertIn("$invoke.Invoke()", recovery_action)
+        self.assertIn("SetCursorPos($x, $y)", recovery_action)
+        self.assertIn("CheckedClickUiaTargetWithForeground", recovery_action)
+        self.assertNotIn("::mouse_event", recovery_action)
+        self.assertNotIn("LegacyIAccessiblePattern", recovery_action)
+        self.assertNotIn("Close-UiaWindow", recovery_action)
+        self.assertIn("Invoke-RecoveryDialogOk $dialog $ExpectedProcessId $true", busy)
+        self.assertNotIn("Close-UiaWindow $dialog", busy)
+        self.assertIn("Invoke-RecoveryDialogOk `", registration)
+        self.assertIn('"終了後に復旧できます"', manager_close)
+        self.assertIn("Invoke-RecoveryDialogOk", manager_close)
+        self.assertIn("Close-LibraryManagerRecoverably $managerGui.element", collector)
+        self.assertIn("Close-LibraryManagerRecoverably `", registration)
+
+    def test_context_root_click_rejects_same_pid_sibling_overlays(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" /
+            "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        click = collector[
+            collector.index("function Invoke-CheckedContextMenuRootPhysicalClick") :
+            collector.index("function Invoke-VisibleSkillMagnetRoot")
+        ]
+        self.assertIn("$sameRootProvider", click)
+        self.assertIn("$verifiedExplorerGlyphProvider", click)
+        self.assertIn("[int]$rootSnapshot.control_type -eq 50011", click)
+        self.assertIn("[int]$snapshot.control_type -eq 50033", click)
+        self.assertIn("[int64]$rootSnapshot.hwnd -eq 0", click)
+        self.assertNotIn(
+            "($pointInsideRoot -and\n             [int]$snapshot.process_id",
+            click,
+        )
+
     def test_field_collector_duplicate_launches_are_registered_by_invocation(self) -> None:
         collector = (
             ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
@@ -2231,12 +2285,16 @@ Update-FieldOwnerRevision $generation 8 $ownerRevisions
             "expectedChildEnabled",
             "expectedChildOffscreen",
             "TestAfterInitialValidation",
+            "CheckedClickUiaTargetWithForeground",
+            "expectedRuntimeKey",
+            "expectedControlType",
+            "expectedClassName",
         ):
             self.assertIn(required, checked)
         self.assertEqual(collector.count("mouse_event("), 3)
         self.assertEqual(collector.count("CheckedClickCurrent("), 3)
         final_check = checked.index("// This is the final fail-closed boundary")
-        first_send = checked.index("mouse_event(down", final_check)
+        first_send = checked.index("SendMouse(down, up);", final_check)
         between = checked[final_check:first_send]
         for forbidden in ("Start-Sleep", "TestAfterInitialValidation", "FocusWindow"):
             self.assertNotIn(forbidden, between)
@@ -2554,6 +2612,121 @@ finally {{
         self.assertEqual(observation["click_count"], 0)
 
     @unittest.skipUnless(os.name == "nt", "requires real Windows UIAutomation")
+    def test_native_recovery_click_guard_rejects_post_validation_faults(self) -> None:
+        collector = (
+            ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+        csharp = collector.split(') -TypeDefinition @"', 1)[1].split('"@', 1)[0]
+        encoded_csharp = base64.b64encode(csharp.encode("utf-8")).decode("ascii")
+        probe = rf'''
+$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("{encoded_csharp}"))
+Add-Type -ReferencedAssemblies @("UIAutomationClient", "UIAutomationTypes", "WindowsBase") -TypeDefinition $source
+function Sha([string]$Text) {{
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Text)
+    [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes)).Replace("-", "").ToLowerInvariant()
+}}
+function Run-Fault([string]$Kind, [int]$Offset) {{
+    $root = [Windows.Forms.Form]::new()
+    $root.Text = "recovery-root-$Kind"
+    $root.StartPosition = "Manual"
+    $root.SetDesktopBounds(80, 80 + $Offset, 360, 180)
+    $button = [Windows.Forms.Button]::new()
+    $button.Text = "OK"
+    $button.SetBounds(30, 40, 160, 50)
+    $root.Controls.Add($button)
+    $competitor = [Windows.Forms.Form]::new()
+    $competitor.Text = "recovery-competitor-$Kind"
+    $competitor.StartPosition = "Manual"
+    $competitor.SetDesktopBounds(500, 80 + $Offset, 260, 160)
+    $button.Add_Click({{ $script:clickCount += 1 }})
+    try {{
+        $root.Show(); $competitor.Show(); [Windows.Forms.Application]::DoEvents()
+        $point = $button.PointToScreen([Drawing.Point]::new(80, 25))
+        $process = [Diagnostics.Process]::GetCurrentProcess()
+        $uia = [Windows.Automation.AutomationElement]::FromPoint(
+            [Windows.Point]::new([double]$point.X, [double]$point.Y)
+        )
+        $bounds = $uia.Current.BoundingRectangle
+        [SkillMagnetFieldInput]::SetCursorPos($point.X, $point.Y) | Out-Null
+        [SkillMagnetFieldInput]::FocusWindow($root.Handle) | Out-Null
+        [SkillMagnetFieldInput]::TestAfterInitialValidation = [Action]{{
+            switch ($Kind) {{
+                "move" {{ $button.SetBounds(35, 40, 160, 50) }}
+                "disable" {{ $button.Enabled = $false }}
+                "replace" {{
+                    $root.Controls.Remove($button); $button.Dispose()
+                    $replacement = [Windows.Forms.Button]::new()
+                    $replacement.Text = "OK"
+                    $replacement.SetBounds(30, 40, 160, 50)
+                    $root.Controls.Add($replacement)
+                }}
+                "foreground" {{ [SkillMagnetFieldInput]::FocusWindow($competitor.Handle) | Out-Null }}
+            }}
+            [Windows.Forms.Application]::DoEvents()
+        }}
+        $result = [SkillMagnetFieldInput]::CheckedClickUiaTargetWithForeground(
+            $point.X, $point.Y, $root.Handle, $root.Handle,
+            [uint32]$process.Id, [IO.Path]::GetFullPath($process.MainModule.FileName),
+            [long]$process.StartTime.ToUniversalTime().Ticks,
+            [string]::Join(".", $uia.GetRuntimeId()), [int]$uia.Current.ControlType.Id,
+            [string]$uia.Current.ClassName,
+            [double]$bounds.X, [double]$bounds.Y,
+            [double]$bounds.Width, [double]$bounds.Height,
+            [bool]$uia.Current.IsEnabled, [bool]$uia.Current.IsOffscreen,
+            (Sha ([string]$uia.Current.Name)), $false
+        )
+        [pscustomobject]@{{
+            result = $result
+            initial_failure = [SkillMagnetFieldInput]::LastInitialBoundaryFailure
+            final_failure = [SkillMagnetFieldInput]::LastFinalBoundaryFailure
+            exception = [SkillMagnetFieldInput]::LastClickException
+        }}
+    }}
+    finally {{
+        [SkillMagnetFieldInput]::TestAfterInitialValidation = $null
+        $competitor.Close(); $root.Close()
+    }}
+}}
+$script:clickCount = 0
+$observations = [ordered]@{{}}
+$index = 0
+foreach ($kind in @("move", "disable", "replace", "foreground")) {{
+    $observations[$kind] = Run-Fault $kind ($index * 220)
+    $index += 1
+}}
+$observations["mouse_zero"] = $script:clickCount -eq 0
+$observations | ConvertTo-Json -Compress
+'''
+        with tempfile.TemporaryDirectory() as temporary:
+            probe_path = Path(temporary) / "recovery-click-guard-probe.ps1"
+            probe_path.write_text(probe, encoding="utf-8-sig")
+            completed = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-STA", "-File", str(probe_path)],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                check=False,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        observation = json.loads(completed.stdout)
+        for kind in ("move", "disable", "replace", "foreground"):
+            self.assertFalse(observation[kind]["result"], observation)
+            self.assertTrue(
+                observation[kind]["initial_failure"]
+                or observation[kind]["final_failure"]
+                or observation[kind]["exception"],
+                observation,
+            )
+        self.assertTrue(observation["mouse_zero"], observation)
+
+    @unittest.skipUnless(os.name == "nt", "requires real Windows UIAutomation")
     def test_native_click_guard_rejects_row_and_child_identity_faults(self) -> None:
         collector = (
             ROOT / "tests" / "powershell" / "windows-explorer-direct-root-field-test.ps1"
@@ -2718,15 +2891,15 @@ Add-Type -ReferencedAssemblies @("UIAutomationClient","UIAutomationTypes","Windo
 function Sha([string]$Text){{$b=[Text.UTF8Encoding]::new($false).GetBytes($Text);[BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($b)).Replace("-","").ToLowerInvariant()}}
 $s=Get-Content $StatePath -Raw|ConvertFrom-Json; $p=Get-Process -Id ([int]$s.pid
 ); $button=[IntPtr]([int64]$s.button); $root=[SkillMagnetFieldInput]::GetAncestor($button,2)
-[SkillMagnetFieldInput]::FocusWindow($root)|Out-Null; [SkillMagnetFieldInput]::SetCursorPos([int]$s.x,[int]$s.y)|Out-Null; Start-Sleep -Milliseconds 100
-$uia=[Windows.Automation.AutomationElement]::FromPoint([Windows.Point]::new([double]$s.x,[double]$s.y)); $r=$uia.Current.BoundingRectangle
+[SkillMagnetFieldInput]::FocusWindow($root)|Out-Null; $setCursor=[SkillMagnetFieldInput]::SetCursorPos([int]$s.x,[int]$s.y)
+$cursor=[SkillMagnetFieldInput+POINT]::new(); $gotCursor=[SkillMagnetFieldInput]::GetCursorPos([ref]$cursor); $foreground=[SkillMagnetFieldInput]::GetForegroundWindow(); $point=[SkillMagnetFieldInput+POINT]::new(); $point.X=[int]$s.x; $point.Y=[int]$s.y; $hit=[SkillMagnetFieldInput]::WindowFromPoint($point); $uia=[Windows.Automation.AutomationElement]::FromPoint([Windows.Point]::new([double]$s.x,[double]$s.y)); $r=$uia.Current.BoundingRectangle; $runtime=[string]::Join(".",$uia.GetRuntimeId()); $inputPreconditions=[ordered]@{{set_cursor=[bool]$setCursor;get_cursor=[bool]$gotCursor;cursor_x=[int]$cursor.X;cursor_y=[int]$cursor.Y;expected_x=[int]$s.x;expected_y=[int]$s.y;foreground=[int64]$foreground;root=[int64]$root;foreground_matches_root=([int64]$foreground-eq[int64]$root);window_from_point=[int64]$hit;button=[int64]$button;window_matches_button=([int64]$hit-eq[int64]$button);uia_runtime_key=$runtime;uia_runtime_key_present=(-not[string]::IsNullOrWhiteSpace($runtime))}}; $inputPreconditionsOk=([bool]$setCursor-and[bool]$gotCursor-and([int]$cursor.X-eq[int]$s.x)-and([int]$cursor.Y-eq[int]$s.y)-and([int64]$foreground-eq[int64]$root)-and([int64]$hit-eq[int64]$button)-and(-not[string]::IsNullOrWhiteSpace($runtime)))
 $rolesOk=$true; foreach($w in $s.widgets){{$e=[Windows.Automation.AutomationElement]::FromPoint([Windows.Point]::new([double]$w.x,[double]$w.y));$q=$e.Current.BoundingRectangle;$rolesOk=$rolesOk-and([int64]$e.Current.NativeWindowHandle-eq[int64]$w.hwnd)-and([int]$e.Current.ProcessId-eq[int]$s.pid)-and([int]$e.Current.ControlType.Id-eq[Windows.Automation.ControlType]::Pane.Id)-and([string]$e.Current.ClassName-ceq"TkChild")-and([string]$e.Current.Name-ceq"")-and([string]::Join(".",$e.GetRuntimeId()).Length-gt 0)-and([double]$q.X-eq[double]$w.left)-and([double]$q.Y-eq[double]$w.top)-and([double]$q.Width-eq[double]$w.width)-and([double]$q.Height-eq[double]$w.height)-and([bool]$e.Current.IsEnabled)-and(-not[bool]$e.Current.IsOffscreen)}}
-$runtime=[string]::Join(".",$uia.GetRuntimeId()); $actual=Sha ([string]$uia.Current.Name); $semantic=Sha "Library Manager"; $pi="a"*32; $gen="b"*32
+$actual=Sha ([string]$uia.Current.Name); $semantic=Sha "Library Manager"; $pi="a"*32; $gen="b"*32
 $receipt=@{{process_instance_id=$pi;generation=$gen;revision=1;ui_surface=@{{widgets=@(@{{id="library_manager";text_sha256=$semantic;viewable=$true;state=@{{enabled=$true}}}})}}}}|ConvertTo-Json -Depth 5 -Compress
 $bytes=[Text.UTF8Encoding]::new($false).GetBytes($receipt); [IO.File]::WriteAllBytes($ReceiptPath,$bytes)
 $receiptSha=[BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes)).Replace("-","").ToLowerInvariant()
 if($Mode-ne"success"){{[SkillMagnetFieldInput]::TestAfterInitialValidation=[Action]{{if($Mode-eq"name"){{[IO.File]::WriteAllText($ReceiptPath,$receipt.Replace($semantic,(Sha "Changed semantic name")),[Text.UTF8Encoding]::new($false))}}elseif($Mode-eq"disable"){{[IO.File]::WriteAllText($ReceiptPath,$receipt.Replace('"enabled":true','"enabled":false'),[Text.UTF8Encoding]::new($false))}};[IO.File]::WriteAllText($CommandPath,$Mode);$d=[DateTime]::UtcNow.AddSeconds(3);while(!(Test-Path $AckPath)-and[DateTime]::UtcNow-lt$d){{Start-Sleep -Milliseconds 10}}}}}}
-try{{$result=[SkillMagnetFieldInput]::CheckedClickCurrent([int]$s.x,[int]$s.y,$button,$root,[uint32]$s.pid,[IO.Path]::GetFullPath($p.MainModule.FileName),[long]$p.StartTime.ToUniversalTime().Ticks,$true,$actual,$ReceiptPath,$receiptSha,$pi,$gen,[long]1,"library_manager",$semantic,$true,$runtime,[int]$uia.Current.ControlType.Id,[string]$uia.Current.ClassName,[double]$r.X,[double]$r.Y,[double]$r.Width,[double]$r.Height,[bool]$uia.Current.IsEnabled,[bool]$uia.Current.IsOffscreen,"",0,"",0,0,0,0,$false);[pscustomobject]@{{result=$result;roles_ok=$rolesOk;actual_name=[string]$uia.Current.Name;actual_sha=$actual;semantic_sha=$semantic;class_name=[string]$uia.Current.ClassName}}|ConvertTo-Json -Compress}}finally{{[SkillMagnetFieldInput]::TestAfterInitialValidation=$null}}
+try{{$result=[SkillMagnetFieldInput]::CheckedClickCurrent([int]$s.x,[int]$s.y,$button,$root,[uint32]$s.pid,[IO.Path]::GetFullPath($p.MainModule.FileName),[long]$p.StartTime.ToUniversalTime().Ticks,$true,$actual,$ReceiptPath,$receiptSha,$pi,$gen,[long]1,"library_manager",$semantic,$true,$runtime,[int]$uia.Current.ControlType.Id,[string]$uia.Current.ClassName,[double]$r.X,[double]$r.Y,[double]$r.Width,[double]$r.Height,[bool]$uia.Current.IsEnabled,[bool]$uia.Current.IsOffscreen,"",0,"",0,0,0,0,$false);[pscustomobject]@{{result=$result;initial_failure=[SkillMagnetFieldInput]::LastInitialBoundaryFailure;failure=[SkillMagnetFieldInput]::LastFinalBoundaryFailure;exception=[SkillMagnetFieldInput]::LastClickException;input_preconditions_ok=$inputPreconditionsOk;input_preconditions=$inputPreconditions;roles_ok=$rolesOk;actual_name=[string]$uia.Current.Name;actual_sha=$actual;semantic_sha=$semantic;class_name=[string]$uia.Current.ClassName}}|ConvertTo-Json -Compress}}finally{{[SkillMagnetFieldInput]::TestAfterInitialValidation=$null}}
 '''
         observations = {}
         with tempfile.TemporaryDirectory() as temporary:
@@ -2742,14 +2915,29 @@ try{{$result=[SkillMagnetFieldInput]::CheckedClickCurrent([int]$s.x,[int]$s.y,$b
                     self.assertTrue(state.exists())
                     done=subprocess.run(["powershell.exe","-NoProfile","-STA","-File",str(probe_file),str(state),str(case/"receipt"),str(command),str(ack),mode],cwd=ROOT,capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=20)
                     self.assertEqual(done.returncode,0,done.stderr); observations[mode]=json.loads(done.stdout.strip()); time.sleep(.1)
+                    if mode == "success" and not observations[mode]["input_preconditions_ok"]:
+                        self.fail(
+                            "success input precondition did not hold: "
+                            f"{observations[mode]['input_preconditions']}"
+                        )
                     self.assertEqual(clicked.exists(),mode=="success",observations[mode])
                 finally:
                     server.terminate(); server.wait(timeout=5)
-        empty_sha=hashlib.sha256(b"").hexdigest(); self.assertTrue(observations["success"]["result"])
+        empty_sha=hashlib.sha256(b"").hexdigest(); self.assertTrue(observations["success"]["result"], observations)
+        self.assertIsNone(observations["success"]["initial_failure"], observations)
+        self.assertIsNone(observations["success"]["failure"], observations)
+        self.assertIsNone(observations["success"]["exception"], observations)
         self.assertEqual(observations["success"]["actual_name"],""); self.assertEqual(observations["success"]["actual_sha"],empty_sha)
         self.assertNotEqual(empty_sha,observations["success"]["semantic_sha"]); self.assertEqual(observations["success"]["class_name"],"TkChild")
         self.assertTrue(observations["success"]["roles_ok"], observations)
-        for mode in ("move","disable","name","swap"): self.assertFalse(observations[mode]["result"],observations)
+        for mode in ("move","disable","name","swap"):
+            self.assertFalse(observations[mode]["result"],observations)
+            self.assertTrue(
+                observations[mode]["initial_failure"] or
+                observations[mode]["failure"] or
+                observations[mode]["exception"],
+                observations,
+            )
 
     @unittest.skipUnless(os.name == "nt", "requires real Windows UIAutomation")
     def test_selected_row_lineage_is_kept_between_left_and_right_clicks(self) -> None:

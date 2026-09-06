@@ -2,6 +2,18 @@
 
 ## 結論
 
+### 2026-09-06 再調査：chooserからManagerへの遷移後の終了
+
+隔離した一時stateで、Manager単独とchooser→Managerを比較した。GitHub通信、登録、導入は実施していない。`integration/probe_manager_close.py`はWM_CLOSE送信、実際のclose callback入口/復帰、mainloop復帰を時刻付きで記録する。
+
+- Manager単独：close callbackが呼ばれ、mainloopと関数が正常復帰した。
+- 修正前のchooser→Manager：close callbackは呼ばれて復帰したが、6秒後もManagerのmainloopに残った。停止スタックにはmain threadだけが記録された。診断用processは記録後に停止したため、正常終了には数えない。
+- chooserのmainloop復帰直後へ`root.destroy()`を1行追加した同じ遷移：Manager関数まで2.812秒で復帰しexit 0。
+
+確認できた原因は、chooserが`withdraw()/quit()`後も生存し、Tkのroot数とデフォルトrootに残ること。Manager単独の終了試験では検出できなかった。今回の限定再現に対する「worker待ち」「同期削除が原因」という以前の断定は撤回する。古いfieldの全失敗がこの原因だったとまでは断定しない。
+
+SOLが追加したManager終了時の即時強制終了・削除撤去・直後に取消されるタイマーは、根因の実測がなく保存/整理動作を変えていたため、その差分だけを戻した。chooserの非協調worker試験はworker開始操作がなく、その主張を検証していないため削除した。正式Explorer受入は別途必要である。
+
 不具合は二段階で確認された。
 
 1. 0.5.8では`Skill Magnet` rootの`command_`が空で、rootの`Invoke`はログを書き込む前に`E_NOTIMPL`を返していた。rootは`ECF_HASSUBCOMMANDS`だけを持つ子メニューのcontainerであり、root自体からアプリを起動できなかった。
@@ -10,6 +22,23 @@
 したがってsplit-button remediationは不採用とする。最終設計は、**Explorerには子項目を一件も出さず、単一の`Skill Magnet` rootを直接実行する。skill／pack選択、Library Manager、右クリックfolderの登録は、起動後の統合GUIに置く**である。
 
 最上位の根本原因は、Windows Explorerの実際の表示・dispatchを現行版で確認せず、`IExplorerCommand`のflag、DLL単体試験、package status、process生成をExplorerからの起動成功へ一般化したことである。
+
+### 追加原因：背景起動をポインタ有無で誤分類した
+
+2026-09-06の0.5.9実機試験では、背景右クリックに対しnative診断が`selection_source=selected_item`を記録した。現在folder自身を含む1件配列という仮説はC++ fixtureで扱えるが、実Explorerの配列件数・内容を直接観測した証跡はなく、確定事項ではない。
+
+直接原因は`MenuNode::Invoke`が`IShellItemArray* items`の非nullだけで`selected_item`と判定し、`SelectedPath`も非null配列を必ず選択項目として処理していたことである。Explorerは背景経路でも現在folder自身を含む1件配列を渡し得るため、ポインタ有無や件数1だけでは選択folderと背景folderを区別できない。既存contract testは選択folderを1件配列、背景folderを`nullptr`でしか試験せず、「配列の1件pathとsiteの現在folder pathが同一」の実挙動を欠落させていた。
+
+```text
+背景を右クリックしても選択項目扱いになる【実績】
+├─ ExplorerはInvokeへ現在folderを表す1件のitemsを渡した可能性【推論：配列そのものは未観測】
+├─ 実装はitems != nullptrをselected_itemの条件にした【実績：コード】
+├─ 実装は配列pathとsiteの現在folder pathを比較しなかった【実績：コード】
+└─ contract testは背景をnullptrでのみ再現した【実績：テスト】
+   └─ 現在folder自身を含む1件配列の回帰ケースが存在しなかった【根本原因】
+```
+
+修正条件は、0件をsite由来の背景folder、1件では配列pathとsiteの現在folder pathが同一なら背景folder、異なれば選択folderとして扱い、2件以上と`GetCount`失敗は安全に拒否することである。背景contract testは`nullptr`ではなく、siteと同じ現在folderを含む1件配列を渡さなければ、この欠陥の再発を検出できない。
 
 ### 追加実測：AppxとPython runtimeが別世代だった
 
@@ -173,3 +202,11 @@ Explorer実右クリック
 最終0.5.9のコードと自動試験が通っても、0.5.9 wheelを再導入してsplit-generationを解消し、実Explorerで背景folderと選択folderの両方から単一rootを押し、統合GUI、多重投入制御、具体的なerror／復旧経路まで確認するまではリリース可と判定しない。package status、COM activation、DLL直接load、distribution metadataだけのversion一致、旧0.5.1のfield evidenceは代替証拠にしない。
 
 同一buildの証明には、repositoryの固定native入力から再計算したsource tree digest、`SkillMagnetNativeSource.json`、DLL export／埋込binding、signed MSIX内payload、登録済みpackage root、外部install rootの一致も含める。Appx／Python runtimeだけが一致してもnative DLLが別sourceなら失敗とする。またrollbackは、所有path、metadata、registry hash、package identity、外部file manifestの完全性をuninstall・削除より前に検証し、壊れたsnapshotでは現在状態を変更しない。最新の実Explorer受入結果、test件数、release commit、wheel digestは[Windows Explorer release evidence](windows-explorer-leaf-launch-results.md)のmachine-readable ledgerだけを正本とし、原因調査書へ途中状態を複製しない。
+
+## 2026-09-06 限定再調査の結果
+
+- `invoke_enter` が対象解決の前に `selection_source=unresolved` として記録されない限り、Explorer COMの解決失敗は入口自体が無観測になる。native contractは、null、空配列、siteの現在folderと同じ1件配列を背景、siteと異なる1件配列を選択として区別するようにした。この契約試験の成功は実Explorerの配列形状を直接観測した証拠ではない。
+- chooserからManagerへ遷移した場合だけ旧Tk rootが残り得る。chooserの`mainloop()`復帰後、次のrootを作る前に旧rootを破棄する経路は、単独Managerとの比較probeで終了した。非協調の契約準備worker中でも、Close後にUI関数が復帰し、確認保存を行わず、leaseを再取得できることを実Tk試験で確認した。
+- physical-click fixtureの成功失敗は、カーソル設定と検査の間の固定100ms待機でも変動していた。待機を除き、カーソル、前景、HWND、UIA runtime keyを入力直前に記録し、前提が不一致ならマウス入力前に明示失敗するようにした。これはfixtureの診断改善であり、Explorer実機のクリック正当性を証明しない。
+
+全体unittestは出力上限により終了コードを回収できていない。その結果を合格数や導入可否へ転用しない。導入済みruntime、正式Explorer field、公開の判定は未確認である。

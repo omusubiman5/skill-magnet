@@ -60,6 +60,18 @@ from skill_magnet.ui import (
 
 
 class LibraryManagerTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows WM_CLOSE and actual Tk roots")
+    def test_chooser_to_manager_close_retires_the_previous_root(self) -> None:
+        probe = Path(__file__).resolve().parents[1] / "integration" / "probe_manager_close.py"
+        result = subprocess.run(
+            [sys.executable, str(probe), "transition"],
+            capture_output=True, text=True, timeout=12,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        events = [json.loads(line)["event"] for line in result.stdout.splitlines()]
+        self.assertIn("close_callback_enter", events)
+        self.assertIn("manager_return", events)
+
     @unittest.skipUnless(os.name == "nt", "actual Windows Tk close lifecycle")
     def test_library_manager_close_during_startup_exits_cleanly_in_fresh_processes(self) -> None:
         source_root = Path(__file__).resolve().parents[1]
@@ -93,6 +105,7 @@ class LibraryManagerTests(unittest.TestCase):
                 0,
                 f"delay={delay} stdout={completed.stdout} stderr={completed.stderr}",
             )
+
 
     def make_source_skill(self, parent: Path, skill_id: str, description: str = "Updated purpose") -> Path:
         source = parent / skill_id
