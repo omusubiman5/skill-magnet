@@ -1,17 +1,18 @@
 # Windows版MVP 実装・受入記録
 
-状態：修正済み配布候補を導入済み。正式Explorer fieldは `PASS_REAL_EXPLORER_DIRECT_ROOT_INVOKE_0_5_9`。リリース判定の不整合を修正中で、公開完了ではない。
+状態：現候補 `be72125f9d3de9755331106b68a8df4a445659b1` を導入済み。正式Explorer fieldは `PASS_REAL_EXPLORER_DIRECT_ROOT_INVOKE_0_5_9`。CIとmerge待ち。
 
 ## 最新の成果と残る判定
 
-- 現在の配布物：`outputs/windows-mvp-be66560/skill_magnet-0.5.9-py3-none-any.whl`。製品コード `c457c65` から生成し、同じwheelを導入済み。
-- wheel SHA-256：`76abd3cc87aeef972dfbd591e9f4089436b865e116d60d9e272eb1ded0a8f635`。
-- 候補 `3cbb8de57cb8fce32d82fc163c7e5ab45ee86ccd` の正式fieldは終了コード0。実機ログと署名付きbundleは `docs/evidence/windows-explorer-direct-root-0.5.9.log` と `.json`。
+- 現在の配布物：`C:/Users/HOMEA/AppData/Local/Temp/skill-magnet-release-be72125/skill_magnet-0.5.9-py3-none-any.whl`。候補 `be72125f9d3de9755331106b68a8df4a445659b1` から生成し、同じwheelを導入済み。
+- wheel SHA-256：`77696ce54952772277671cd41cb04195b85ac3fd532083243bf553330e5e3cb4`。論理payload SHA-256：`2333d52148fed14e619e0017487f4810ac74cba7fe5fd9126179e3e073f14b88`。
+- 正式fieldは終了コード0。実機ログSHA-256は `a89483456088fac775616363ab7bb0fd2896b2ac44d9d9b8fdf453b71b104f35`、署名付きbundle SHA-256は `82d5ec8241ef96ab91e4e0a029669992fba4d9c9cde38810cc8072d554311b18`。
 - キーボード受入計画：`docs/windows-mvp-keyboard-test-plan-2026-09-06.md`。アプリ内の座標クリックを受入条件から外し、Tab／Shift+Tab／矢印／Enter／Space／Escを基準にした。
 - 製品修正：共通画面は依頼入力へ、Library Managerは現在操作できる登録元または復旧ボタンへ初期focusを置く。両画面でfocused buttonのEnterとEscの安全終了を追加し、読み取り専用の変更内容表示をTab順から外した。Space、Treeview矢印、busy guardは既存Tk／製品動作を維持した。
 - 局所実Tk試験：共通画面のReturn／Space／Esc、Managerの初期focus／Treeview矢印／Return／Space／disabled時の非実行／Escが合格。`py_compile` と `git diff --check` も合格。
+- 実Explorerから統合画面を起動し、依頼入力の初期focus、Shift+Tab、実行先の矢印選択、Tab巡回、EnterによるLibrary Manager起動を実機確認した。Managerの残存プロセスは所有証跡と `processing=false` を照合して終了。次回起動でstale lockが自動回復し、正式fieldが合格した。
 - 判定側修正：モーダル表示中に正常にdisabledとなるManager rootだけを許容し、クリック対象のenabled必須は維持した。CMSはWindows PowerShellへファイル引数で渡し、Authenticodeは既存のPowerShell 7を分離利用する。署名status、thumbprint、subject、鍵OIDの検査は維持した。旧署名付きbundleではCMS／Authenticodeのエラーが消え、候補commit・wheel・導入版・件数の更新待ちだけとなった。
-- push・CI・mergeはまだ完了していない。
+- push・CI・mergeは本記録の次に実行する。
 
 以下は調査当時の候補・失敗を残した履歴であり、最新配布物の状態ではない。
 

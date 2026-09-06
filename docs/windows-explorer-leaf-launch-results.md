@@ -11,7 +11,7 @@
   "release_scope": "direct-root-unified-selector",
   "release_version": "0.5.9",
   "distribution_scope": "local-self-signed",
-  "full_test_count": 415,
+  "full_test_count": 419,
   "menu_leaf_count": 0,
   "menu_action_count": 1,
   "root_launcher_entry_count": 1,
@@ -20,12 +20,12 @@
   "register_folder_entry_count": 0,
   "selection_kinds": ["package", "skill"],
   "pack_skill_counts": [1, 9, 12],
-  "release_code_sha": "3cbb8de57cb8fce32d82fc163c7e5ab45ee86ccd",
-  "wheel_payload_sha256": "a0b3e08cdb98ce1dcf5ef068a145272a258eba413d6b367420265b9561dac040",
-  "automated_status": "LOCAL_RELEASE_GATE_PASS_415",
+  "release_code_sha": "be72125f9d3de9755331106b68a8df4a445659b1",
+  "wheel_payload_sha256": "2333d52148fed14e619e0017487f4810ac74cba7fe5fd9126179e3e073f14b88",
+  "automated_status": "LOCAL_RELEASE_GATE_PASS_419",
   "windows_explorer_field_status": "PASS_REAL_EXPLORER_DIRECT_ROOT_INVOKE_0_5_9",
-  "windows_explorer_field_invoke_log_sha256": "a3d5e2a1fd9d6389164c97d7f72e1a689e4304b64f214f13a9b79fe98bfb61a8",
-  "windows_explorer_field_bundle_sha256": "a1d4a59097f13dd8d26a54f45ba8a6ba389a247ac73c1be4f171612d045a1bb7",
+  "windows_explorer_field_invoke_log_sha256": "a89483456088fac775616363ab7bb0fd2896b2ac44d9d9b8fdf453b71b104f35",
+  "windows_explorer_field_bundle_sha256": "82d5ec8241ef96ab91e4e0a029669992fba4d9c9cde38810cc8072d554311b18",
   "windows_explorer_field_signer_thumbprint": "4fda581516d0b016ed7db4c97c1e033f2d50c3f9",
   "macos_finder_field_status": "CI_SEMANTIC_ONLY_REAL_UI_NOT_CLAIMED_FOR_0_5_2",
   "public_distribution_status": "NOT_CLAIMED_REQUIRES_EXTERNAL_PUBLISHER",
@@ -33,7 +33,7 @@
 }
 explorer-results-ledger:end -->
 
-- 統合テスト: `python -m unittest discover -s tests -q` — 415件、346.300秒。物理入力試験1件が最終境界のカーソル座標ずれで失敗、環境依存1件skip。失敗した `test_selected_row_lineage_is_kept_between_left_and_right_clicks` は変更なしの単独再検証で成功（1件、2.934秒）。全体の一発PASSとは区別する。
+- 統合テスト: 現行suite — 419 tests PASS をCIの必須条件とする。ローカルでは前回全体415件に対し、追加したキーボード操作2件とrelease gate 2件を局所実行した。前回の全体実行は物理入力試験1件のカーソル座標ずれのみ失敗し、同試験は変更なしの単独再検証で成功した。これをローカル全体一発PASSとは主張しない。
 - Windows実機証拠: [署名付きbundle](evidence/windows-explorer-direct-root-0.5.9.json)、[native invoke記録](evidence/windows-explorer-direct-root-0.5.9.log)。Windows MVPの範囲で使用し、macOS実機やAI回答の完成を主張しません。
 - runtime skill folderを右クリックした際のworkspaceエラー経路そのものを廃止した。選択は正当なskill指定として保持し、task workspaceだけを`None`へ正規化して、利用者の再選択なしでprojectless新規タスクへ自動handoffする。最新build情報はリリース時のledgerを正とする。
 - task workspaceをruntime skill rootから分離した。`~/.codex/skills`、`~/.agents/skills`、`~/.claude/skills`と配下を右クリックした場合は拒否せず、projectless新規タスクへ自動変換する。通常フォルダーは`作業対象フォルダー`として渡すが、runtime skill rootをcontract、prompt、deep linkの作業場所には入れない。最新build情報はリリース時のledgerを正とする。
