@@ -13,6 +13,10 @@
 
 終了修正の確認：fresh direct Manager PID 26376に修正済み `Close-LibraryManagerRecoverably` を実行し、起動案内OK→本体WM_CLOSE 1回→終了案内OK→プロセス終了を11.77秒で確認。libraryの前後SHA-256はともに `9779285d13e5bcc6b01ff3616ec7786f37078154001e11e49aae45c391c8fb7a`。ログ：`%TEMP%/skill-magnet-close-helper-fresh/{stdout,stderr}.log`。これは実際の試験関数による局所実機結果で、全Explorer経路の成功とは区別する。
 
+候補 `b5ee53c` の正式fieldはManager終了・背景busy・閉鎖後再起動を通過し、8番目の選択フォルダー起動（PID 20544）で確認画面検索がtimeoutした。成功bundleは作成されていない。ログ：`%TEMP%/skill-magnet-field-b5ee53c/field.stdout-stderr.log`。同操作のdirect CLI局所確認（PID 33228）は約1秒で画面を取得し終了も成功、stdout/stderrは空。これだけで製品正常または試験不良とは断定せず、Explorer経由の再起動との差を調査する。
+
+実Explorerの局所再起動確認（12.38秒）：同じ選択folderでPID 16504→閉鎖→PID 31956の新規起動が成功。両回とも確認画面・ownerのcontext_selectionを観測し、閉鎖後はPID/window/ownerが消滅。config/library/transactionsとfolder内容は前後不変。証跡：`%TEMP%/skill-magnet-explorer-selected-relaunch/result.json`。8番目timeoutはこの局所経路では再現しないため、製品コードは追加変更しない。
+
 ## 出荷範囲
 
 Windows Explorerからの起動、既存スキルの登録・更新・削除とGitHub反映、Codex Desktopアプリ／Claude Codeデスクトップアプリへの依頼受け渡し、エラー・中断からの復旧。

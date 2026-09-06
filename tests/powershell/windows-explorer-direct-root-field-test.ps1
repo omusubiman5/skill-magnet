@@ -2164,7 +2164,18 @@ function Wait-VisibleWindowByPrefix(
         if ($matches.Count -gt 0) { return $matches[0] }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
-    throw "UI Automation window did not appear: $Prefix"
+    $processAlive = if ($ProcessId -gt 0) {
+        $null -ne (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
+    } else { $null }
+    $visibleTitles = if ($ProcessId -gt 0) {
+        @([SkillMagnetFieldInput]::VisibleTopLevelWindows([uint32]$ProcessId) |
+            ForEach-Object { [SkillMagnetFieldInput]::WindowText([IntPtr]$_) }) -join ", "
+    } else { "" }
+    throw (
+        "UI Automation window did not appear: $Prefix; " +
+        "expected_process_id=$ProcessId; process_alive=$processAlive; " +
+        "visible_top_level_titles=$visibleTitles"
+    )
 }
 
 function Wait-VisibleWindowClosed([int]$ProcessId, [string]$Prefix, [int]$Seconds = 30) {
