@@ -2974,6 +2974,10 @@ Add-Type -ReferencedAssemblies @(
 ) -TypeDefinition $source
 $functionSource = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("{encoded_functions}"))
 . ([ScriptBlock]::Create($functionSource))
+$dpiDiagnostic = ""
+if (-not [SkillMagnetFieldInput]::ConfigureInputDpiAwareness([ref]$dpiDiagnostic)) {{
+    throw "Could not enable per-monitor-v2 DPI awareness for physical-input probe: $dpiDiagnostic"
+}}
 function Sha([string]$Text) {{
     $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Text)
     [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes)).Replace("-", "").ToLowerInvariant()

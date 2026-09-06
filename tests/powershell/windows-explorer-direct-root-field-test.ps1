@@ -459,10 +459,13 @@ public static class SkillMagnetFieldInput {
         IntPtr hWnd, uint flags);
     [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
     [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
-    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll", SetLastError = true)] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] public static extern bool PostMessage(
         IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT point);
+    [DllImport("user32.dll", SetLastError = true)] private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr value);
+    [DllImport("user32.dll")] private static extern IntPtr GetThreadDpiAwarenessContext();
+    [DllImport("user32.dll")] private static extern bool AreDpiAwarenessContextsEqual(IntPtr left, IntPtr right);
     [DllImport("user32.dll")] public static extern void mouse_event(
         uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -474,6 +477,25 @@ public static class SkillMagnetFieldInput {
         StringBuilder text = new StringBuilder(length + 1);
         GetWindowText(hWnd, text, text.Capacity);
         return text.ToString();
+    }
+    public static bool ConfigureInputDpiAwareness(out string diagnostic) {
+        IntPtr requested = new IntPtr(-4); // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+        IntPtr prior = SetThreadDpiAwarenessContext(requested);
+        int error = Marshal.GetLastWin32Error();
+        IntPtr actual = GetThreadDpiAwarenessContext();
+        bool matches = AreDpiAwarenessContextsEqual(actual, requested);
+        diagnostic = "prior=" + prior.ToInt64() + ";error=" + error +
+            ";actual=" + actual.ToInt64() + ";per_monitor_v2=" + matches;
+        return matches;
+    }
+    public static bool SetCursorPosExact(int x, int y, out string diagnostic) {
+        bool set = SetCursorPos(x, y);
+        int error = Marshal.GetLastWin32Error();
+        POINT actual;
+        bool read = GetCursorPos(out actual);
+        diagnostic = "set=" + set + ";error=" + error + ";read=" + read +
+            ";expected=" + x + "," + y + ";actual=" + actual.X + "," + actual.Y;
+        return set && read && actual.X == x && actual.Y == y;
     }
     public static bool FocusWindow(IntPtr hWnd) {
         if (!IsWindow(hWnd)) return false;
@@ -652,6 +674,11 @@ public static class SkillMagnetFieldInput {
                 (String.IsNullOrEmpty(expectedChildRuntimeKey) ||
                  expectedChildClassName == null))) return InitialFailure("arguments");
         byte[] initialReceiptBytes = ReadPinnedReceipt(receiptPath, out initialReceipt);
+        string initialCursorDiagnostic;
+        if (!SetCursorPosExact(x, y, out initialCursorDiagnostic)) {
+            LastClickException = "cursor:" + initialCursorDiagnostic;
+            return InitialFailure("cursor");
+        }
         POINT cursor;
         if (!GetCursorPos(out cursor) || cursor.X != x || cursor.Y != y) return InitialFailure("cursor");
         if (GetForegroundWindow() != expectedForeground) return InitialFailure("foreground");
@@ -713,7 +740,11 @@ public static class SkillMagnetFieldInput {
         // mouse send itself; no sleep, callback, UIA lookup, receipt read, or
         // HWND lookup may occur between this complete identity check and send.
         string finalFailure = null;
-        if (!GetCursorPos(out finalCursor) || finalCursor.X != x || finalCursor.Y != y) finalFailure = "cursor";
+        if (!GetCursorPos(out finalCursor) || finalCursor.X != x || finalCursor.Y != y) {
+            LastClickException = "final_cursor=expected:" + x + "," + y +
+                ";actual:" + finalCursor.X + "," + finalCursor.Y;
+            finalFailure = "cursor";
+        }
         else if (finalForeground != expectedForeground) finalFailure = "foreground";
         else if (finalHit != widget) finalFailure = "hit";
         else if (GetAncestor(finalHit, 2) != root) finalFailure = "root";
@@ -1236,6 +1267,9 @@ public sealed class SkillMagnetStableLogReader : IDisposable {
     }
 }
 "@
+$dpiDiagnostic = ""
+Assert-Field ([SkillMagnetFieldInput]::ConfigureInputDpiAwareness([ref]$dpiDiagnostic)) `
+    "Could not enable per-monitor-v2 DPI awareness for physical input: $dpiDiagnostic"
 
 function Get-VisibleNamedElements([string]$Name, [int]$ProcessId = 0) {
     $condition = New-Object System.Windows.Automation.PropertyCondition(
@@ -1506,8 +1540,6 @@ function Invoke-CheckedExplorerPhysicalClick(
         $rowHeight = [double]$ExpectedRowSnapshot.height
     }
     $expectedHwnd = $firstHwnd
-    Assert-Field ([SkillMagnetFieldInput]::SetCursorPos($X, $Y)) `
-        "Could not move the cursor to the verified Explorer target."
     Assert-Field ([SkillMagnetFieldInput]::CheckedClickCurrent(
         $X, $Y, $expectedHwnd, $rootHandle, $rootPid,
         [string]$identity.executable_path, [long]$identity.start_time_utc_ticks,
