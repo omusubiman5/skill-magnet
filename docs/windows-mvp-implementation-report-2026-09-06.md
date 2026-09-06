@@ -1,13 +1,13 @@
 # Windows版MVP 実装・受入記録
 
-状態：PR #39マージ済み（commit `cf0a24eedb9e4cbcec01c693cf25d54e40530e1a`）。候補wheel・導入版Python runtime・署名付きfield証跡・release台帳の整合性ゲート（`explorer_results_gate.py`）合格。局所4テスト（起動直後終了、キーボード操作、処理中終了、Manager操作）全件合格。
+状態：PR #39マージ済み（commit `728a35a45e505195d278a9a63db6bbfcdfe45521`）。候補wheel・導入版Python runtime・署名付きfield証跡・release台帳の整合性ゲート（`explorer_results_gate.py`）合格。局所4テスト（起動直後終了、キーボード操作、処理中終了、Manager操作）全件合格。
 
 ## 最新の成果と受入判定
 
-- 現在の配布物：`%TEMP%/skill-magnet-release-5107bf0/skill_magnet-0.5.9-py3-none-any.whl`。commit `cf0a24eedb9e4cbcec01c693cf25d54e40530e1a` から生成し、同wheelを導入済み。
-- wheel SHA-256：`8518cb1e57932cf0499f3609254b6dcdc2c6a75bbf71329527cbc4ea9eb4a276`。論理payload SHA-256：`ac78af13012d4ce42e8197c4655709facdae1c88f30fdb92803fcb340bb501ea`。
+- 現在の配布物：`%TEMP%/skill-magnet-release-5107bf0/skill_magnet-0.5.9-py3-none-any.whl`。commit `728a35a45e505195d278a9a63db6bbfcdfe45521` から生成し、同wheelを導入済み。
+- wheel SHA-256：`982b66721734eb58acc6e0d4db4e5fa0f27aa8f7d3d936edaeea1a5eb60ad549`。論理payload SHA-256：`dccb51bafa46579bb531e500a6365b17cb5b66b697f000f965a4b3eb5ce077ab`。
 - Python runtime payload SHA-256：`0e4e1bb59866e1c394f93bbf29ba590d1172e272456dbce77b521d2ffd7b6cd0`（release入力と完全一致）。
-- 正式fieldは終了コード0。実機ログSHA-256は `a89483456088fac775616363ab7bb0fd2896b2ac44d9d9b8fdf453b71b104f35`、署名付きbundle SHA-256は `1315d5c37c5bdceb7ae0fe5692f2e8a86c7ce33b510842538361cfd5030026f7`。
+- 正式fieldは終了コード0。実機ログSHA-256は `a89483456088fac775616363ab7bb0fd2896b2ac44d9d9b8fdf453b71b104f35`、署名付きbundle SHA-256は `b9404f7c905873a26fed7034973878fcfac5315a1c756685d88be673ded07695`。
 - キーボード受入計画：`docs/windows-mvp-keyboard-test-plan-2026-09-06.md`。アプリ内の座標クリックを受入条件から外し、Tab／Shift+Tab／矢印／Enter／Space／Escを基準にした。
 - 製品修正：共通画面は依頼入力へ、Library Managerは現在操作できる登録元または復旧ボタンへ初期focusを置く。両画面でfocused buttonのEnterとEscの安全終了を追加し、読み取り専用の変更内容表示をTab順から外した。Space、Treeview矢印、busy guardは既存Tk／製品動作を維持した。
 - 局所実Tk試験・受入：局所4テスト（起動直後終了、キーボード操作、処理中終了、Manager操作）は全件合格。`py_compile` と `git diff --check` も合格。
