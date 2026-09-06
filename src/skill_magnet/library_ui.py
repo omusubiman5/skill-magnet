@@ -847,9 +847,11 @@ def _restore_managed_repository_from_github_locked(
     if staging.exists() or backup.exists():
         raise SkillMagnetError("復旧用の一時領域が既に存在します。もう一度実行してください")
     try:
-        clone_command = [
-            "git", "clone", "--depth", "1", "--", remote.strip(), str(staging)
-        ]
+        clone_command = (
+            ["git", "clone", "--", remote.strip(), str(staging)]
+            if commit
+            else ["git", "clone", "--depth", "1", "--", remote.strip(), str(staging)]
+        )
         completed = (
             _run_external(
                 clone_command,
@@ -2820,13 +2822,6 @@ def show_library_manager(
             processing_status.set(
                 "復旧が必要です。GitHub URLを確認し『GitHubから復旧』を押してください。"
             )
-            messagebox.showerror(
-                "ローカルライブラリを読み取れません",
-                f"原因: {catalog_error}\n\n"
-                "次の操作: 公開先のGitHub URLを確認し、"
-                "『GitHubから復旧』を押してください。元データはバックアップとして残ります。",
-                parent=root,
-            )
             if recovery_button is not None:
                 root.after_idle(recovery_button.focus_set)
             return
@@ -2859,6 +2854,7 @@ def show_library_manager(
         )
         hydration_needed = bool(
             configured_remote
+            and not os.path.lexists(repository_path)
             and not managed_repository_has_unfinished_transaction(
                 state_dir, repository_path, remote=configured_remote
             )
