@@ -79,16 +79,13 @@ try {
                 -CertStoreLocation Cert:\CurrentUser\TrustedPeople | Out-Null
             Import-Certificate -FilePath $legacyCer `
                 -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null
-            if ($index -eq 1) {
-                Remove-Item -LiteralPath ("Cert:\CurrentUser\My\" + $legacy.Thumbprint) -Force
-            }
         }
         New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
         [ordered]@{
             thumbprint = $legacyThumbprints[-1]
-            created_my = $false
-            created_trusted_people = $false
-            created_machine_trusted_people = $false
+            created_my = $true
+            created_trusted_people = $true
+            created_machine_trusted_people = $true
             owned_certificate_thumbprints = @($legacyThumbprints)
         } | ConvertTo-Json | Set-Content `
             -LiteralPath (Join-Path $installRoot "certificate-state.json") `
