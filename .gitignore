@@ -4,6 +4,7 @@ __pycache__/
 .skill-magnet/
 build/
 dist/
+outputs/
 *.egg-info/
 .e2e-state/
 native/windows-modern-context-menu/out/

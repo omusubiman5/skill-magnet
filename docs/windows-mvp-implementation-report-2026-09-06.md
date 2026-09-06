@@ -1,8 +1,21 @@
 # Windows版MVP 実装・受入記録
 
-状態：修正済み配布候補を出力・導入済み。終了操作の局所実機確認は合格。正式field・公開判定を継続中。
+状態：修正済み配布候補を導入済み。正式Explorer fieldは `PASS_REAL_EXPLORER_DIRECT_ROOT_INVOKE_0_5_9`。リリース判定の不整合を修正中で、公開完了ではない。
 
-## 今回の出力
+## 最新の成果と残る判定
+
+- 現在の配布物：`outputs/windows-mvp-be66560/skill_magnet-0.5.9-py3-none-any.whl`。製品コード `c457c65` から生成し、同じwheelを導入済み。
+- wheel SHA-256：`76abd3cc87aeef972dfbd591e9f4089436b865e116d60d9e272eb1ded0a8f635`。
+- 候補 `3cbb8de57cb8fce32d82fc163c7e5ab45ee86ccd` の正式fieldは終了コード0。実機ログと署名付きbundleは `docs/evidence/windows-explorer-direct-root-0.5.9.log` と `.json`。
+- キーボード受入計画：`docs/windows-mvp-keyboard-test-plan-2026-09-06.md`。アプリ内の座標クリックを受入条件から外し、Tab／Shift+Tab／矢印／Enter／Space／Escを基準にした。
+- 製品修正：共通画面は依頼入力へ、Library Managerは現在操作できる登録元または復旧ボタンへ初期focusを置く。両画面でfocused buttonのEnterとEscの安全終了を追加し、読み取り専用の変更内容表示をTab順から外した。Space、Treeview矢印、busy guardは既存Tk／製品動作を維持した。
+- 局所実Tk試験：共通画面のReturn／Space／Esc、Managerの初期focus／Treeview矢印／Return／Space／disabled時の非実行／Escが合格。`py_compile` と `git diff --check` も合格。
+- 判定側修正：モーダル表示中に正常にdisabledとなるManager rootだけを許容し、クリック対象のenabled必須は維持した。CMSはWindows PowerShellへファイル引数で渡し、Authenticodeは既存のPowerShell 7を分離利用する。署名status、thumbprint、subject、鍵OIDの検査は維持した。旧署名付きbundleではCMS／Authenticodeのエラーが消え、候補commit・wheel・導入版・件数の更新待ちだけとなった。
+- push・CI・mergeはまだ完了していない。
+
+以下は調査当時の候補・失敗を残した履歴であり、最新配布物の状態ではない。
+
+## 調査履歴：初期の出力
 
 - 配布候補：`outputs/windows-mvp-a0e1639/skill_magnet-0.5.9-py3-none-any.whl`
 - 最終fieldログ：`outputs/windows-mvp-a0e1639/field-result.log`

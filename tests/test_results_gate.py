@@ -537,6 +537,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
         manager_element = self._uia_element(
             "Library Manager", "ControlType.Window", 4242, 21
         )
+        manager_element["is_enabled"] = False
         manager_busy_element = self._uia_element(
             "Skill Magnet エラー", "ControlType.Window", 4244, 22
         )
@@ -669,6 +670,7 @@ class ExplorerResultsGateTest(unittest.TestCase):
         registration_manager = self._uia_element(
             "Library Manager", "ControlType.Window", 4747, 41
         )
+        registration_manager["is_enabled"] = False
         registration_error = self._uia_element(
             "Skill Library Manager", "ControlType.Window", 4747, 42
         )
@@ -3581,6 +3583,98 @@ finally {{
                 errors = validate_field_bundle(ledger, bundle_path, invoke_log, ROOT)
             self.assertEqual(errors, [])
             self.assertEqual(validator.call_count, 6)
+
+    def test_field_bundle_allows_only_modal_disabled_manager_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            ledger, bundle_path, invoke_log, bundle, _ = self._field_fixture(Path(temporary))
+            transcript = base64.b64decode(bundle["uia_transcript"]["bytes_base64"])
+            entries = [json.loads(line) for line in transcript.decode("utf-8").splitlines()]
+            self.assertFalse(entries[4]["data"]["element"]["is_enabled"])
+            self.assertFalse(entries[12]["data"]["manager_element"]["is_enabled"])
+            with mock.patch(
+                "integration.explorer_results_gate._verify_windows_field_attestation",
+                return_value=[],
+            ):
+                self.assertEqual(
+                    validate_field_bundle(ledger, bundle_path, invoke_log, ROOT), []
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            ledger, bundle_path, invoke_log, bundle, _ = self._field_fixture(Path(temporary))
+            transcript = base64.b64decode(bundle["uia_transcript"]["bytes_base64"])
+            entries = [json.loads(line) for line in transcript.decode("utf-8").splitlines()]
+            entries[2]["data"]["element"]["is_enabled"] = False
+            self._replace_transcript(bundle, entries)
+            self._rewrite_bundle(bundle_path, bundle, ledger)
+            with mock.patch(
+                "integration.explorer_results_gate._verify_windows_field_attestation",
+                return_value=[],
+            ):
+                errors = validate_field_bundle(ledger, bundle_path, invoke_log, ROOT)
+            self.assertIn(
+                "field bundle selected_item GUI UIAutomation visibility/state mismatch",
+                errors,
+            )
+
+    def test_windows_attestation_verifier_uses_file_parameter_binding(self) -> None:
+        captured: list[tuple[list[str], str]] = []
+
+        def fake_run(arguments: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if "-File" in arguments:
+                script_path = Path(arguments[arguments.index("-File") + 1])
+                self.assertTrue(script_path.is_file())
+                script = script_path.read_text(encoding="utf-8")
+            else:
+                self.assertIn("-Command", arguments)
+                script = str(arguments[arguments.index("-Command") + 1])
+            captured.append((arguments, script))
+            if "-ContentPath" in arguments:
+                self.assertIn("param([string]$ContentPath", script)
+                self.assertIn("$cms.CheckSignature($true)", script)
+                self.assertNotIn("Get-AuthenticodeSignature", script)
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    '{"cms_thumbprint":"a","cms_subject":"b","cms_digest_oid":"c","cms_public_key_oid":"d"}',
+                    "",
+                )
+            self.assertIn("$env:SKILL_MAGNET_ATTEST_DLL", script)
+            self.assertIn(
+                "$authenticodeCommand.Source -cne 'Microsoft.PowerShell.Security'",
+                script,
+            )
+            self.assertIn(
+                "Get-AuthenticodeSignature -LiteralPath $env:SKILL_MAGNET_ATTEST_DLL",
+                script,
+            )
+            self.assertNotIn("Add-Type -AssemblyName System.Security", script)
+            self.assertNotIn("Import-Module", script)
+            environment = kwargs.get("env")
+            self.assertIsInstance(environment, dict)
+            self.assertTrue(
+                str(environment["SKILL_MAGNET_ATTEST_DLL"]).endswith(
+                    "SkillMagnetCommand.dll"
+                )
+            )
+            return subprocess.CompletedProcess(arguments, 1, "", "synthetic failure")
+
+        with mock.patch(
+            "integration.explorer_results_gate.subprocess.run", side_effect=fake_run
+        ), mock.patch(
+            "integration.explorer_results_gate.shutil.which", return_value="C:\\Program Files\\PowerShell\\7\\pwsh.exe"
+        ):
+            errors = results_gate._verify_windows_field_attestation(
+                b"payload", b"signature", b"dll", "a" * 40
+            )
+        self.assertEqual(len(captured), 2)
+        cms_arguments, _ = captured[0]
+        authenticode_arguments, _ = captured[1]
+        self.assertIn("-File", cms_arguments)
+        self.assertTrue(cms_arguments[cms_arguments.index("-ContentPath") + 1].endswith("attestation-content.bin"))
+        self.assertTrue(cms_arguments[cms_arguments.index("-SignaturePath") + 1].endswith("attestation.p7s"))
+        self.assertIn("-Command", authenticode_arguments)
+        self.assertEqual(authenticode_arguments[0], "C:\\Program Files\\PowerShell\\7\\pwsh.exe")
+        self.assertEqual(errors, ["field bundle Authenticode attestation is invalid: synthetic failure"])
 
     def test_field_bundle_rejects_missing_ui_receipts_and_missing_surface(self) -> None:
         for label, mutation, expected in (

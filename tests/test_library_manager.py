@@ -106,6 +106,74 @@ class LibraryManagerTests(unittest.TestCase):
                 f"delay={delay} stdout={completed.stdout} stderr={completed.stderr}",
             )
 
+    @unittest.skipUnless(os.name == "nt", "actual Windows Tk keyboard lifecycle")
+    def test_library_manager_keyboard_focus_tree_and_escape_close_safely(self) -> None:
+        source_root = Path(__file__).resolve().parents[1]
+        code = "\n".join(
+            (
+                "import sys,tempfile,time,tkinter as tk",
+                "from pathlib import Path",
+                f"sys.path.insert(0, {str(source_root / 'src')!r})",
+                "from tkinter import messagebox,ttk",
+                "import skill_magnet.library_ui as ui",
+                "scratch=tempfile.TemporaryDirectory(prefix='skill-magnet-manager-keyboard-')",
+                "state=Path(scratch.name)",
+                "failures=[]",
+                "messagebox.showerror=messagebox.showinfo=messagebox.showwarning=lambda *_,**__: None",
+                "calls=[]; original_button=ttk.Button",
+                "def tracked_button(*args,**kwargs):",
+                " command=kwargs.get('command'); button=original_button(*args,**kwargs); name=getattr(command,'__name__','')",
+                " if name in {'update_selected','delete_selected_item'}:",
+                "  def observe(name=name): calls.append(name)",
+                "  button.configure(command=observe); button._keyboard_probe_name=name",
+                " return button",
+                "ttk.Button=tracked_button",
+                "class Done:",
+                " def is_alive(self): return False",
+                "def immediate(operation,**kwargs):",
+                " event=kwargs['cancel_event']; outcome={}",
+                " try: outcome['value']=operation(event)",
+                " except BaseException as exc: outcome['error']=exc",
+                " return event,Done(),outcome",
+                "ui.start_library_background_operation=immediate",
+                "def descendants(widget):",
+                " yield from widget.winfo_children()",
+                " for child in widget.winfo_children(): yield from descendants(child)",
+                "def ready(_):",
+                " root=tk._default_root; deadline=time.monotonic()+8",
+                " def exercise():",
+                "  try:",
+                "   widgets=list(descendants(root))",
+                "   focus=root.focus_get()",
+                "   if focus is None or focus.winfo_class() not in {'TEntry','Treeview','TButton'} or str(focus.cget('state'))=='disabled':",
+                "    if time.monotonic()<deadline: root.after(50,exercise); return",
+                "    raise AssertionError(focus)",
+                "   preview=next(w for w in widgets if w.winfo_class()=='Text')",
+                "   assert not root.tk.getboolean(preview.cget('takefocus')), preview.cget('takefocus')",
+                "   tree=next(w for w in widgets if w.winfo_class()=='Treeview')",
+                "   tree.insert('', 'end', iid='pack:keyboard', text='keyboard', open=True)",
+                "   tree.insert('pack:keyboard', 'end', iid='skill:keyboard:sample', text='sample')",
+                "   tree.selection_set('pack:keyboard'); tree.focus('pack:keyboard'); tree.focus_set(); root.update(); tree.event_generate('<Down>'); root.update()",
+                "   assert tree.selection()==('skill:keyboard:sample',), (tree.selection(),tree.focus())",
+                "   update=next(w for w in widgets if getattr(w,'_keyboard_probe_name','')=='update_selected')",
+                "   delete=next(w for w in widgets if getattr(w,'_keyboard_probe_name','')=='delete_selected_item')",
+                "   update.focus_set(); update.event_generate('<Return>'); root.update(); assert calls==['update_selected'], calls",
+                "   update.configure(state='disabled'); update.event_generate('<Return>'); root.update(); assert calls==['update_selected'], calls",
+                "   update.configure(state='normal'); delete.focus_set(); delete.event_generate('<space>'); root.update(); assert calls==['update_selected','delete_selected_item'], calls",
+                "  except Exception as exc: failures.append(repr(exc))",
+                "  root.event_generate('<Escape>')",
+                " root.after(100,exercise)",
+                f"ui.show_library_manager(config_path=Path({str(source_root / 'skill-magnet.json')!r}),state_dir=state/'state',window_ready=ready)",
+                "assert not (state/'state'/'library-manager.owner.json').exists()",
+                "assert not failures, failures",
+                "scratch.cleanup()",
+            )
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, timeout=15
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
     @unittest.skipUnless(os.name == "nt", "actual Windows Tk startup lifecycle")
     def test_register_selected_rejects_missing_skill_before_library_prepare(self) -> None:
         source_root = Path(__file__).resolve().parents[1]

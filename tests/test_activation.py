@@ -4035,6 +4035,50 @@ class ActivationEndToEndTest(unittest.TestCase):
                 f"delay={delay} stdout={completed.stdout} stderr={completed.stderr}",
             )
 
+    @unittest.skipUnless(os.name == "nt", "actual Windows Tk keyboard lifecycle")
+    def test_context_window_keyboard_focus_enter_space_and_escape_close_safely(self) -> None:
+        source_root = Path(__file__).resolve().parents[1]
+        code = "\n".join(
+            (
+                "import sys,tempfile,tkinter as tk",
+                "from pathlib import Path",
+                f"sys.path.insert(0, {str(source_root / 'src')!r})",
+                "from skill_magnet.activation import ActivationEngine",
+                "from skill_magnet.core import Config",
+                "from skill_magnet.ui import acquire_context_ui_lease,show_context_selection",
+                f"config=Config.load(Path({str(source_root / 'skill-magnet.json')!r}))",
+                "scratch=tempfile.TemporaryDirectory(prefix='skill-magnet-context-keyboard-')",
+                "state=Path(scratch.name); project=state/'project'; project.mkdir()",
+                "engine=ActivationEngine(config,state/'state')",
+                "key=sys.argv[1]; failures=[]; lease=acquire_context_ui_lease(engine.state_dir,project)",
+                "def ready(_):",
+                " root=tk._default_root",
+                " def exercise():",
+                "  try:",
+                "   entries=[w for w in root.winfo_children() if w.winfo_class()=='TEntry']",
+                "   assert len(entries)==1 and root.focus_get() is entries[0]",
+                "   if key == '<Escape>': root.event_generate(key)",
+                "   else:",
+                "    cancel=[w for w in root.winfo_children() if w.winfo_class()=='TButton' and w.winfo_ismapped()][-1]",
+                "    cancel.focus_set(); root.update(); cancel.event_generate(key)",
+                "  except Exception as exc: failures.append(repr(exc)); root.event_generate('<Escape>')",
+                " root.after(100,exercise)",
+                "try:",
+                " result=show_context_selection(engine,platform='windows',project=project,pack_id='codex-cli',runtime='codex',allow_dynamic_selection=True,window_ready=lambda hwnd:(lease.publish_window(window_handle=hwnd,phase='context_selection'),ready(hwnd)))",
+                "finally: lease.release()",
+                "assert result is None and not failures, failures",
+                "scratch.cleanup()",
+            )
+        )
+        for key in ("<Return>", "<space>", "<Escape>"):
+            completed = subprocess.run(
+                [sys.executable, "-c", code, key],
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
     @unittest.skipUnless(os.name == "nt", "actual Windows Tk close lifecycle")
     def test_context_window_close_returns_before_noncooperative_contract_worker(self) -> None:
         source_root = Path(__file__).resolve().parents[1]

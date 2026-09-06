@@ -8,6 +8,7 @@ import os
 import io
 import json
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -1243,7 +1244,12 @@ def _windows_command_line_to_argv(command: str) -> list[str]:
 
 
 def _validate_uia_element(
-    value: object, *, expected_name: str, expected_control_type: str, label: str
+    value: object,
+    *,
+    expected_name: str,
+    expected_control_type: str,
+    label: str,
+    allow_disabled: bool = False,
 ) -> list[str]:
     errors: list[str] = []
     keys = {
@@ -1263,7 +1269,11 @@ def _validate_uia_element(
         return [f"field bundle {label} UIAutomation element keys do not match the contract"]
     if value.get("name") != expected_name or value.get("control_type") != expected_control_type:
         errors.append(f"field bundle {label} UIAutomation identity mismatch")
-    if value.get("is_enabled") is not True or value.get("is_offscreen") is not False:
+    if (
+        not isinstance(value.get("is_enabled"), bool)
+        or (not allow_disabled and value.get("is_enabled") is not True)
+        or value.get("is_offscreen") is not False
+    ):
         errors.append(f"field bundle {label} UIAutomation visibility/state mismatch")
     if not isinstance(value.get("process_id"), int) or int(value["process_id"]) <= 0:
         errors.append(f"field bundle {label} UIAutomation process_id is invalid")
@@ -1872,6 +1882,7 @@ def _validate_uia_transcript(
                 expected_name=manager_name,
                 expected_control_type="ControlType.Window",
                 label="Library Manager window",
+                allow_disabled=True,
             )
         )
         if not manager_name.startswith("Library Manager"):
@@ -2020,6 +2031,7 @@ def _validate_uia_transcript(
                     expected_name=name,
                     expected_control_type="ControlType.Window",
                     label=label,
+                    allow_disabled=key == "manager_element",
                 )
             )
         root_claims = {
@@ -2401,8 +2413,8 @@ def _verify_windows_field_attestation(
     signed_payload: bytes, signature: bytes, dll_payload: bytes, signer_thumbprint: str
 ) -> list[str]:
     """Verify detached CMS and require the installed DLL's trusted signer."""
-    script = r"""
-param([string]$ContentPath, [string]$SignaturePath, [string]$DllPath)
+    cms_script = r"""
+param([string]$ContentPath, [string]$SignaturePath)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Security
 $content = [IO.File]::ReadAllBytes($ContentPath)
@@ -2412,12 +2424,21 @@ $cms = [System.Security.Cryptography.Pkcs.SignedCms]::new($info, $true)
 $cms.Decode($encoded)
 $cms.CheckSignature($true)
 if ($cms.SignerInfos.Count -ne 1) { throw 'CMS must contain exactly one signer.' }
-$dll = Get-AuthenticodeSignature -LiteralPath $DllPath
 [ordered]@{
     cms_thumbprint = $cms.SignerInfos[0].Certificate.Thumbprint.ToLowerInvariant()
     cms_subject = $cms.SignerInfos[0].Certificate.Subject
     cms_digest_oid = $cms.SignerInfos[0].DigestAlgorithm.Value
     cms_public_key_oid = $cms.SignerInfos[0].Certificate.PublicKey.Oid.Value
+} | ConvertTo-Json -Compress
+"""
+    authenticode_script = r"""
+$ErrorActionPreference = 'Stop'
+$dll = Get-AuthenticodeSignature -LiteralPath $env:SKILL_MAGNET_ATTEST_DLL
+$authenticodeCommand = Get-Command Get-AuthenticodeSignature -CommandType Cmdlet -ErrorAction SilentlyContinue
+if ($null -eq $authenticodeCommand -or $authenticodeCommand.Source -cne 'Microsoft.PowerShell.Security') {
+    throw 'Get-AuthenticodeSignature is unavailable after loading Microsoft.PowerShell.Security.'
+}
+[ordered]@{
     dll_status = $dll.Status.ToString()
     dll_thumbprint = if ($dll.SignerCertificate) {
         $dll.SignerCertificate.Thumbprint.ToLowerInvariant()
@@ -2425,7 +2446,7 @@ $dll = Get-AuthenticodeSignature -LiteralPath $DllPath
     dll_subject = if ($dll.SignerCertificate) { $dll.SignerCertificate.Subject } else { '' }
     dll_public_key_oid = if ($dll.SignerCertificate) {
         $dll.SignerCertificate.PublicKey.Oid.Value
-    } else { '' }
+} else { '' }
 } | ConvertTo-Json -Compress
 """
     try:
@@ -2434,36 +2455,66 @@ $dll = Get-AuthenticodeSignature -LiteralPath $DllPath
             content_path = root / "attestation-content.bin"
             signature_path = root / "attestation.p7s"
             dll_path = root / "SkillMagnetCommand.dll"
+            cms_script_path = root / "verify-cms-attestation.ps1"
             content_path.write_bytes(signed_payload)
             signature_path.write_bytes(signature)
             dll_path.write_bytes(dll_payload)
-            completed = subprocess.run(
+            cms_script_path.write_text(cms_script, encoding="utf-8")
+            cms_completed = subprocess.run(
                 [
                     "powershell.exe",
                     "-NoProfile",
                     "-NonInteractive",
                     "-ExecutionPolicy",
                     "Bypass",
-                    "-Command",
-                    script,
+                    "-File",
+                    str(cms_script_path),
                     "-ContentPath",
                     str(content_path),
                     "-SignaturePath",
                     str(signature_path),
-                    "-DllPath",
-                    str(dll_path),
                 ],
                 check=False,
                 capture_output=True,
                 text=True,
             )
+            authenticode_environment = os.environ.copy()
+            authenticode_environment["SKILL_MAGNET_ATTEST_DLL"] = str(dll_path)
+            authenticode_runner = shutil.which("pwsh") or "powershell.exe"
+            authenticode_completed = subprocess.run(
+                [
+                    authenticode_runner,
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    authenticode_script,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=authenticode_environment,
+            )
     except OSError as error:
         return [f"field bundle attestation verifier could not run: {error}"]
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "unknown verification failure").strip()
+    if cms_completed.returncode != 0:
+        detail = (
+            cms_completed.stderr or cms_completed.stdout or "unknown verification failure"
+        ).strip()
         return [f"field bundle detached CMS attestation is invalid: {detail}"]
+    if authenticode_completed.returncode != 0:
+        detail = (
+            authenticode_completed.stderr
+            or authenticode_completed.stdout
+            or "unknown verification failure"
+        ).strip()
+        return [f"field bundle Authenticode attestation is invalid: {detail}"]
     try:
-        result = json.loads(completed.stdout.strip().splitlines()[-1])
+        result = json.loads(cms_completed.stdout.strip().splitlines()[-1])
+        result.update(
+            json.loads(authenticode_completed.stdout.strip().splitlines()[-1])
+        )
     except (IndexError, json.JSONDecodeError):
         return ["field bundle attestation verifier returned invalid output"]
     expected_thumbprint = signer_thumbprint.lower()

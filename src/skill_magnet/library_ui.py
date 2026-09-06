@@ -1956,7 +1956,9 @@ def show_library_manager(
         text="例: https://github.com/OWNER/skill-magnet-skills.git",
         wraplength=720,
     ).grid(row=2, column=1, columnspan=2, sticky="w", padx=4, pady=(0, 8))
-    preview_output = tk.Text(publish_frame, wrap="word", state="disabled")
+    preview_output = tk.Text(
+        publish_frame, wrap="word", state="disabled", takefocus=False
+    )
     preview_output.grid(row=3, column=0, columnspan=3, sticky="nsew")
     publish_frame.rowconfigure(3, weight=1)
     publish_frame.columnconfigure(1, weight=1)
@@ -2825,6 +2827,8 @@ def show_library_manager(
                 "『GitHubから復旧』を押してください。元データはバックアップとして残ります。",
                 parent=root,
             )
+            if recovery_button is not None:
+                root.after_idle(recovery_button.focus_set)
             return
         if legacy_migration_pending:
             set_busy(True, "旧ローカル作業を表示しています…")
@@ -2832,6 +2836,7 @@ def show_library_manager(
                 refresh_inventory()
             finally:
                 set_busy(False)
+            root.after_idle(registration_source_entry.focus_set)
             root.after(0, offer_interrupted_transaction)
             return
         if register_selected:
@@ -2842,6 +2847,7 @@ def show_library_manager(
             refresh_inventory()
         finally:
             set_busy(False)
+        root.after_idle(registration_source_entry.focus_set)
         root.after(0, offer_interrupted_transaction)
 
     def continue_after_startup_inspection() -> None:
@@ -3134,6 +3140,23 @@ def show_library_manager(
             lease.release()
 
     root.protocol("WM_DELETE_WINDOW", close_manager)
+    root.bind("<Escape>", lambda _: (close_manager(), "break")[1])
+
+    def invoke_enabled_button(_: object, target: Any) -> str:
+        if str(target.cget("state")) != "disabled":
+            target.invoke()
+        return "break"
+
+    for button in (
+        register_button,
+        *inventory_action_buttons.values(),
+        recovery_button,
+        action_button,
+    ):
+        button.bind(
+            "<Return>",
+            lambda event, target=button: invoke_enabled_button(event, target),
+        )
     if startup_close_requested:
         root.after(0, close_manager)
     try:

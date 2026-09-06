@@ -2624,6 +2624,25 @@ def show_context_selection(
     cancel_button.configure(command=close_context_window)
     apply_language()
     root.protocol("WM_DELETE_WINDOW", close_context_window)
+    root.bind("<Escape>", lambda _: (close_context_window(), "break")[1])
+
+    def invoke_enabled_button(_: object, target: Any) -> str:
+        if str(target.cget("state")) != "disabled":
+            target.invoke()
+        return "break"
+
+    for button in (
+        details_button,
+        manager_button,
+        register_button,
+        confirm_button,
+        cancel_button,
+    ):
+        button.bind(
+            "<Return>",
+            lambda event, target=button: invoke_enabled_button(event, target),
+        )
+    root.after_idle(request_entry.focus_set)
     if window_ready is not None:
         try:
             root.update_idletasks()

@@ -2,33 +2,39 @@
 
 ## 文書の位置づけ
 
-この文書は現行のExplorer統合だけを記録する正本です。現行仕様は、packを`Skill Pack: <表示名>`、単体登録したskillを`Skill: <表示名>`として表示し、固定の`このフォルダーのスキルを登録`と`Library Manager`を加えます。pack leafは新規Codex Desktopタスク内でpackのINDEXと全skillを読み、依頼に必要な最小集合を選びます。skill leafは選択された1 skillだけを固定して渡します。
+現行Windows 0.5.9は、Explorerの `Skill Magnet` 一つを押して統合画面を開きます。パック・単体スキルの選択、登録、Library Managerへの遷移はこの画面で行い、Explorerの子メニューは作りません。下段の旧版記録は履歴であり、現行版の受入証拠には使用しません。
 
 ## 現在の集約結果
 
 <!-- explorer-results-ledger:start
 {
-  "release_scope": "configured-selection-leaves",
-  "release_version": "0.5.8",
+  "release_scope": "direct-root-unified-selector",
+  "release_version": "0.5.9",
   "distribution_scope": "local-self-signed",
-  "full_test_count": 187,
-  "menu_leaf_count": 3,
-  "menu_action_count": 5,
-  "library_manager_entry_count": 1,
-  "register_folder_entry_count": 1,
+  "full_test_count": 415,
+  "menu_leaf_count": 0,
+  "menu_action_count": 1,
+  "root_launcher_entry_count": 1,
+  "configured_selection_count": 3,
+  "library_manager_entry_count": 0,
+  "register_folder_entry_count": 0,
   "selection_kinds": ["package", "skill"],
   "pack_skill_counts": [1, 9, 12],
-  "release_code_sha": "6d1e2b26662f15512ac41181628fba9b954efb2d",
-  "wheel_payload_sha256": "fc59227fcf42ade3af3d10abe0162eef3dbce7e66b36f2f69edc0c43ef15d328",
-  "automated_status": "LOCAL_RELEASE_GATE_PASS_187",
-  "windows_explorer_field_status": "PASS_REAL_RIGHT_CLICK_MENU_AND_CONFIRMATION_UI_0_5_1",
+  "release_code_sha": "3cbb8de57cb8fce32d82fc163c7e5ab45ee86ccd",
+  "wheel_payload_sha256": "a0b3e08cdb98ce1dcf5ef068a145272a258eba413d6b367420265b9561dac040",
+  "automated_status": "LOCAL_RELEASE_GATE_PASS_415",
+  "windows_explorer_field_status": "PASS_REAL_EXPLORER_DIRECT_ROOT_INVOKE_0_5_9",
+  "windows_explorer_field_invoke_log_sha256": "a3d5e2a1fd9d6389164c97d7f72e1a689e4304b64f214f13a9b79fe98bfb61a8",
+  "windows_explorer_field_bundle_sha256": "a1d4a59097f13dd8d26a54f45ba8a6ba389a247ac73c1be4f171612d045a1bb7",
+  "windows_explorer_field_signer_thumbprint": "4fda581516d0b016ed7db4c97c1e033f2d50c3f9",
   "macos_finder_field_status": "CI_SEMANTIC_ONLY_REAL_UI_NOT_CLAIMED_FOR_0_5_2",
   "public_distribution_status": "NOT_CLAIMED_REQUIRES_EXTERNAL_PUBLISHER",
   "codex_desktop_result_status": "HANDOFF_READY_ANSWER_COMPLETION_NOT_CLAIMED"
 }
 explorer-results-ledger:end -->
 
-- 統合テスト: `python -m unittest discover -s tests -v` — 187 tests PASS、環境依存1件skip
+- 統合テスト: `python -m unittest discover -s tests -q` — 415件、346.300秒。物理入力試験1件が最終境界のカーソル座標ずれで失敗、環境依存1件skip。失敗した `test_selected_row_lineage_is_kept_between_left_and_right_clicks` は変更なしの単独再検証で成功（1件、2.934秒）。全体の一発PASSとは区別する。
+- Windows実機証拠: [署名付きbundle](evidence/windows-explorer-direct-root-0.5.9.json)、[native invoke記録](evidence/windows-explorer-direct-root-0.5.9.log)。Windows MVPの範囲で使用し、macOS実機やAI回答の完成を主張しません。
 - runtime skill folderを右クリックした際のworkspaceエラー経路そのものを廃止した。選択は正当なskill指定として保持し、task workspaceだけを`None`へ正規化して、利用者の再選択なしでprojectless新規タスクへ自動handoffする。最新build情報はリリース時のledgerを正とする。
 - task workspaceをruntime skill rootから分離した。`~/.codex/skills`、`~/.agents/skills`、`~/.claude/skills`と配下を右クリックした場合は拒否せず、projectless新規タスクへ自動変換する。通常フォルダーは`作業対象フォルダー`として渡すが、runtime skill rootをcontract、prompt、deep linkの作業場所には入れない。最新build情報はリリース時のledgerを正とする。
 - Library Managerは右クリック受付後にwindowと処理名を先に表示し、同一stateの多重processをOS file lockで排他する。同一folderの二重投入、別folderの並行投入、holder強制終了後の再取得を回帰試験で確認した。独立した2 buildの論理payload SHA-256はともに`f046efc06554f6ca15fce18d8ec924c308f628c7988e6ca09fe6aeee0b1ae05d`、release codeは`03088d6bd96ecf6a10de19db616bc8d5dcd38452`である。
