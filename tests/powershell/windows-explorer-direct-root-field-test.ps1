@@ -4493,6 +4493,21 @@ try {
     $externalNativeManifestPath = Join-Path $externalRoot "SkillMagnetNativeSource.json"
     $signedMsixPath = Join-Path $externalRoot "SkillMagnet.ContextMenu.msix"
 
+    $contractProbeRoot = Join-Path $testRoot "native contract probe"
+    [IO.Directory]::CreateDirectory($contractProbeRoot) | Out-Null
+    foreach ($name in @(
+        "SkillMagnetCommand.dll", "SkillMagnetIdentity.exe",
+        "SkillMagnetNativeSource.json", "SkillMagnetMenu.tsv"
+    )) {
+        Copy-Item -LiteralPath (Join-Path $packageRoot $name) `
+            -Destination (Join-Path $contractProbeRoot $name)
+    }
+    $isolatedPackageDllPath = Join-Path $contractProbeRoot "SkillMagnetCommand.dll"
+    $packageDllSourceHash = Get-BytesSha256 ([IO.File]::ReadAllBytes($dllPath))
+    $packageDllProbeHash = Get-BytesSha256 ([IO.File]::ReadAllBytes($isolatedPackageDllPath))
+    Assert-Field ($packageDllProbeHash -eq $packageDllSourceHash) `
+        "Isolated package DLL differs from the installed package DLL."
+
     $nativeProbe = @'
 import ctypes, json, pathlib, re, sys
 result = {}
@@ -4512,7 +4527,7 @@ print(json.dumps(result, separators=(",", ":")))
 '@
     $nativeProbeJson = $nativeProbe |
         & ([string]$status.command_target) -I - `
-            $dllPath $externalDllPath | Out-String
+            $isolatedPackageDllPath $externalDllPath | Out-String
     Assert-Field ($LASTEXITCODE -eq 0) "Installed DLL native-source export probe failed."
     $nativeProbeResult = $nativeProbeJson | ConvertFrom-Json
     Assert-Field (
@@ -4524,15 +4539,6 @@ print(json.dumps(result, separators=(",", ":")))
         [int]$nativeProbeResult.external_marker_count -eq 1
     ) "Package/external DLL does not expose exactly one current native-source binding."
 
-    $contractProbeRoot = Join-Path $testRoot "native contract probe"
-    [IO.Directory]::CreateDirectory($contractProbeRoot) | Out-Null
-    foreach ($name in @(
-        "SkillMagnetCommand.dll", "SkillMagnetIdentity.exe",
-        "SkillMagnetNativeSource.json", "SkillMagnetMenu.tsv"
-    )) {
-        Copy-Item -LiteralPath (Join-Path $packageRoot $name) `
-            -Destination (Join-Path $contractProbeRoot $name)
-    }
     $contractProbeLines = @(
         & ([string]$status.command_target) -I `
             (Join-Path $repositoryRoot "native\windows-modern-context-menu\contract_test.py") `

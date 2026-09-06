@@ -23,6 +23,8 @@
 
 導入版の実案内ではSKILL.md不足と選び直し方法の表示が成功。閉鎖試験は本体と案内の同名だけでなく、取得対象そのものを誤っていた。PID 30856で旧helper返却が本体（HWND 57871158、TkTopLevel）と実測し、native MessageBox（HWND 1379742、class #32770）を再取得。同じ生存プロセスでOK→本体閉鎖→プロセス終了が2.32秒で成功した。案内検索を#32770へ限定し、閉鎖確認は当該HWNDだけを対象とした。証拠：`%TEMP%/skill-magnet-missing-dialog-identity/{identity,close-result}.json`。製品の追加変更はしていない。
 
+候補 `be66560` は全UIケースを通過しinvoke証跡を生成したが、末尾のWindowsApps DLL export検査でWinError 5。局所比較でexternal DLLの直接ロードは成功、WindowsAppsの直接ロードだけ失敗。同DLLを隔離領域へコピーし、元/先SHA-256 `8266bd1c62312dc03df2eb171b5d5d2f263a6879c3ce6ed4526d5a5690f3c4ae` 一致を確認するとexport取得は成功した。既存のcontract検査用コピーを先に作り、同一bytes確認後のコピーからexportを検証する。WindowsAppsの権限や製品DLLは変更しない。UI通過と正式bundle未生成は分けて記録する。
+
 ## 出荷範囲
 
 Windows Explorerからの起動、既存スキルの登録・更新・削除とGitHub反映、Codex Desktopアプリ／Claude Codeデスクトップアプリへの依頼受け渡し、エラー・中断からの復旧。
