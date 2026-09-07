@@ -1300,43 +1300,54 @@ def context_failure_surface(
     platform: str | None = None,
 ) -> dict[str, str]:
     """Map typed failures to a Japanese fail-closed result surface."""
+    code = "SM-E999 (UNEXPECTED_ERROR)"
     if isinstance(error, _LaunchFailed):
+        code = "SM-E101 (AI_LAUNCH_FAILED)"
         return {
             "state": "failed",
+            "code": code,
             "title": "実行できませんでした",
-            "cause": "選択したAIのverification processを開始できませんでした。",
+            "cause": f"選択したAIのverification processを開始できませんでした。\n[エラーコード: {code}]",
             "not_completed": "依頼実行、スキル受入確認、結果保存は完了していません。",
             "next_action": "選択したAIのインストールと起動状態を確認してから再実行してください。",
         }
     if isinstance(error, _RuntimeFailed):
+        code = "SM-E102 (AI_RUNTIME_FAILED)"
         return {
             "state": "failed",
+            "code": code,
             "title": "実行に失敗しました",
-            "cause": "選択したAIのverification processが完了前に終了しました。",
+            "cause": f"選択したAIのverification processが完了前に終了しました。\n[エラーコード: {code}]",
             "not_completed": "依頼実行、スキル受入確認、結果保存は完了していません。",
             "next_action": "選択したAIの設定と保存証拠を確認してから再実行してください。",
         }
     if isinstance(error, _AcceptanceFailed):
+        code = "SM-E103 (ACCEPTANCE_FAILED)"
         return {
             "state": "blocked",
+            "code": code,
             "title": "完了を確認できませんでした",
-            "cause": "実行結果が選択スキル固有の受入条件を満たしませんでした。",
+            "cause": f"実行結果が選択スキル固有の受入条件を満たしませんでした。\n[エラーコード: {code}]",
             "not_completed": "成功として表示していません。保存や変更が行われた範囲は確認できません。",
             "next_action": "保存証拠を確認し、依頼内容または実行環境を修正して再実行してください。",
         }
     if isinstance(error, _CleanupFailed):
+        code = "SM-E104 (CLEANUP_FAILED)"
         return {
             "state": "blocked",
+            "code": code,
             "title": "完了を確定できませんでした",
-            "cause": "一時的なverification成果物の後始末を確認できませんでした。",
+            "cause": f"一時的なverification成果物の後始末を確認できませんでした。\n[エラーコード: {code}]",
             "not_completed": "検証結果を成功として確定していません。",
             "next_action": "保存証拠の未解決成果物を確認し、安全に片付けてから再実行してください。",
         }
     if isinstance(error, _OutputFailed):
+        code = "SM-E105 (OUTPUT_FAILED)"
         return {
             "state": "blocked",
+            "code": code,
             "title": "完了を確認できませんでした",
-            "cause": "AIの出力が検証可能な完了形式を満たしませんでした。",
+            "cause": f"AIの出力が検証可能な完了形式を満たしませんでした。\n[エラーコード: {code}]",
             "not_completed": "成功として表示していません。保存や変更が行われた範囲は確認できません。",
             "next_action": "保存証拠を確認し、同じ依頼を再実行してください。",
         }
@@ -1352,8 +1363,8 @@ def context_failure_surface(
     menu_repair_argv = [sys.executable, "-I", "-m", "skill_magnet"]
     if config_path is not None:
         menu_repair_argv.extend(("--config", str(config_path.resolve())))
-    if state_dir is not None:
-        menu_repair_argv.extend(("--state-dir", str(state_dir.resolve())))
+        if state_dir is not None:
+            menu_repair_argv.extend(("--state-dir", str(state_dir.resolve())))
     repair_platform = platform or ("windows" if os.name == "nt" else "macos")
     menu_repair_argv.extend(
         ("install-context-menu", "--platform", repair_platform, "--confirm")
@@ -1361,39 +1372,67 @@ def context_failure_surface(
     menu_repair_command = subprocess.list2cmdline(menu_repair_argv)
     terminal_name = "Windows Terminal" if repair_platform == "windows" else "Terminal"
     if "after menu installation" in folded or "reinstall required" in folded:
+        code = "SM-E201 (MENU_REINSTALL_REQUIRED)"
         next_action = (
             f"{terminal_name}で「{menu_repair_command}」を一度実行し、"
             "完了後に同じ右クリック操作を再試行してください。"
             "Library Managerも同じSkill Magnet画面から開けます。"
         )
     elif "selection screen" in folded or "while confirming" in folded:
+        code = "SM-E202 (SELECTION_INVALIDATED)"
         next_action = (
             "現在のSkill Magnet画面を閉じ、対象フォルダーを右クリックして"
             "「Skill Magnet」をもう一度開いてください。現在の設定から選択肢を読み直します。"
             "packやskillの内容変更だけでは右クリックメニューの再インストールは不要です。"
         )
     elif "config" in folded or "json" in folded or "設定" in message:
+        code = "SM-E203 (CONFIG_INVALID)"
         next_action = (
             f"{terminal_name}で「{repair_command}」を実行して"
             "Library Managerを開き、GitHub URLと登録内容を修復してから再実行してください。"
         )
     elif "library manager" in folded:
+        code = "SM-E205 (LIBRARY_MANAGER_ERROR)"
         next_action = (
             f"{terminal_name}で「{repair_command}」を再実行してください。"
             "同じ原因が表示される場合は、表示されたパスの書き込み権限または空き容量を"
             "修復してから再実行してください。"
         )
     elif "workspace" in folded or "folder" in folded or "directory" in folded:
+        code = "SM-E204 (WORKSPACE_INVALID)"
         next_action = (
             "対象フォルダーそのものを右クリックするか、そのフォルダーを開いた状態で"
             "余白を右クリックして再実行してください。"
         )
     elif "interrupted" in folded or "transaction" in folded or "attempt" in folded:
+        code = "SM-E205 (TRANSACTION_INTERRUPTED)"
         next_action = (
             "右クリックの「Skill Magnet」を押し、開いた画面の「Library Manager」で"
             "表示された中断処理を「続きから再開」または「最初からやり直す」で復旧してください。"
         )
+    elif isinstance(error, FileNotFoundError):
+        code = "SM-E301 (FILE_NOT_FOUND)"
+        next_action = (
+            f"{terminal_name}で「{repair_command}」を実行し、"
+            "画面の復旧操作を実行してください。解消しない場合は、この原因文を"
+            "そのまま対応報告へ添付してください。"
+        )
+    elif isinstance(error, PermissionError):
+        code = "SM-E302 (PERMISSION_DENIED)"
+        next_action = (
+            f"{terminal_name}で「{repair_command}」を実行し、"
+            "画面の復旧操作を実行してください。解消しない場合は、この原因文を"
+            "そのまま対応報告へ添付してください。"
+        )
+    elif isinstance(error, OSError):
+        code = f"SM-E303 (OS_ERROR_{getattr(error, 'errno', 'UNKNOWN')})"
+        next_action = (
+            f"{terminal_name}で「{repair_command}」を実行し、"
+            "画面の復旧操作を実行してください。解消しない場合は、この原因文を"
+            "そのまま対応報告へ添付してください。"
+        )
     else:
+        code = f"SM-E999 ({error.__class__.__name__})"
         next_action = (
             f"{terminal_name}で「{repair_command}」を実行し、"
             "画面の復旧操作を実行してください。解消しない場合は、この原因文を"
@@ -1401,8 +1440,9 @@ def context_failure_surface(
         )
     return {
         "state": "blocked",
+        "code": code,
         "title": "実行を続けられません",
-        "cause": message,
+        "cause": f"{message}\n[エラーコード: {code}]",
         "not_completed": "依頼は完了扱いにしていません。",
         "next_action": next_action,
     }
@@ -1418,13 +1458,14 @@ def context_failure_message(
     surface = context_failure_surface(
         error, config_path=config_path, state_dir=state_dir, platform=platform
     )
-    return "\n\n".join(
-        (
-            surface["title"],
-            f"原因\n{surface['cause']}",
-            f"未実行・未確認の範囲\n{surface['not_completed']}",
-            f"次の操作\n{surface['next_action']}",
-        )
+    code = surface.get("code")
+    code_section = f"エラーコード\n{code}\n\n" if code else ""
+    return (
+        f"{surface['title']}\n\n"
+        f"{code_section}"
+        f"原因\n{surface['cause']}\n\n"
+        f"未実行・未確認の範囲\n{surface['not_completed']}\n\n"
+        f"次の操作\n{surface['next_action']}"
     )
 
 
@@ -2227,9 +2268,14 @@ def show_context_selection(
             set_processing(None)
             error = outcome.get("error")
             if isinstance(error, BaseException):
+                exc = error if isinstance(error, Exception) else Exception(str(error))
                 messagebox.showerror(
                     context_ui_text(current_language(), "error_title"),
-                    f"{context_ui_text(current_language(), 'operation_failed')}\n\n{error}",
+                    context_failure_message(
+                        exc,
+                        config_path=engine.config_path,
+                        state_dir=engine.state_dir,
+                    ),
                     parent=root,
                 )
                 return
@@ -2238,7 +2284,11 @@ def show_context_selection(
             except Exception as exc:
                 messagebox.showerror(
                     context_ui_text(current_language(), "error_title"),
-                    f"{context_ui_text(current_language(), 'operation_failed')}\n\n{exc}",
+                    context_failure_message(
+                        exc,
+                        config_path=engine.config_path,
+                        state_dir=engine.state_dir,
+                    ),
                     parent=root,
                 )
 
@@ -2304,7 +2354,7 @@ def show_context_selection(
         if request_error is not None:
             messagebox.showerror(
                 context_ui_text(language, "error_title"),
-                request_error,
+                f"{request_error}\n\n[エラーコード: SM-E001 (REQUEST_EMPTY)]",
                 parent=root,
             )
             return
@@ -2312,14 +2362,14 @@ def show_context_selection(
         if runtime_value not in {"codex", "claude"}:
             messagebox.showerror(
                 context_ui_text(language, "error_title"),
-                context_ui_text(language, "select_runtime"),
+                f"{context_ui_text(language, 'select_runtime')}\n\n[エラーコード: SM-E002 (RUNTIME_UNSELECTED)]",
                 parent=root,
             )
             return
         if not selected_pack.get():
             messagebox.showerror(
                 context_ui_text(language, "error_title"),
-                context_ui_text(language, "select_pack"),
+                f"{context_ui_text(language, 'select_pack')}\n\n[エラーコード: SM-E003 (PACK_UNSELECTED)]",
                 parent=root,
             )
             return
