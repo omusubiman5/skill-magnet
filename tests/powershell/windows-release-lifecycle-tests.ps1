@@ -121,22 +121,24 @@ try {
         "Classic or legacy Skill Magnet roots remain after installation."
     $priorMenuHash = (Get-FileHash -Algorithm SHA256 `
         -LiteralPath (Join-Path $installRoot "SkillMagnetMenu.tsv")).Hash
-    foreach ($legacyThumbprint in $legacyThumbprints) {
-        Assert-True (-not (Test-Path -LiteralPath (
-            "Cert:\CurrentUser\TrustedPeople\" + $legacyThumbprint
-        ))) "Legacy user trust certificate remains after upgrade."
-        Assert-True (-not (Test-Path -LiteralPath (
-            "Cert:\LocalMachine\TrustedPeople\" + $legacyThumbprint
-        ))) "Legacy machine trust certificate remains after upgrade."
-    }
-
     $statePath = Join-Path $installRoot "certificate-state.json"
     Assert-True (Test-Path -LiteralPath $statePath -PathType Leaf) `
         "Certificate ownership state is missing."
     $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
-    $thumbprint = [string]$state.thumbprint
+    $thumbprint = ([string]$state.thumbprint).ToUpperInvariant()
     Assert-True ($thumbprint -match '^[0-9A-Fa-f]{40}$') `
         "Certificate ownership thumbprint is invalid."
+
+    foreach ($legacyThumbprint in $legacyThumbprints) {
+        if ($legacyThumbprint.ToUpperInvariant() -ne $thumbprint) {
+            Assert-True (-not (Test-Path -LiteralPath (
+                "Cert:\CurrentUser\TrustedPeople\" + $legacyThumbprint
+            ))) "Legacy user trust certificate remains after upgrade."
+            Assert-True (-not (Test-Path -LiteralPath (
+                "Cert:\LocalMachine\TrustedPeople\" + $legacyThumbprint
+            ))) "Legacy machine trust certificate remains after upgrade."
+        }
+    }
 
     $updateOutput = python -m skill_magnet install-context-menu `
         --platform windows --confirm | Out-String
