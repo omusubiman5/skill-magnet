@@ -2,9 +2,9 @@
 
 対応日: 2026-09-09。関連: [原因調査報告](cause-investigation-structural-drift-2026-09-09.md)。Beads: `sm-24z`。サブエージェントは使用していない。
 
-**判定:** 構造修正・ローカル導入・Windows MVPの受入検証を完了。全437件は436件成功・1件スキップ、不合格0件。実Explorer試験と、ソース・wheel・導入版・署名付き証跡を照合するリリースゲートも成功した。
+**修正・導入結果:** 構造修正に加え、CIで発見した証明書rollbackの不具合も修正して導入した。修正版の実Explorer試験と、ソース・wheel・導入版・署名付き証跡を照合するリリースゲートが成功。最終440件とWindowsの更新・復旧・アンインストールを含むCI結果は、下表の実行結果リンクを正とする。
 
-対象ソース: `24b5d8717db5ba1d46e75b82947c19a70f5781e5`。修正ブランチ: `codex/complete-structural-repair`。[現在の集約記録](windows-explorer-leaf-launch-results.md)と[過去の419件の記録](windows-explorer-leaf-launch-results-history-2026-09-09.md)を分離した。
+対象ソース: `9d23e5f2e881e1dbd0531b2f028562a0b58e8b52`。修正ブランチ: `codex/complete-structural-repair`。[現在の集約記録](windows-explorer-leaf-launch-results.md)と[過去の419件の記録](windows-explorer-leaf-launch-results-history-2026-09-09.md)を分離した。
 
 ## 修正内容
 
@@ -21,6 +21,7 @@
 | ソースと導入物が別の組合せ | 今回のソース一式からwheelを構築し、Pythonとnativeを導入更新 |
 | 過去の報告が要件と矛盾 | 管理・登録ボタン撤去を是正とした報告2本の結論を撤回 |
 | 旧リリース記録が現在の候補を指している | 旧記録・旧証跡を履歴へ保存し、ソースcommit、wheel hash、437件、新しく採取した実機証跡を同じ候補へ更新 |
+| 更新rollbackが旧版の署名証明書を削除する | 現在と復旧先の有効なthumbprintを破壊的操作の前に比較。共有証明書は保持し、置換証明書だけ従来の所有権検証付きcleanupへ渡す |
 
 GitHubを唯一の正本とし、一時領域消失時の再作成、未送信編集の消失通知、登録元の再選択、送信済みcommitからの復旧を維持した。利用者の登録元や所有不明のファイルを削除する処理は追加していない。
 
@@ -46,7 +47,8 @@ LibraryStateはファイル、Git、Tkを操作しない。画面は判定結果
 
 | 検証 | 結果 |
 |---|---|
-| 最終ソースの全件試験 | 437件実行、436件成功・1件スキップ、不合格0件（308.663秒） |
+| 全件試験 | 先行437件は436件成功・1件スキップ、不合格0件（308.663秒）。証明書の3件を加えた最終440件は下記GitHub CIで実行 |
+| 証明書rollbackの回帰 | 修正前に共有証明書の消失を再現。修正後は新規3件と既存関連3件の計6件成功。導入版でも新規3件成功 |
 | 導入版の関連試験 | 39件成功に加え、補強した更新・追加・削除の2件も成功。srcを含めない別ディレクトリからsite-packagesを使用 |
 | 実Tk画面 | 管理・登録ボタンの表示、一時領域消失後の管理画面起動と未送信編集の通知を確認 |
 | 設定更新 | 本文更新・commit更新・pack追加・削除を実Gitの隔離remoteへの公開から有効化まで実行。全段階でOS入口manifest不変、次回configの選択肢更新を確認 |
@@ -63,11 +65,15 @@ LibraryStateはファイル、Git、Tkを操作しない。画面は判定結果
 
 途中の全件実行では `test_canonical_results_are_consistent` が不合格だった。旧ledgerの419件・旧commit・旧wheel・旧実機証拠を現在の候補に照合していたことが原因である。旧証拠を履歴へ保存したうえで現在候補の実Explorer証拠を再採取し、ledger全体を更新した。同じテストと同じリリースゲートが成功しており、この不一致は解消済み。スキップ1件はdirectory symlink作成に必要なWindows権限がないため（WinError 1314）。
 
+続く初回CIでは、全件試験とrelease gateの後に実行するWindows lifecycleが、更新rollback時の証明書消失を検出した。`_restore_windows_context_backup`が現在版の証明書を無条件でcleanupしてから旧版を再登録していたため、同じ証明書を共有する通常更新でも復旧不能になっていた。検証済みbackupと現在状態のthumbprintが同じ場合は証明書を保持する。異なる証明書のcleanupと、不正な状態を変更前に拒否する検査は維持した。修正に伴ってwheel・導入版・ソースcommit・実Explorer証跡も再更新した。
+
 実Explorer試験ではWindows検索パネルが前面に残り、検証用windowの前面化を拒否する状態も観測した。前面processを識別して検索パネルを閉じた後、全経路が成功した。テストは前面化を要求した直後の戻り値だけで判断せず、入力queueの接続解除後に実際の前面windowを最大500ms確認するようにした。
 
 ## 配布・導入の証拠
 
 成果物: `outputs/structural-repair-20260909/`。
+
+このディレクトリは初回修正の記録。証明書修正を含む最終配布物は下記 `rollback-repair/` を使用する。
 
 - `before.zip`、`before-manifest.json`、`before.diff`: 修正前の入力。
 - `candidate-source.zip`、`candidate-receipt.json`: 配布ソースとhash照合。
@@ -86,6 +92,16 @@ LibraryStateはファイル、Git、Tkを操作しない。画面は判定結果
 - `release-gate.log`: Windows MVP全ゲート成功。
 - `evidence-checkout.json`: Git取得後の証跡4ファイルのbyte一致。
 - `ledger-update.json`: 更新後の集約値。
+
+証明書修正を含む最終候補の証拠:
+
+- `rollback-repair/candidate-receipt.json` / `candidate-source.zip` / `skill_magnet-0.5.9-py3-none-any.whl`: 最終ソースと配布物。
+- `rollback-repair/python-install.log` / `native-install.log` / `installed-status.json`: 最終導入結果。
+- `certificate-rollback-before.log` / `certificate-rollback-after.log`: 修正前の再現と関連6件の成功。
+- `installed-certificate-rollback.log`: 導入版3件の成功。
+- `rollback-final-field.json` / `rollback-final-invoke.log` / `rollback-final-run.log`: 最終ソースに対応する実Explorer証跡。
+- `rollback-release-gate.log`: 最終候補のWindows MVPゲート成功。
+- `ci-first-failure.log`: 初回CIで発見した証明書rollback失敗の記録。
 
 ## 判定の範囲
 
