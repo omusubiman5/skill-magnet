@@ -21,6 +21,7 @@ from typing import Any, Callable, Iterable
 
 from .activation import reserved_skill_content_roots
 from .core import Config, SKILL_NAME, SkillMagnetError, _is_link, _parse_github_repo
+from .library_state import LibraryState, TERMINAL_STATES, TRANSACTION_STATES
 
 
 CATALOG_FILENAME = "skill-magnet.catalog.json"
@@ -42,18 +43,6 @@ SUPPORT_DIRECTORY_NAMES = {
     "scripts",
     "templates",
     "tests",
-}
-TERMINAL_STATES = {"active", "rolled_back", "abandoned", "no_changes"}
-TRANSACTION_STATES = TERMINAL_STATES | {
-    "draft",
-    "preparing",
-    "interrupted",
-    "prepared",
-    "publishing",
-    "published_pending",
-    "verified",
-    "activating",
-    "menu_pending",
 }
 SECRET_RULES = (
     ("private-key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")),
@@ -2408,10 +2397,14 @@ class LibraryTransaction:
             raise SkillMagnetError(
                 f"GitHub反映の作業IDが保存先と一致しません: {self.journal_path}"
             )
-        if str(journal.get("status", "")) not in TRANSACTION_STATES:
+        try:
+            if "status" not in journal:
+                raise SkillMagnetError("作業状態がありません")
+            LibraryState.from_journal(journal)
+        except SkillMagnetError as exc:
             raise SkillMagnetError(
                 f"GitHub反映の作業状態を確認できません: {self.journal_path}"
-            )
+            ) from exc
 
     @_serialized_transaction
     def _write_journal(self, journal: dict[str, Any]) -> None:
@@ -2515,6 +2508,12 @@ class LibraryTransaction:
         draft, remote = self._assert_transaction_identity(
             journal, draft=draft, remote=remote
         )
+        if journal.get("draft_unavailable"):
+            raise SkillMagnetError(
+                "一時作業領域が失われたため、未送信の編集を再現できません。"
+                "この作業を破棄し、登録元を選び直して編集をやり直してください。"
+                "GitHubの公開済みデータは保持されています。"
+            )
         if journal["status"] != "draft":
             preview = journal.get("preview")
             if not isinstance(preview, dict):
@@ -2757,6 +2756,11 @@ class LibraryTransaction:
             return journal
         if journal["status"] != "prepared":
             raise SkillMagnetError("Transaction must be prepared before publish")
+        if journal.get("draft_unavailable") and not self.workspace.is_dir():
+            raise SkillMagnetError(
+                "一時作業領域が失われ、未送信の編集を再現できません。"
+                "作業を復旧するか、未送信の作業を破棄して登録元を選び直してください。"
+            )
         if create_pr and not direct and not re.match(
             r"https://github\.com/[^/]+/[^/]+(?:\.git)?$", str(journal["remote"])
         ):
@@ -3647,10 +3651,35 @@ class LibraryTransaction:
         return pending
 
     @_serialized_transaction
+    def mark_draft_unavailable(self) -> None:
+        """Keep loss metadata before recreating disposable content from GitHub."""
+        journal = self._journal()
+        if journal["status"] not in TERMINAL_STATES:
+            journal["draft_unavailable"] = True
+            self._write_journal(journal)
+
+    @_serialized_transaction
     def recover(self) -> dict[str, Any]:
         """Recover an interrupted local transaction while preserving remote state."""
         journal = self._journal()
         status = str(journal.get("status", "draft"))
+        if journal.get("draft") and not Path(str(journal["draft"])).is_dir():
+            journal["draft_unavailable"] = True
+            self._write_journal(journal)
+        resume_status = LibraryState.from_journal(journal).resume_status
+        if journal.get("draft_unavailable") and journal.get("commit") and resume_status == "prepared":
+            # Recheck the recorded remote commit rather than rebuilding from
+            # the replacement baseline after another interrupted recovery.
+            status = "publishing"
+            resume_status = status
+            journal["status"] = status
+            self._write_journal(journal)
+        if journal.get("draft_unavailable") and resume_status in {"draft", "prepared"}:
+            raise SkillMagnetError(
+                "一時作業領域が失われ、未送信の編集を再現できません。"
+                "この作業を破棄して登録元を選び直してください。"
+                "GitHubへ送信済みの可能性がある場合は、作業記録を保持してGitHubを確認してください。"
+            )
         pending = self.cleanup(include_workspace=status != "publishing")
         rebuilt = False
         if status in {"preparing", "interrupted"}:
@@ -3666,7 +3695,8 @@ class LibraryTransaction:
                     ["git", "ls-remote", "--heads", str(journal["remote"]), str(journal["branch"])],
                     check=False,
                 ).stdout.strip()
-                if remote_ref.startswith(str(journal.get("commit", ""))):
+                saved_commit = str(journal.get("commit", ""))
+                if re.fullmatch(r"[0-9a-f]{40}", saved_commit) and remote_ref.split()[:1] == [saved_commit]:
                     self._exec(["git", "clone", "--no-hardlinks", str(journal["remote"]), str(self.workspace)])
                     self._exec(
                         ["git", "switch", "-C", str(journal["branch"]), str(journal["commit"])],
@@ -3675,6 +3705,11 @@ class LibraryTransaction:
                     journal["status"] = "prepared"
                     self._write_journal(journal)
                 else:
+                    if journal.get("draft_unavailable"):
+                        raise SkillMagnetError(
+                            "一時作業領域が失われ、送信途中のcommitをGitHubで確認できません。"
+                            "公開結果を確認するため作業記録を保持しました。"
+                        )
                     journal["status"] = "draft"
                     self._write_journal(journal)
                     status = "draft"
@@ -3716,12 +3751,7 @@ class LibraryTransaction:
             raise SkillMagnetError("作業の破棄には確認が必要です")
         journal = self._journal()
         previous = str(journal.get("status", "draft"))
-        if journal.get("commit") or journal.get("pr_url") or previous in {
-            "publishing",
-            "published_pending",
-            "verified",
-            "active",
-        }:
+        if not LibraryState.from_journal(journal).can_abandon:
             raise SkillMagnetError(
                 "GitHubへ送信済み、または送信済みの可能性があるため、"
                 "ローカル作業だけを破棄できません。既存の作業を再開してください"
@@ -3764,7 +3794,11 @@ def find_resumable_transaction(
     root = state_dir.resolve() / "library-transactions"
     if not root.is_dir():
         return None
-    wanted_draft = _draft_identity(_selected_directory(draft, label="ライブラリ"))
+    # A disposable draft can be absent while its durable journal remains.
+    lexical_draft = Path(os.path.abspath(os.fspath(draft)))
+    if _is_link(lexical_draft):
+        raise SkillMagnetError("一時作業領域にリンクは使えません")
+    wanted_draft = _draft_identity(lexical_draft)
     wanted_remote = canonical_remote_identity(remote)
     matches: list[tuple[str, LibraryTransaction]] = []
     for path in root.glob("*/journal.json"):

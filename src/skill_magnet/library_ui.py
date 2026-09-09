@@ -16,6 +16,7 @@ from typing import Any, Callable
 
 from .activation import validate_product_state_directory
 from .core import Config, SkillMagnetError, _is_link
+from .library_state import LibraryState
 from .library_manager import (
     CATALOG_FILENAME,
     DEFAULT_REPOSITORY_NAME,
@@ -38,6 +39,8 @@ from .library_manager import (
     _run as _run_external,
 )
 from .ui import (
+    failure_details,
+    os_failure_recovery,
     UI_OWNER_MAX_BYTES,
     TkSurfacePublicationRetry,
     UiSurfaceOwnerIdentity,
@@ -54,6 +57,22 @@ from .ui import (
     tk_top_level_window_handle,
     ui_surface_owner_identity,
 )
+
+
+def library_display_result(value: Any) -> Any:
+    """Show publication results without exposing internal working locations."""
+    internal_locations = {
+        "repository", "draft", "workspace", "backup", "cleanup_pending",
+        "receipt", "recovery_backup", "activation_backup", "source_root",
+    }
+    if isinstance(value, dict):
+        return {
+            key: library_display_result(item)
+            for key, item in value.items() if key not in internal_locations
+        }
+    if isinstance(value, (list, tuple)):
+        return [library_display_result(item) for item in value]
+    return value
 
 
 LIBRARY_WIZARD_STEPS = (
@@ -336,15 +355,7 @@ def library_action_label(stage: str) -> str:
 def automatic_sync_next_stage(result: dict[str, Any]) -> str:
     """Map a durable transaction result without polling a closed PR forever."""
 
-    status = str(result.get("status", ""))
-    wait_state = str(result.get("wait_state", ""))
-    if status == "published_pending" and wait_state == "closed_unmerged":
-        return "reopen_pr"
-    if status == "published_pending":
-        return "waiting"
-    if status == "active":
-        return "complete"
-    return "sync"
+    return LibraryState.from_journal(result).automatic_stage()
 
 
 def managed_repository_path(state_dir: Path) -> Path:
@@ -542,7 +553,11 @@ def _transaction_journal_state(
         status = journal.get("status")
         if not isinstance(status, str) or not status:
             return False, True
-        if status in TERMINAL_STATES:
+        try:
+            transaction_state = LibraryState.from_journal(journal)
+        except SkillMagnetError:
+            return False, True
+        if transaction_state.terminal:
             continue
         saved_draft = journal.get("draft")
         if not isinstance(saved_draft, str) or not saved_draft.strip():
@@ -720,6 +735,16 @@ def library_failure_message(error: Exception) -> str:
 
     cause = str(error).strip() or error.__class__.__name__
     folded = cause.casefold()
+    os_recovery = os_failure_recovery(error)
+    if os_recovery is not None:
+        code, next_action = os_recovery
+        return (
+            "処理を完了できませんでした。\n\n"
+            f"エラーコード\n{code}\n\n"
+            f"原因\n{failure_details(error)}\n\n"
+            f"次の操作\n{next_action}\n\n"
+            "この操作は完了扱いにしていません。"
+        )
     if "skill.md" in folded or "スキルフォルダー" in cause:
         next_action = (
             "SKILL.mdを直接選ぶのではなく、そのSKILL.mdを含むフォルダーを選び直して"
@@ -1006,6 +1031,20 @@ def restore_managed_repository_from_github(
         )
 
 
+def _record_missing_managed_draft(state_dir: Path, repository: Path) -> None:
+    """Preserve loss metadata before initializing or cloning a replacement."""
+    _require_readable_transaction_journals(state_dir, repository)
+    for journal_path in (state_dir / "library-transactions").glob("*/journal.json"):
+        current = LibraryTransaction(state_dir, journal_path.parent.name)
+        journal = current._journal()
+        if (
+            journal.get("draft")
+            and _lexical_absolute(Path(str(journal["draft"]))) == repository
+            and journal["status"] not in TERMINAL_STATES
+        ):
+            current.mark_draft_unavailable()
+
+
 def hydrate_managed_repository(
     state_dir: Path,
     repository: Path,
@@ -1021,14 +1060,18 @@ def hydrate_managed_repository(
     repository = _require_managed_repository_boundary(state_dir, repository)
     with library_mutation_lock(repository):
         repository = _require_managed_repository_boundary(state_dir, repository)
-        if managed_repository_has_unfinished_transaction(
+        unfinished = managed_repository_has_unfinished_transaction(
             state_dir, repository, remote=remote
-        ):
+        )
+        if unfinished and os.path.lexists(repository):
             return {
                 "hydrated": False,
                 "reason": "unfinished_transaction_preserved",
                 "repository": str(repository),
             }
+        if not os.path.lexists(repository):
+            # Do not let a fresh GitHub checkout masquerade as a lost edit.
+            _record_missing_managed_draft(state_dir, repository)
         if os.path.lexists(repository):
             purged = _purge_managed_repository_locked(state_dir, repository)
             if not purged["purged"]:
@@ -1308,7 +1351,6 @@ def show_library_manager(
     recovery: dict[str, Any] = {"recovered": False}
     catalog_error: str | None = None
     offer_remote_restore = False
-    repository = tk.StringVar(value=str(repository_path))
     configured_remote = ""
     configured_commit = ""
     remote = tk.StringVar(value="")
@@ -1492,6 +1534,7 @@ def show_library_manager(
                     )
                 validate_library(repository_path)
                 return
+            _record_missing_managed_draft(state_dir, repository_path)
             initialize_library(repository_path, DEFAULT_REPOSITORY_NAME)
             mark_managed_repository_owned(state_dir, repository_path)
 
@@ -1514,10 +1557,7 @@ def show_library_manager(
             show_error(exc)
             return
         journal = transaction()._journal()
-        remote_effect_possible = bool(journal.get("commit") or journal.get("pr_url")) or str(
-            journal.get("status", "")
-        ) in {"publishing", "published_pending", "verified", "active"}
-        if remote_effect_possible:
+        if LibraryState.from_journal(journal).remote_effect_possible:
             choice = messagebox.askyesno(
                 "処理を再試行できます",
                 f"{exc}\n\nGitHubへ送信済みの可能性があるため、この作業は破棄しません。\n"
@@ -1553,9 +1593,7 @@ def show_library_manager(
                 show_error(abandon_error)
 
     def require_repository() -> Path:
-        if not repository.get().strip():
-            raise SkillMagnetError("スキルを保存するフォルダーを指定してください")
-        return Path(repository.get()).resolve()
+        return _require_managed_repository_boundary(state_dir, repository_path)
 
     initial_registration: dict[str, Any] | None = None
 
@@ -1648,9 +1686,9 @@ def show_library_manager(
         if current is None:
             return False
         journal = current._journal()
-        status = str(journal.get("status", "draft"))
-        if status in {"draft", "prepared", "no_changes", "abandoned", "active"}:
-            if status in {"draft", "prepared"}:
+        transaction_state = LibraryState.from_journal(journal)
+        if transaction_state.can_start_edit:
+            if not transaction_state.terminal:
                 current.abandon(confirmed=True)
             return True
         raise SkillMagnetError(
@@ -1670,7 +1708,7 @@ def show_library_manager(
     registration_source_entry, registration_browse_button = row(
         registration,
         1,
-        "スキル／スキルパックのフォルダー",
+        "登録元のスキル／スキルパック",
         import_source,
         select_import,
     )
@@ -1735,7 +1773,8 @@ def show_library_manager(
             messagebox.showinfo(
                 "Skill",
                 f"{len(imported['imported_pack_ids'])}パック、"
-                f"{len(imported['imported_skill_ids'])}スキルを登録しました。",
+                f"{len(imported['imported_skill_ids'])}スキルの送信内容を準備しました。"
+                "GitHubへの反映が完了するまで、登録元を保持してください。",
                 parent=root,
             )
             registration.grid_remove()
@@ -1920,7 +1959,7 @@ def show_library_manager(
             show_error(SkillMagnetError("復旧元のGitHub URLを入力してください"))
             return
         if not messagebox.askyesno(
-            "ローカルライブラリを復旧",
+            "GitHubから編集用データを再読込",
             "設定またはローカルのスキル一覧を復旧する必要があります。\n"
             "現在のフォルダーをバックアップとして残し、入力したGitHubから復旧しますか？",
             parent=root,
@@ -1967,7 +2006,7 @@ def show_library_manager(
             )
 
         run_auxiliary_in_background(
-            "GitHubからローカルライブラリを復旧しています…",
+            "GitHubから編集用データを再読込しています…",
             restore,
             restored_success,
         )
@@ -1984,7 +2023,7 @@ def show_library_manager(
     def set_text(widget: Any, value: Any) -> None:
         widget.configure(state="normal")
         widget.delete("1.0", "end")
-        widget.insert("1.0", json.dumps(value, ensure_ascii=False, indent=2))
+        widget.insert("1.0", json.dumps(library_display_result(value), ensure_ascii=False, indent=2))
         widget.configure(state="disabled")
 
     publish_frame = ttk.LabelFrame(page, text="GitHubへ送る", padding=10)
@@ -1992,6 +2031,7 @@ def show_library_manager(
     ttk.Label(
         publish_frame,
         text=(
+            "スキルの保存先はGitHubです。編集用の一時作業領域はアプリが管理します。\n"
             "公開先のGitHub URLを入力し、送信予定のファイルを確認してからPRを作成します。"
             "URL未入力、ファイル構成不正、検査エラーがあれば送信せずエラーを表示します。"
         ),
@@ -2012,55 +2052,6 @@ def show_library_manager(
     publish_frame.rowconfigure(3, weight=1)
     publish_frame.columnconfigure(1, weight=1)
 
-    def prepare() -> None:
-        current: LibraryTransaction | None = None
-        try:
-            if not remote.get().strip():
-                raise SkillMagnetError("公開先のGitHub URLを入力してください")
-            _require_readable_transaction_journals(state_dir, require_repository())
-            resumable = find_resumable_transaction(
-                state_dir,
-                draft=require_repository(),
-                remote=remote.get().strip(),
-            )
-            if resumable is None:
-                unfinished, _ = _transaction_journal_state(
-                    state_dir, require_repository()
-                )
-                if unfinished:
-                    raise SkillMagnetError(
-                        "別の未完了transactionがあります。保存済み作業を再開または破棄してから"
-                        "新しいGitHub送信を開始してください。"
-                    )
-            current = resumable or LibraryTransaction(state_dir)
-            transaction_id.set(current.transaction_id)
-            existing = current._journal()
-            if str(existing.get("status")) != "draft":
-                recovered = current.recover()
-                set_text(preview_output, current._journal())
-                set_stage(stage_for_status(str(recovered.get("status")), "prepare"))
-                return
-            validate_library(require_repository())
-            preview = current.prepare(
-                draft=require_repository(), remote=remote.get().strip()
-            )
-            set_text(preview_output, preview)
-            if preview.get("no_changes"):
-                messagebox.showinfo(
-                    "GitHubへの変更はありません",
-                    "GitHub上の内容は同じです。検証済み内容をSkill Magnetへ反映できます。",
-                    parent=root,
-                )
-                set_stage("activate")
-            else:
-                set_stage("publish")
-        except Exception as exc:
-            if current is not None and current.journal_path.is_file():
-                handle_transaction_error(exc, "prepare")
-            else:
-                transaction_id.set("")
-                show_error(exc)
-
     def transaction(
         *, cancel_event: threading.Event | None = None
     ) -> LibraryTransaction:
@@ -2072,159 +2063,8 @@ def show_library_manager(
             cancel_event=cancel_event,
         )
 
-    def publish() -> None:
-        try:
-            if not messagebox.askyesno(
-                "GitHubへ送る",
-                "表示された公開先とファイルを確認しましたか？\n"
-                "専用branchへcommit・pushしてPRを作成します。",
-                parent=root,
-            ):
-                return
-            published = transaction().publish(confirmed=True)
-            set_text(preview_output, published)
-            set_stage("open_pr" if published.get("pr_url") else "verify")
-        except Exception as exc:
-            handle_transaction_error(exc, "publish")
-
-    def verify_merged() -> None:
-        try:
-            verified = transaction().mark_merged()
-            set_text(preview_output, verified)
-            wait_state = str(verified.get("wait_state", ""))
-            if wait_state == "waiting_for_merge":
-                messagebox.showinfo(
-                    "GitHubでのマージ待ち",
-                    "PRは正常に作成済みです。GitHubでマージした後、もう一度確認してください。",
-                    parent=root,
-                )
-                set_stage("open_pr")
-                return
-            if wait_state == "closed_unmerged":
-                messagebox.showwarning(
-                    "PRはマージされていません",
-                    "PRはマージされずに閉じられています。『閉じたPRを再度開く』から"
-                    "同じPRを再利用するか、状態を保持したまま終了してください。",
-                    parent=root,
-                )
-                set_stage("reopen_pr")
-                return
-            set_stage("activate")
-        except Exception as exc:
-            handle_transaction_error(exc, "verify")
-
-    def activate() -> None:
-        nonlocal result
-        try:
-            if not messagebox.askyesno(
-                "Skill Magnetへ反映",
-                "検証済み版をSkill Magnetへ反映しますか？失敗時は直前版へ戻します。",
-                parent=root,
-            ):
-                return
-
-            def update(path: Path) -> Any:
-                return menu_update(path, platform) if menu_update else None
-
-            result = transaction().activate(
-                config_path=config_path,
-                confirmed=True,
-                menu_update=update if menu_update else None,
-            )
-            set_text(preview_output, result)
-            set_stage("complete")
-            purge_managed_repository(state_dir, repository_path)
-            messagebox.showinfo("Library Manager", "有効化が完了しました。", parent=root)
-        except Exception as exc:
-            handle_transaction_error(exc, "activate")
-
-    def automatic_sync() -> None:
-        """Complete the user-requested library change without manual stage buttons."""
-        nonlocal result
-        current: LibraryTransaction | None = None
-        try:
-            if not remote.get().strip():
-                raise SkillMagnetError("公開先のGitHub URLを入力してください")
-            if transaction_id.get().strip():
-                current = transaction()
-            else:
-                _require_readable_transaction_journals(state_dir, require_repository())
-                resumable = find_resumable_transaction(
-                    state_dir,
-                    draft=require_repository(),
-                    remote=remote.get().strip(),
-                )
-                if resumable is None:
-                    unfinished, _ = _transaction_journal_state(
-                        state_dir, require_repository()
-                    )
-                    if unfinished:
-                        raise SkillMagnetError(
-                            "別の未完了transactionがあります。保存済み作業を再開または破棄してから"
-                            "新しいGitHub送信を開始してください。"
-                        )
-                current = resumable or LibraryTransaction(state_dir)
-                transaction_id.set(current.transaction_id)
-
-            def update(path: Path) -> Any:
-                return menu_update(path, platform) if menu_update else None
-
-            result = current.complete_automatically(
-                draft=require_repository(),
-                remote=remote.get().strip(),
-                config_path=config_path,
-                confirmed=True,
-                menu_update=update if menu_update else None,
-            )
-            set_text(preview_output, result)
-            if str(result.get("status")) == "published_pending":
-                next_stage = automatic_sync_next_stage(result)
-                set_stage(next_stage)
-                if next_stage == "reopen_pr":
-                    messagebox.showwarning(
-                        "PRがマージされずに閉じられています",
-                        "自動監視を停止しました。『閉じたPRを再度開く』を押すと、"
-                        "同じPRとtransactionを使って処理を再開できます。",
-                        parent=root,
-                    )
-                    return
-
-                def poll_merge() -> None:
-                    if not root.winfo_exists():
-                        return
-                    set_stage("sync")
-                    run_current_action()
-
-                root.after(15_000, poll_merge)
-                return
-            set_stage("complete")
-            purge_result = purge_managed_repository(state_dir, repository_path)
-            if not purge_result["purged"]:
-                raise SkillMagnetError(
-                    "GitHub反映は完了しましたが、所有を確認できないローカルコピーを"
-                    "自動削除しませんでした。画面の案内から復旧してください"
-                )
-            messagebox.showinfo(
-                "Library Manager",
-                "GitHubへの送信・マージ・Skill Magnetへの反映が完了しました。",
-                parent=root,
-            )
-        except Exception as exc:
-            if current is not None and current.journal_path.is_file():
-                handle_transaction_error(exc, "sync")
-            else:
-                transaction_id.set("")
-                show_error(exc)
-
     def stage_for_status(status: str, fallback: str = "prepare") -> str:
-        return {
-            "prepared": "sync",
-            "published_pending": "sync",
-            "verified": "sync",
-            "activating": "sync",
-            "menu_pending": "sync",
-            "active": "complete",
-        }.get(status, fallback)
+        return LibraryState.from_journal({"status": status}).action_stage(fallback)
 
     def open_pull_request() -> None:
         journal = transaction()._journal()
@@ -2239,21 +2079,6 @@ def show_library_manager(
                 parent=root,
             )
         set_stage("verify")
-
-    def reopen_pull_request() -> None:
-        try:
-            if not messagebox.askyesno(
-                "閉じたPRを再度開く",
-                "マージされずに閉じられた同じPRを再度開き、同じtransactionで再開しますか？",
-                parent=root,
-            ):
-                return
-            reopened = transaction().reopen_pull_request(confirmed=True)
-            set_text(preview_output, reopened)
-            set_stage("sync")
-            root.after(0, run_current_action)
-        except Exception as exc:
-            handle_transaction_error(exc, "reopen_pr")
 
     def set_stage(value: str) -> None:
         action_stage.set(value)
@@ -2351,41 +2176,30 @@ def show_library_manager(
             return menu_update(path, platform) if menu_update else None
 
         def work(_: threading.Event) -> Any:
-            try:
-                if stage == "sync":
-                    value = current.complete_automatically(
-                        draft=repository_value,
-                        remote=remote_value,
-                        config_path=config_path,
-                        confirmed=True,
-                        menu_update=update_menu if menu_update else None,
-                    )
-                elif stage == "prepare":
-                    existing = current._journal()
-                    if str(existing.get("status")) != "draft":
-                        current.recover()
-                        value = current._journal()
-                    else:
-                        validate_library(repository_value)
-                        value = current.prepare(
-                            draft=repository_value,
-                            remote=remote_value,
-                        )
-                elif stage == "publish":
-                    value = current.publish(confirmed=True)
-                elif stage == "verify":
-                    value = current.mark_merged()
-                elif stage == "reopen_pr":
-                    value = current.reopen_pull_request(confirmed=True)
-                else:
-                    value = current.activate(
-                        config_path=config_path,
-                        confirmed=True,
-                        menu_update=update_menu if menu_update else None,
-                    )
-            except BaseException as exc:
-                raise exc
-            return value
+            if stage == "sync":
+                return current.complete_automatically(
+                    draft=repository_value,
+                    remote=remote_value,
+                    config_path=config_path,
+                    confirmed=True,
+                    menu_update=update_menu if menu_update else None,
+                )
+            if stage == "prepare":
+                if str(current._journal().get("status")) != "draft":
+                    current.recover()
+                    return current._journal()
+                return current.prepare(draft=repository_value, remote=remote_value)
+            if stage == "publish":
+                return current.publish(confirmed=True)
+            if stage == "verify":
+                return current.mark_merged()
+            if stage == "reopen_pr":
+                return current.reopen_pull_request(confirmed=True)
+            return current.activate(
+                config_path=config_path,
+                confirmed=True,
+                menu_update=update_menu if menu_update else None,
+            )
 
         _, worker, outcome = start_library_background_operation(
             work,
@@ -2788,6 +2602,16 @@ def show_library_manager(
                 return
             transaction_id.set(current.transaction_id)
             raw = current._journal()
+            if LibraryState.from_journal(raw).needs_reselection:
+                if messagebox.askyesno(
+                    "未送信の編集をやり直してください",
+                    "一時作業領域が失われました。GitHubの登録済みスキルは再読込しましたが、"
+                    "未送信の編集は復元できません。\n"
+                    "この作業記録を破棄して、登録元の選択からやり直しますか？",
+                    parent=root,
+                ):
+                    abandon_current()
+                return
             # Startup recovery routing is local-only; GitHub is checked by the
             # background synchronization worker after the user resumes.
             latest = current.status(config_path, check_remote=False)
@@ -2813,7 +2637,7 @@ def show_library_manager(
                 if retry:
                     root.after(0, run_current_action)
                 return
-            if raw.get("commit") or raw.get("pr_url") or str(raw.get("status")) == "publishing":
+            if LibraryState.from_journal(raw).remote_effect_possible:
                 set_text(preview_output, raw)
                 set_stage(stage_for_status(str(raw.get("status")), "publish"))
                 retry = messagebox.askyesno(
@@ -2878,7 +2702,7 @@ def show_library_manager(
                 refresh_inventory()
             finally:
                 set_busy(False)
-            root.after_idle(registration_source_entry.focus_set)
+            root.after_idle(configured_remote_entry.focus_set)
             root.after(0, offer_interrupted_transaction)
             return
         if register_selected:
@@ -2889,7 +2713,7 @@ def show_library_manager(
             refresh_inventory()
         finally:
             set_busy(False)
-        root.after_idle(registration_source_entry.focus_set)
+        root.after_idle(configured_remote_entry.focus_set)
         root.after(0, offer_interrupted_transaction)
 
     def continue_after_startup_inspection() -> None:
@@ -2902,9 +2726,6 @@ def show_library_manager(
         hydration_needed = bool(
             configured_remote
             and not os.path.lexists(repository_path)
-            and not managed_repository_has_unfinished_transaction(
-                state_dir, repository_path, remote=configured_remote
-            )
         )
         if not legacy_needed and not hydration_needed:
             finish_window_initialization()
@@ -2937,9 +2758,6 @@ def show_library_manager(
             if (
                 hydration_needed
                 and hydration_allowed
-                and not managed_repository_has_unfinished_transaction(
-                    state_dir, repository_path, remote=configured_remote
-                )
             ):
                 try:
                     hydrate_managed_repository(
@@ -3042,6 +2860,7 @@ def show_library_manager(
                             )
                     else:
                         if not next_remote:
+                            _record_missing_managed_draft(state_dir, repository_path)
                             next_catalog_error = prepare_managed_repository(repository_path)
                             if next_catalog_error is None:
                                 mark_managed_repository_owned(
@@ -3113,7 +2932,7 @@ def show_library_manager(
             finish_window_initialization()
 
         run_auxiliary_in_background(
-            "設定・保存済み作業・ローカルライブラリを確認しています…",
+            "設定・作業記録・編集用の一時データを確認しています…",
             inspect_startup,
             inspected,
             inspection_failed,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -24,6 +25,7 @@ from skill_magnet.library_manager import (
 from skill_magnet.library_ui import (
     automatic_sync_next_stage,
     hydrate_managed_repository,
+    library_display_result,
     managed_repository_is_owned,
     managed_repository_has_unfinished_transaction,
     managed_repository_path,
@@ -139,6 +141,111 @@ class LibraryUiRecoveryTest(unittest.TestCase):
         self.assertTrue(relaunched["hydrated"])
         self.assertTrue((repository / "first-skill" / "SKILL.md").is_file())
         self.assertTrue(purge_managed_repository(state, repository)["purged"])
+
+    def _lose_checkout(self, path: Path) -> None:
+        self.assertTrue(path.resolve().is_relative_to(self.root.resolve()))
+        shutil.rmtree(path, onexc=lambda fn, name, exc: (os.chmod(name, stat.S_IWRITE), fn(name)))
+
+    def test_missing_temporary_draft_rehydrates_without_claiming_lost_edits(self) -> None:
+        remote, commit = self._remote_library()
+        state = self.root / "lost-state"
+        repository = managed_repository_path(state)
+        hydrate_managed_repository(state, repository, str(remote), commit=commit)
+        add_skill(repository, skill_id="unsent", display_name="Unsent", purpose="Lost edit", pack_id="first-pack")
+        current = LibraryTransaction(state, "transaction-lost-edit")
+        current.prepare(draft=repository, remote=str(remote), branch="main")
+        self._lose_checkout(repository)
+        current.cleanup()
+        self.assertEqual(find_resumable_transaction(state, draft=repository, remote=str(remote)).transaction_id, current.transaction_id)
+
+        result = hydrate_managed_repository(state, repository, str(remote), commit=commit)
+        self.assertTrue(result["hydrated"])
+        self.assertTrue((repository / "first-skill" / "SKILL.md").is_file())
+        self.assertFalse((repository / "unsent").exists())
+        self.assertTrue(current._journal()["draft_unavailable"])
+        with self.assertRaisesRegex(SkillMagnetError, "未送信"):
+            current.recover()
+        with self.assertRaisesRegex(SkillMagnetError, "未送信"):
+            current.prepare(draft=repository, remote=str(remote), branch="main")
+        current.abandon(confirmed=True)
+        add_skill(repository, skill_id="retry", display_name="Retry", purpose="Fresh edit", pack_id="first-pack")
+        replacement = LibraryTransaction(state, "transaction-fresh-edit")
+        preview = replacement.prepare(draft=repository, remote=str(remote), branch="main")
+        self.assertIn("retry", preview["skill_ids"])
+        self.assertEqual(self._git("rev-parse", "main", cwd=remote), commit)
+
+    def test_pushed_commit_recovers_after_all_temporary_checkouts_disappear(self) -> None:
+        remote, commit = self._remote_library()
+        state = self.root / "pushed-state"
+        repository = managed_repository_path(state)
+        hydrate_managed_repository(state, repository, str(remote), commit=commit)
+        add_skill(repository, skill_id="sent", display_name="Sent", purpose="Remote recovery", pack_id="first-pack")
+        current = LibraryTransaction(state, "transaction-pushed-edit")
+        current.prepare(draft=repository, remote=str(remote), branch="main")
+        published = current.publish(confirmed=True, create_pr=False, direct=True)
+        journal = current._journal()
+        journal["status"] = "publishing"  # Crash after push, before durable completion.
+        current._write_journal(journal)
+        current.cleanup()
+        self._lose_checkout(repository)
+
+        self.assertTrue(hydrate_managed_repository(state, repository, str(remote), commit=commit)["hydrated"])
+        recovered = current.recover()
+        self.assertEqual(recovered["status"], "prepared")
+        self.assertTrue((current.workspace / "sent" / "SKILL.md").is_file())
+        result = current.publish(confirmed=True, create_pr=False, direct=True)
+        self.assertEqual(result["commit"], published["commit"])
+        self.assertEqual(self._git("rev-parse", "main", cwd=remote), published["commit"])
+
+    def test_publication_display_omits_internal_locations_but_keeps_changes(self) -> None:
+        value = {"draft": "C:/internal", "preview": {"workspace": "C:/internal/workspace", "changed_files": ["A example/SKILL.md"]}, "remote": "https://github.com/example/skills.git"}
+        displayed = library_display_result(value)
+        self.assertNotIn("C:/internal", json.dumps(displayed))
+        self.assertEqual(displayed["preview"]["changed_files"], value["preview"]["changed_files"])
+        self.assertEqual(displayed["remote"], value["remote"])
+
+    @unittest.skipUnless(os.name == "nt", "actual Windows Tk startup")
+    def test_manager_reopens_missing_temporary_area_and_explains_lost_edit(self) -> None:
+        import time
+        import tkinter as tk
+        from skill_magnet import library_ui as ui
+
+        remote, commit = self._remote_library()
+        state = self.root / "ui-lost-state"
+        repository = managed_repository_path(state)
+        current = LibraryTransaction(state, "transaction-ui-lost-edit")
+        current._write_journal({"status": "draft", "draft": str(repository), "remote": str(remote)})
+        errors, notices, observed = [], [], {}
+
+        def ready(_):
+            root = tk._default_root
+            deadline = time.monotonic() + 10
+
+            def descendants(widget):
+                for child in widget.winfo_children():
+                    yield child
+                    yield from descendants(child)
+
+            def inspect():
+                if not notices and not errors and time.monotonic() < deadline:
+                    root.after(50, inspect)
+                    return
+                widgets = list(descendants(root))
+                observed["labels"] = [str(w.cget("text")) for w in widgets if w.winfo_class() == "TLabel" and w.winfo_ismapped()]
+                observed["rows"] = [w.get_children() for w in widgets if w.winfo_class() == "Treeview"]
+                root.tk.call(root.protocol("WM_DELETE_WINDOW"))
+
+            root.after(100, inspect)
+
+        with mock.patch.object(ui, "configured_repository_reference", return_value=(str(remote), commit)), mock.patch.object(ui, "configuration_repair_notice", return_value=None), mock.patch("tkinter.messagebox.showerror", side_effect=lambda *args, **kw: errors.append(args)), mock.patch("tkinter.messagebox.askyesno", side_effect=lambda *args, **kw: notices.append(args) or False):
+            ui.show_library_manager(config_path=self.root / "config.json", state_dir=state, window_ready=ready)
+        self.assertFalse(errors, errors)
+        self.assertTrue(notices, "No lost-edit notice after startup")
+        self.assertIn("未送信", str(notices))
+        self.assertTrue(observed["rows"][0], observed)
+        self.assertIn("保存先はGitHub", "\n".join(observed["labels"]))
+        self.assertNotIn(str(repository), "\n".join(observed["labels"]))
+        self.assertTrue(current._journal()["draft_unavailable"])
 
     def test_cancel_cleanup_and_unowned_user_files_are_never_deleted(self) -> None:
         remote, commit = self._remote_library()

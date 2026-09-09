@@ -1292,6 +1292,51 @@ def context_result_surface(result: dict[str, object]) -> dict[str, str]:
     }
 
 
+def os_failure_recovery(error: Exception) -> tuple[str, str] | None:
+    """Classify OS failures by type before inspecting messages or filenames."""
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, OSError):
+            error = current
+            break
+        current = current.__cause__
+    if isinstance(error, FileNotFoundError):
+        return "SM-E301 (FILE_NOT_FOUND)", (
+            "表示されたファイルまたはフォルダーが存在するか確認してください。"
+            "移動した場合は現在の場所を選び直し、実行アプリがない場合はインストール状態を"
+            "確認してから同じ操作を再実行してください。"
+        )
+    if isinstance(error, PermissionError):
+        return "SM-E302 (PERMISSION_DENIED)", (
+            "表示されたパスへのアクセス権限を確認してください。使用中の場合はそのファイルを"
+            "開いているアプリを閉じ、アクセスできる状態にしてから同じ操作を再実行してください。"
+        )
+    if isinstance(error, OSError):
+        return f"SM-E303 (OS_ERROR_{error.errno})", (
+            "表示されたOSエラー番号と対象パスを確認してください。原因を解消できない場合は"
+            "画面を閉じ、診断内容を保存して問い合わせてください。解消後に同じ操作を再実行できます。"
+        )
+    return None
+
+
+def failure_details(error: Exception) -> str:
+    """Keep exception diagnostics, including explicit causes, on the local UI."""
+    lines = []
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        lines.append(f"{type(current).__name__}: {str(current).strip() or '詳細なし'}")
+        if isinstance(current, _RuntimeFailed):
+            lines.append(json.dumps(current.diagnostic, ensure_ascii=False))
+        if isinstance(current, _CleanupFailed):
+            lines.extend(str(path) for path in current.paths)
+        current = current.__cause__
+    return "\n".join(lines)
+
+
 def context_failure_surface(
     error: Exception,
     *,
@@ -1300,6 +1345,8 @@ def context_failure_surface(
     platform: str | None = None,
 ) -> dict[str, str]:
     """Map typed failures to a Japanese fail-closed result surface."""
+    details = failure_details(error)
+    os_recovery = os_failure_recovery(error)
     code = "SM-E999 (UNEXPECTED_ERROR)"
     if isinstance(error, _LaunchFailed):
         code = "SM-E101 (AI_LAUNCH_FAILED)"
@@ -1307,9 +1354,13 @@ def context_failure_surface(
             "state": "failed",
             "code": code,
             "title": "実行できませんでした",
-            "cause": f"選択したAIのverification processを開始できませんでした。\n[エラーコード: {code}]",
+            "cause": f"選択したAIのverification processを開始できませんでした。\n詳細\n{details}",
             "not_completed": "依頼実行、スキル受入確認、結果保存は完了していません。",
-            "next_action": "選択したAIのインストールと起動状態を確認してから再実行してください。",
+            "next_action": (
+                os_recovery[1]
+                if os_recovery is not None
+                else "選択したAIのインストールと起動状態を確認してから再実行してください。"
+            ),
         }
     if isinstance(error, _RuntimeFailed):
         code = "SM-E102 (AI_RUNTIME_FAILED)"
@@ -1317,7 +1368,7 @@ def context_failure_surface(
             "state": "failed",
             "code": code,
             "title": "実行に失敗しました",
-            "cause": f"選択したAIのverification processが完了前に終了しました。\n[エラーコード: {code}]",
+            "cause": f"選択したAIのverification processが完了前に終了しました。\n詳細\n{details}",
             "not_completed": "依頼実行、スキル受入確認、結果保存は完了していません。",
             "next_action": "選択したAIの設定と保存証拠を確認してから再実行してください。",
         }
@@ -1327,7 +1378,7 @@ def context_failure_surface(
             "state": "blocked",
             "code": code,
             "title": "完了を確認できませんでした",
-            "cause": f"実行結果が選択スキル固有の受入条件を満たしませんでした。\n[エラーコード: {code}]",
+            "cause": f"実行結果が選択スキル固有の受入条件を満たしませんでした。\n詳細\n{details}",
             "not_completed": "成功として表示していません。保存や変更が行われた範囲は確認できません。",
             "next_action": "保存証拠を確認し、依頼内容または実行環境を修正して再実行してください。",
         }
@@ -1337,7 +1388,7 @@ def context_failure_surface(
             "state": "blocked",
             "code": code,
             "title": "完了を確定できませんでした",
-            "cause": f"一時的なverification成果物の後始末を確認できませんでした。\n[エラーコード: {code}]",
+            "cause": f"一時的なverification成果物の後始末を確認できませんでした。\n詳細\n{details}",
             "not_completed": "検証結果を成功として確定していません。",
             "next_action": "保存証拠の未解決成果物を確認し、安全に片付けてから再実行してください。",
         }
@@ -1347,7 +1398,7 @@ def context_failure_surface(
             "state": "blocked",
             "code": code,
             "title": "完了を確認できませんでした",
-            "cause": f"AIの出力が検証可能な完了形式を満たしませんでした。\n[エラーコード: {code}]",
+            "cause": f"AIの出力が検証可能な完了形式を満たしませんでした。\n詳細\n{details}",
             "not_completed": "成功として表示していません。保存や変更が行われた範囲は確認できません。",
             "next_action": "保存証拠を確認し、同じ依頼を再実行してください。",
         }
@@ -1371,7 +1422,14 @@ def context_failure_surface(
     )
     menu_repair_command = subprocess.list2cmdline(menu_repair_argv)
     terminal_name = "Windows Terminal" if repair_platform == "windows" else "Terminal"
-    if "after menu installation" in folded or "reinstall required" in folded:
+    if os_recovery is not None:
+        code, next_action = os_recovery
+        if config_path is not None:
+            next_action += (
+                f"\n原因を解消した後、{terminal_name}で「{repair_command}」を実行すると、"
+                "同じ設定を指定したLibrary Managerで作業を再開できます。"
+            )
+    elif "after menu installation" in folded or "reinstall required" in folded:
         code = "SM-E201 (MENU_REINSTALL_REQUIRED)"
         next_action = (
             f"{terminal_name}で「{menu_repair_command}」を一度実行し、"
@@ -1410,27 +1468,6 @@ def context_failure_surface(
             "右クリックの「Skill Magnet」を押し、開いた画面の「Library Manager」で"
             "表示された中断処理を「続きから再開」または「最初からやり直す」で復旧してください。"
         )
-    elif isinstance(error, FileNotFoundError):
-        code = "SM-E301 (FILE_NOT_FOUND)"
-        next_action = (
-            f"{terminal_name}で「{repair_command}」を実行し、"
-            "画面の復旧操作を実行してください。解消しない場合は、この原因文を"
-            "そのまま対応報告へ添付してください。"
-        )
-    elif isinstance(error, PermissionError):
-        code = "SM-E302 (PERMISSION_DENIED)"
-        next_action = (
-            f"{terminal_name}で「{repair_command}」を実行し、"
-            "画面の復旧操作を実行してください。解消しない場合は、この原因文を"
-            "そのまま対応報告へ添付してください。"
-        )
-    elif isinstance(error, OSError):
-        code = f"SM-E303 (OS_ERROR_{getattr(error, 'errno', 'UNKNOWN')})"
-        next_action = (
-            f"{terminal_name}で「{repair_command}」を実行し、"
-            "画面の復旧操作を実行してください。解消しない場合は、この原因文を"
-            "そのまま対応報告へ添付してください。"
-        )
     else:
         code = f"SM-E999 ({error.__class__.__name__})"
         next_action = (
@@ -1442,7 +1479,7 @@ def context_failure_surface(
         "state": "blocked",
         "code": code,
         "title": "実行を続けられません",
-        "cause": f"{message}\n[エラーコード: {code}]",
+        "cause": details,
         "not_completed": "依頼は完了扱いにしていません。",
         "next_action": next_action,
     }

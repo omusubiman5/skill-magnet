@@ -529,12 +529,18 @@ public static class SkillMagnetFieldInput {
             ShowWindow(hWnd, 9); // SW_RESTORE
             BringWindowToTop(hWnd);
             SetForegroundWindow(hWnd);
-            return GetForegroundWindow() == hWnd;
         }
         finally {
             if (attachedTarget) AttachThreadInput(currentThread, targetThread, false);
             if (attachedForeground) AttachThreadInput(currentThread, foregroundThread, false);
         }
+        // Observe the resulting foreground window after detaching input queues.
+        // A request being accepted is not proof that the transition is complete.
+        for (int attempt = 0; attempt < 20; attempt++) {
+            if (GetForegroundWindow() == hWnd) return true;
+            System.Threading.Thread.Sleep(25);
+        }
+        return false;
     }
     private static string Sha256(byte[] value) {
         using (SHA256 algorithm = SHA256.Create()) {
@@ -1452,7 +1458,10 @@ function Open-ExplorerFolder([string]$Path) {
 function Get-ExplorerElement($Window) {
     $handle = [IntPtr]([int64]$Window.HWND)
     Assert-Field ([SkillMagnetFieldInput]::FocusWindow($handle)) `
-        "Could not foreground the Explorer field-test window."
+        ("Could not foreground the Explorer field-test window. target=" + $handle +
+         " root=" + [SkillMagnetFieldInput]::GetAncestor($handle, 2) +
+         " foreground=" + [SkillMagnetFieldInput]::GetForegroundWindow() +
+         " valid=" + [SkillMagnetFieldInput]::IsWindow($handle))
     Start-Sleep -Milliseconds 250
     [System.Windows.Automation.AutomationElement]::FromHandle($handle)
 }
@@ -1797,6 +1806,25 @@ function Invoke-VisibleSkillMagnetRoot(
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $rootDeadline)
     $diagnostic = @($rootByRuntime.Keys | Sort-Object) -join ","
+    if ($roots.Count -ne 1) {
+        # Capture the actual Explorer menu on failure, rather than treating a
+        # missing command as evidence that the package is absent.
+        $explorerProcessId = [System.Windows.Automation.AutomationElement]::FromHandle(
+            [IntPtr]([int64]$Window.HWND)
+        ).Current.ProcessId
+        $menuItems = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+            [System.Windows.Automation.TreeScope]::Descendants,
+            [System.Windows.Automation.PropertyCondition]::new(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [System.Windows.Automation.ControlType]::MenuItem
+            )
+        )
+        $visibleNames = @($menuItems | Where-Object {
+            try { -not $_.Current.IsOffscreen -and $_.Current.ProcessId -eq $explorerProcessId }
+            catch { $false }
+        } | ForEach-Object { $_.Current.Name })
+        Write-Output ("Explorer menu diagnostic: " + ($visibleNames -join " | "))
+    }
     Assert-Field ($roots.Count -eq 1) `
         ("Explorer must expose exactly one newly visible Skill Magnet root; " +
          "observed $($roots.Count); all visible runtime ids: $diagnostic")

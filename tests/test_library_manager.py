@@ -2200,6 +2200,37 @@ class LibraryManagerTests(unittest.TestCase):
         self.assertEqual(transaction._journal()["status"], "active")
         self.assertTrue(json.loads(config.read_text(encoding="utf-8"))["packs"])
 
+        from skill_magnet.platforms import render_windows_modern_menu_manifest
+
+        os_entry = render_windows_modern_menu_manifest(config)
+        first_commit = json.loads(config.read_text(encoding="utf-8"))["packs"][0]["expected_commit"]
+
+        def apply_edit(identifier: str) -> dict[str, object]:
+            current = LibraryTransaction(self.root / "no-updater-state", identifier)
+            current.prepare(draft=draft, remote=str(remote), branch="main")
+            current.publish(confirmed=True, direct=True, create_pr=False)
+            result = current.activate(config_path=config, confirmed=True)
+            self.assertEqual(result["status"], "active")
+            self.assertFalse(result["menu_changed"])
+            self.assertEqual(render_windows_modern_menu_manifest(config), os_entry)
+            return json.loads(config.read_text(encoding="utf-8"))
+
+        updated_source = self.make_source_skill(self.root / "updated-source", "menu-required-skill")
+        update_skill_source(draft, "menu-required-skill", updated_source)
+        updated_config = apply_edit("transaction-body-update")
+        updated_commit = updated_config["packs"][0]["expected_commit"]
+        self.assertNotEqual(first_commit, updated_commit)
+        published_body = self.git(remote, "show", f"{updated_commit}:menu-required-skill/SKILL.md")
+        self.assertIn("menu-required-skill updated", published_body)
+
+        add_skill(draft, skill_id="added-skill", display_name="Added skill", purpose="Addition",
+                  pack_id="added-pack", pack_display_name="Added pack")
+        added_config = apply_edit("transaction-pack-addition")
+        self.assertIn("added-pack", {pack["id"] for pack in added_config["packs"]})
+        delete_pack(draft, "starter-pack", confirmed=True)
+        deleted_config = apply_edit("transaction-pack-removal")
+        self.assertEqual([pack["id"] for pack in deleted_config["packs"]], ["added-pack"])
+
     def test_cli_exposes_guided_library_flow(self) -> None:
         self.assertEqual(library_wizard_steps(), ("Library Manager",))
         self.assertEqual(
