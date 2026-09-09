@@ -2,7 +2,7 @@
 
 対応日: 2026-09-09。関連: [原因調査報告](cause-investigation-structural-drift-2026-09-09.md)。Beads: `sm-24z`。サブエージェントは使用していない。
 
-**修正・導入結果:** 構造修正に加え、CIで発見した証明書rollbackの不具合も修正して導入した。修正版の実Explorer試験と、ソース・wheel・導入版・署名付き証跡を照合するリリースゲートが成功。最終440件とWindowsの更新・復旧・アンインストールを含むCI結果は、下表の実行結果リンクを正とする。
+**完了:** 構造修正と証明書rollback修正を導入し、全440件は439件成功・1件スキップ、不合格0件。実Explorer試験、リリースゲート、GitHub CIのWindows／macOS両jobが成功した。前回失敗した実MSIXの更新・復旧・アンインストールも成功している。
 
 対象ソース: `9d23e5f2e881e1dbd0531b2f028562a0b58e8b52`。修正ブランチ: `codex/complete-structural-repair`。[現在の集約記録](windows-explorer-leaf-launch-results.md)と[過去の419件の記録](windows-explorer-leaf-launch-results-history-2026-09-09.md)を分離した。
 
@@ -20,7 +20,7 @@
 | ラップされたPermissionErrorを設定不正に誤分類 | 原因例外をたどってOS障害を判定。原因解消後に同じ設定で再開するコマンドも保持 |
 | ソースと導入物が別の組合せ | 今回のソース一式からwheelを構築し、Pythonとnativeを導入更新 |
 | 過去の報告が要件と矛盾 | 管理・登録ボタン撤去を是正とした報告2本の結論を撤回 |
-| 旧リリース記録が現在の候補を指している | 旧記録・旧証跡を履歴へ保存し、ソースcommit、wheel hash、437件、新しく採取した実機証跡を同じ候補へ更新 |
+| 旧リリース記録が現在の候補を指している | 旧記録・旧証跡を履歴へ保存し、ソースcommit、wheel hash、最終440件、新しく採取した実機証跡を同じ候補へ更新 |
 | 更新rollbackが旧版の署名証明書を削除する | 現在と復旧先の有効なthumbprintを破壊的操作の前に比較。共有証明書は保持し、置換証明書だけ従来の所有権検証付きcleanupへ渡す |
 
 GitHubを唯一の正本とし、一時領域消失時の再作成、未送信編集の消失通知、登録元の再選択、送信済みcommitからの復旧を維持した。利用者の登録元や所有不明のファイルを削除する処理は追加していない。
@@ -47,7 +47,7 @@ LibraryStateはファイル、Git、Tkを操作しない。画面は判定結果
 
 | 検証 | 結果 |
 |---|---|
-| 全件試験 | 先行437件は436件成功・1件スキップ、不合格0件（308.663秒）。証明書の3件を加えた最終440件は下記GitHub CIで実行 |
+| 全件試験 | 最終440件、439件成功・1件スキップ、不合格0件（ローカル308.219秒）。GitHub Windows CIでも全件試験成功 |
 | 証明書rollbackの回帰 | 修正前に共有証明書の消失を再現。修正後は新規3件と既存関連3件の計6件成功。導入版でも新規3件成功 |
 | 導入版の関連試験 | 39件成功に加え、補強した更新・追加・削除の2件も成功。srcを含めない別ディレクトリからsite-packagesを使用 |
 | 実Tk画面 | 管理・登録ボタンの表示、一時領域消失後の管理画面起動と未送信編集の通知を確認 |
@@ -59,7 +59,7 @@ LibraryStateはファイル、Git、Tkを操作しない。画面は判定結果
 | ソース→wheel→導入Python | runtime payloadの同一性を確認 |
 | リリースゲート | Windows MVPの全ゲート成功。旧記録を合格にするための検査条件変更は行っていない |
 | 証跡のGit取得 | 現在と履歴のbundle/log計4ファイルをGit indexから再取得し、元のbyte列と一致。署名付き証跡の改行変換・自動mergeを禁止 |
-| GitHub CI | [修正ブランチの実行結果](https://github.com/omusubiman5/skill-magnet/actions?query=branch%3Acodex%2Fcomplete-structural-repair)。Windows/macOSのworkflowとrelease gateを維持 |
+| GitHub CI | [run 34328570262](https://github.com/omusubiman5/skill-magnet/actions/runs/34328570262)、候補 `502b893`（上記source `9d23e5f`）でWindows／macOS両job成功。実MSIX lifecycleも成功 |
 
 初回試験ではOS障害分類の修正により復旧コマンドの案内が落ち、既存2件が不合格となった。期待値を弱めず案内を修正し、対象2件と診断7件の再試験が成功した。また実画面テストのEscape終了がフォーカスに依存して全件試験を停止させたため、テストの終了操作をWM_DELETE_WINDOWへ変更した。ボタン表示・復旧内容の検査は保持している。途中終了した実行は全件成功に数えていない。
 
@@ -102,9 +102,13 @@ LibraryStateはファイル、Git、Tkを操作しない。画面は判定結果
 - `rollback-final-field.json` / `rollback-final-invoke.log` / `rollback-final-run.log`: 最終ソースに対応する実Explorer証跡。
 - `rollback-release-gate.log`: 最終候補のWindows MVPゲート成功。
 - `ci-first-failure.log`: 初回CIで発見した証明書rollback失敗の記録。
+- `rollback-full-tests.log`: 証明書修正後の全440件成功（1件スキップ）。
+- `ci-final.json` / `ci-final.log`: 最終CIの両job成功と実MSIX lifecycle成功。
 
 ## 判定の範囲
 
 今回のWindowsローカル署名版について、実装・導入・単一入口からの実操作・更新反映・復旧・現在候補との証跡一致を検証した。追加の受入確認が残っていた `sm-2ao.1`、`sm-2ao.2`、`sm-2ao.3` は解消した。
+
+証跡不一致の `sm-2ao.7` と、CIで追加検出した証明書rollbackの `sm-2ao.9` も、最終候補のCI成功まで確認して解消した。CI確定後の本報告書への結果追記は、検証済みのソース・テスト・配布物を変更していない。
 
 判定範囲はWindows MVP。macOSの実機UI、外部publisherによる公開配布、起動したAIタスクの回答完成は、この受入認定の対象外とする。
