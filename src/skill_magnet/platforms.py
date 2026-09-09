@@ -3300,6 +3300,20 @@ def _validated_windows_context_backup(
     return metadata
 
 
+def _windows_certificate_thumbprint(install_root: Path) -> str | None:
+    state_path = install_root / "certificate-state.json"
+    if not state_path.exists():
+        return None
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SafetyError("Invalid Windows rollback certificate state; nothing was changed") from exc
+    thumbprint = state.get("thumbprint") if isinstance(state, dict) else None
+    if not isinstance(thumbprint, str) or not re.fullmatch(r"[0-9A-Fa-f]{40}", thumbprint):
+        raise SafetyError("Invalid Windows rollback certificate identity; nothing was changed")
+    return thumbprint.upper()
+
+
 def _restore_windows_context_backup(
     backup: Path,
     *,
@@ -3310,13 +3324,21 @@ def _restore_windows_context_backup(
         backup, install_root=install_root
     )
     _, _, package_script = _windows_modern_paths(install_root)
+    saved_external = backup / "external"
+    current_certificate = _windows_certificate_thumbprint(install_root)
+    previous_certificate = (
+        _windows_certificate_thumbprint(saved_external) if metadata["external_existed"] else None
+    )
+    shared_certificate = current_certificate is not None and current_certificate == previous_certificate
 
     # Remove the current package before replacing its external content.
     _package_action("uninstall", package_script, install_root=install_root, run=run)
     if install_root.exists():
-        _package_action("cleanup-certificate", package_script, install_root=install_root, run=run)
+        # Updates usually reuse the signing certificate. The backup records its
+        # ownership but does not contain a private key that can recreate it.
+        if not shared_certificate:
+            _package_action("cleanup-certificate", package_script, install_root=install_root, run=run)
         shutil.rmtree(install_root)
-    saved_external = backup / "external"
     if metadata["external_existed"]:
         shutil.copytree(saved_external, install_root)
         _validate_windows_managed_tree(
